@@ -1,0 +1,17 @@
+{
+  "_note": "Tunable numbers. All values are 🟡 placeholders until playtesting (Hallasan Roadmap §8: scoring values and timer lengths are open).",
+  "hearts_per_traveler": 5,
+  "difficulty": {
+    "easy":  {"label": "Easy",             "time_scale": 1.6},
+    "soso":  {"label": "So So",            "time_scale": 1.0},
+    "diffi": {"label": "Diffifuckingcult", "time_scale": 0.55}
+  },
+  "base_seconds_per_syllable": 6.0,
+  "scoring": {
+    "review_word": 10,
+    "bonus_guess": 30,
+    "monster_capture": 100,
+    "cooking_dish": 50
+  },
+  "starting_points_without_save": 0
+}

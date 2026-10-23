@@ -1,0 +1,7 @@
+# Godot
+.godot/
+/build/
+export_presets.cfg
+
+# Exploratory reference code, never committed
+reference/

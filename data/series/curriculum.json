@@ -1,0 +1,17 @@
+{
+  "_note": "Letters taught per game, from Master Roadmap §4, with Phase 0 Log B changes (ㅡ moved to Jirisan). Tokens: 'ㄱ' = initial consonant or vowel; '-ㄱ' = 받침. A game's known letters = all letters up to and including that game. Changes go in a new project log, not the roadmap.",
+  "games": [
+    {"index": 1,  "id": "hallasan",    "name": "한라산", "new": ["ㅏ", "ㅓ", "ㅗ", "ㅜ", "ㅣ", "ㅇ", "ㄱ", "ㄴ", "ㄹ", "ㅁ"]},
+    {"index": 2,  "id": "jirisan",     "name": "지리산", "new": ["ㅡ", "ㄷ", "ㅂ", "ㅅ", "ㅈ", "ㅎ"]},
+    {"index": 3,  "id": "sobaeksan",   "name": "소백산", "new": ["ㅑ", "ㅕ", "ㅛ", "ㅠ"]},
+    {"index": 4,  "id": "woraksan",    "name": "월악산", "new": ["-ㄱ", "-ㄴ", "-ㄷ", "-ㄹ", "-ㅁ", "-ㅂ", "-ㅇ"]},
+    {"index": 5,  "id": "taebaeksan",  "name": "태백산", "new": ["ㅋ", "ㅌ", "ㅊ", "ㅍ"]},
+    {"index": 6,  "id": "seoraksan",   "name": "설악산", "new": ["ㅐ", "ㅔ", "ㅒ", "ㅖ"]},
+    {"index": 7,  "id": "geumgangsan", "name": "금강산", "new": ["ㄲ", "ㄸ", "ㅃ", "ㅆ", "ㅉ"]},
+    {"index": 8,  "id": "guwolsan",    "name": "구월산", "new": ["ㅘ", "ㅝ", "ㅟ", "ㅢ"]},
+    {"index": 9,  "id": "myohyangsan", "name": "묘향산", "new": ["ㅚ", "ㅙ", "ㅞ", "-ㅅ", "-ㅈ", "-ㅊ", "-ㅋ", "-ㅌ", "-ㅍ", "-ㅎ", "-ㄲ", "-ㅆ"]},
+    {"index": 10, "id": "chilbosan",   "name": "칠보산", "new": ["-ㄳ", "-ㄵ", "-ㄶ", "-ㄺ", "-ㄻ", "-ㄼ", "-ㄽ", "-ㄾ", "-ㄿ", "-ㅀ", "-ㅄ"], "skills": ["연음"]},
+    {"index": 11, "id": "gwanmobong",  "name": "관모봉", "new": [], "skills": ["비음화", "유음화", "경음화", "구개음화"]},
+    {"index": 12, "id": "baekdusan",   "name": "백두산", "new": [], "skills": ["everything, top speed"]}
+  ]
+}
