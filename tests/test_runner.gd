@@ -22,6 +22,10 @@ func _ready() -> void:
 	test_curriculum()
 	print("== Hallasan words ==")
 	test_hallasan_words()
+	print("== Game state ==")
+	test_game_state()
+	print("== Settings ==")
+	test_settings()
 	print("\n%d passed, %d failed" % [passed, failed])
 	get_tree().quit(0 if failed == 0 else 1)
 
@@ -95,3 +99,64 @@ func test_hallasan_words() -> void:
 		check(Hangul.is_readable(w, known), "%s is a review word" % w)
 	for w in bonus:
 		check(not Hangul.is_readable(w, known), "%s is a bonus guess" % w)
+
+
+func test_game_state() -> void:
+	GameState.game_id = "hallasan"
+	GameState.new_hike(0)
+	check(GameState.hearts["nestor"] == 5 and GameState.hearts["fernanda"] == 5, "5 hearts at the start of the hike")
+	GameState.begin_scene("foraging")
+	check(not GameState.damage("nestor", "eye_branch"), "first hit doesn't kill")
+	check(GameState.hearts["nestor"] == 4, "damage removes exactly one heart")
+	check(GameState.hearts["fernanda"] == 5, "the other traveler is untouched")
+	check(GameState.score_word("머루") == 10 and GameState.ddeok == 10, "review word scores the review value")
+	GameState.begin_scene("animals")
+	check(GameState.hearts["nestor"] == 4, "no refill between scenes")
+	check(GameState.score_word("고사리") == 30 and GameState.ddeok == 40, "bonus guess scores the bonus value")
+	check(GameState.score_word("노루", true) == 100, "monster capture scores its value")
+	GameState.ddeok = 40
+	GameState.begin_scene("monster")
+	var deaths := []
+	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
+	GameState.travelers_died.connect(on_death)
+	GameState.hearts["nestor"] = 1
+	var died := GameState.damage("nestor", "antler_skewer")
+	check(died, "1 heart to 0 kills")
+	check(deaths.size() == 1, "death signal emitted once")
+	check(deaths[0] == ["nestor", "fernanda", "antler_skewer"], "signal names dead, survivor and injury")
+	GameState.damage("nestor", "antler_skewer")
+	check(GameState.hearts["nestor"] == 0, "hearts never go below 0")
+	check(deaths.size() == 1, "hitting the dead doesn't re-emit the signal")
+	GameState.travelers_died.disconnect(on_death)
+	GameState.add_ddeok(100)
+	GameState.restart_scene()
+	check(GameState.hearts["nestor"] == 4 and GameState.hearts["fernanda"] == 5, "restart restores both travelers' hearts")
+	check(GameState.ddeok == 40, "restart restores ddeok from the scene's start")
+	GameState.difficulty = "easy"
+	var easy := GameState.time_limit("머리")
+	GameState.difficulty = "diffi"
+	check(GameState.time_limit("머리") < easy, "diffi is faster than easy")
+	GameState.difficulty = "soso"
+
+
+func test_settings() -> void:
+	var test_path := "user://test_settings.cfg"
+	var real_path: String = Settings.path
+	Settings.path = test_path
+	Settings.load_settings()
+	check(not Settings.romanization and not Settings.english_subtitles, "settings default to off")
+	var events := []
+	var on_change := func(key, value): events.append([key, value])
+	Settings.setting_changed.connect(on_change)
+	Settings.set_romanization(true)
+	check(events == [["romanization", true]], "changing a setting emits a signal")
+	Settings.set_romanization(true)
+	check(events.size() == 1, "setting the same value emits nothing")
+	Settings.setting_changed.disconnect(on_change)
+	Settings.romanization = false  # wipe in-memory state, then reload from disk
+	Settings.load_settings()
+	check(Settings.romanization and not Settings.english_subtitles, "a changed setting survives save + load")
+	DirAccess.remove_absolute(test_path)
+	check(not FileAccess.file_exists(test_path), "test settings file deleted")
+	Settings.path = real_path
+	Settings.load_settings()

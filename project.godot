@@ -19,6 +19,8 @@ config/features=PackedStringArray("4.7", "GL Compatibility")
 
 Hangul="*res://scripts/hangul.gd"
 Content="*res://scripts/content.gd"
+GameState="*res://scripts/game_state.gd"
+Settings="*res://scripts/settings.gd"
 
 [display]
 
