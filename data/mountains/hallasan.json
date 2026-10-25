@@ -1,15 +1,67 @@
 {
-  "_note": "Hallasan content. Stage coordinates are metres: x runs 0..width left to right, z runs -depth/2 (far, into the scene) .. +depth/2 (near the camera). Start positions are [x, z]. The walkable stage is surrounded by a non-walkable ground apron: 'sides' metres on the left, right and near edges, 'far' metres on the far edge (a backdrop ridge stands beyond it). Props: density per 100 m2 of ground (walkable + apron) and a fixed random seed.",
+  "_note": "Hallasan content. Stage coordinates are metres: x runs 0..width left to right, z runs -depth/2 (far, into the scene) .. +depth/2 (near the camera). Start positions are [x, z]. The walkable stage is surrounded by a non-walkable ground apron: 'sides' metres on the left, right and near edges, 'far' metres on the far edge (the backdrop, see 'backdrop', stands beyond it). Props: density per 100 m2 of ground (walkable + apron) and a fixed random seed.",
   "id": "hallasan",
   "name": "한라산",
   "foraging": {
     "stage": {"width": 64.0, "depth": 24.0},
     "apron": {"sides": 12.0, "far": 3.0},
     "props": {"density_per_100m2": 6.25, "seed": 7},
+    "prop_fade": {"_note": "Trees, rocks and other props between the camera and a traveler fade to 'opacity' (0..1) over 'time' seconds, and fade back when they no longer cover one.", "opacity": 0.25, "time": 0.2},
+    "tooltip": {"_note": "The plant hover name stays 'show_time' seconds, then fades out over 'fade_time' seconds. It returns only after the mouse leaves the plant and enters a plant again.", "show_time": 2.0, "fade_time": 0.5},
     "start": {"nestor": [6.0, 1.5], "fernanda": [4.0, -1.5]},
     "terrain": {
       "_note": "Ground height in metres as a function of x: [x, height] points joined by a smooth monotone curve, flat beyond the first and last point. The ground is flat across z. Max slope must stay under 30 degrees.",
       "points": [[0, 0.0], [10, 0.9], [20, 2.2], [28, 3.4], [36, 5.2], [44, 7.0], [52, 8.6], [60, 9.7], [64, 10.0]]
+    },
+    "backdrop": {
+      "_note": "The ridge and hills behind the far apron. 'depth' is how far the backdrop reaches behind the far apron (z runs from the far apron edge to -depth beyond it). Each piece sits at base height = terrain height at its x + offset (metres); 'sink' extends a box that far below its base so the ground never shows under it. shape box: size [width, height, depth]; shape cone: size [radius, height], stretch_x widens it along x. x and z are the piece centre.",
+      "depth": 4.0,
+      "pieces": [
+        {"shape": "box", "x": -10, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": -6, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": -2, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 2, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 6, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 10, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 14, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 18, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 22, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 26, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 30, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 34, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 38, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 42, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 46, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 50, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 54, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 58, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 62, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 66, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 70, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "box", "x": 74, "z": -17.0, "size": [4.0, 2.5, 4.0], "offset": 0.6, "sink": 3.0, "color": [0.22, 0.22, 0.23]},
+        {"shape": "cone", "x": -10.1, "z": -17.0, "size": [1.8, 1.6], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": -6.0, "z": -17.2, "size": [2.2, 1.6, 2.3], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": -1.4, "z": -16.5, "size": [1.4, 1.1], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 2.6, "z": -17.5, "size": [2.0, 1.7, 3.0], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 6.3, "z": -16.3, "size": [1.3, 1.6], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 10.1, "z": -16.0, "size": [2.2, 1.1, 1.9], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 13.9, "z": -17.0, "size": [1.7, 1.4], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 18.3, "z": -16.6, "size": [2.7, 1.5, 2.2], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 23.0, "z": -17.1, "size": [1.7, 2.0], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 25.6, "z": -17.6, "size": [2.3, 1.2, 1.6], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 29.8, "z": -17.5, "size": [1.4, 1.8], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 34.7, "z": -17.0, "size": [2.2, 1.0, 2.9], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 39.0, "z": -17.2, "size": [1.2, 1.4], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 42.6, "z": -17.9, "size": [2.1, 1.3, 2.0], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 46.5, "z": -16.4, "size": [1.3, 1.1], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 49.1, "z": -16.9, "size": [2.2, 1.8, 2.3], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 53.4, "z": -17.2, "size": [1.3, 1.7], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 57.2, "z": -18.0, "size": [2.2, 1.4, 1.9], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 62.6, "z": -16.8, "size": [1.7, 1.3], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 65.8, "z": -18.1, "size": [2.6, 1.9, 1.7], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]},
+        {"shape": "cone", "x": 69.4, "z": -16.9, "size": [1.7, 1.3], "stretch_x": 2.5, "offset": 1.9, "color": [0.2, 0.3, 0.24]},
+        {"shape": "box", "x": 73.6, "z": -16.6, "size": [2.1, 1.1, 2.4], "stretch_x": 2.5, "offset": 1.9, "color": [0.27, 0.27, 0.29]}
+      ]
     },
     "zones": [
       {"id": "lower_forest", "name": "Lower forest", "x": [0, 28], "tint": [0.16, 0.3, 0.17]},
@@ -22,7 +74,7 @@
         {
           "id": "ma",
           "name": "마",
-          "hover_name": "Chinese yam",
+          "hover_name": "Korean yam",
           "kind": "target",
           "zone": "lower_forest",
           "count": 2,
@@ -41,6 +93,7 @@
           "required": 1,
           "letter_style": "hanging",
           "color": [0.22, 0.4, 0.22],
+          "fruit_color": [0.36, 0.22, 0.4],
           "positions": [[12, 2.5], [25, -7]]
         },
         {
@@ -95,7 +148,7 @@
         {
           "id": "butsunnamu",
           "name": "붓순나무",
-          "hover_name": "Japanese star anise",
+          "hover_name": "Korean star anise",
           "kind": "decoy_harm",
           "zone": "lower_forest",
           "count": 2,
@@ -140,6 +193,7 @@
           "required": 0,
           "letter_style": "hanging",
           "color": [0.3, 0.32, 0.42],
+          "fruit_color": [0.08, 0.12, 0.32],
           "reward": "spelling_hint",
           "positions": [[54, -7], [47, 4]]
         }

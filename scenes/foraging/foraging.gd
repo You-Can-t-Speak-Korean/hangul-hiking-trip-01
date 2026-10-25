@@ -6,6 +6,7 @@ extends Node3D
 const Traveler := preload("res://scenes/foraging/traveler.gd")
 const Terrain := preload("res://scenes/foraging/terrain.gd")
 const Plant := preload("res://scenes/foraging/plant.gd")
+const Prop := preload("res://scenes/foraging/prop.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -13,8 +14,9 @@ const CAMERA_FOLLOW_RATE := 6.0
 const CAMERA_LEAD := 4.0        # aims this far ahead (into the scene) of the player
 const PARTNER_STOP_DISTANCE := 1.6
 const TRAVELER_MARGIN := 0.4    # keeps a traveler's body inside the stage
-const BACKDROP_DEPTH := 4.0     # how far the ridge reaches behind the far apron
-const RIDGE_HEIGHT := 2.5
+const FADE_REACH := 14.0        # how far toward the camera a prop can still cover a traveler
+const FADE_CELL := 4.0          # props are bucketed by x so only those near a traveler are checked
+const FADE_SAMPLE_HEIGHTS := [0.3, 0.85, 1.5]  # feet, waist and head of a traveler
 
 const GROUND_STEP := 1.0        # metres between ground mesh vertices along x
 const KEEP_OUT := 1.8           # props are pushed this far from plants, trees and starts
@@ -29,6 +31,9 @@ var stage_depth: float = 0.0
 ## behind it, as Rect2s over (x, z).
 var ground_rect := Rect2()
 var backdrop_rect := Rect2()
+## Every backdrop piece as {"data", "base", "top", "aabb"}: base and top are
+## world heights, aabb is the piece's world-space box.
+var backdrop_pieces: Array[Dictionary] = []
 ## Height of the ground as a function of x, and the zones along it.
 var terrain: Terrain
 var zones: Array = []
@@ -40,9 +45,18 @@ var travelers: Dictionary = {}
 var player: CharacterBody3D
 var partner: CharacterBody3D
 
+var fade_opacity := 1.0   # opacity of a prop covering a traveler (data: prop_fade)
+var fade_time := 0.2      # seconds to fade in or out (data: prop_fade)
+var tooltip_show_time := 2.0  # seconds the hover name stays solid (data: tooltip)
+var tooltip_fade_time := 0.5  # seconds it then takes to fade out (data: tooltip)
+
 var _aim_height := 0.0
 var _tooltip: PanelContainer
 var _tooltip_label: Label
+var _hover_plant: Node3D
+var _hover_time := 0.0
+var _props_by_cell: Dictionary = {}  # int cell of x -> Array of Prop
+var _fading: Dictionary = {}         # Prop -> true, while its opacity is not 1.0
 
 @onready var camera: Camera3D = $Camera3D
 
@@ -60,9 +74,14 @@ func _ready() -> void:
 	ground_rect = Rect2(
 		Vector2(-side, -stage_depth / 2.0 - far),
 		Vector2(stage_width + 2.0 * side, stage_depth + far + side))
+	var backdrop_depth := float(config["backdrop"]["depth"])
 	backdrop_rect = Rect2(
-		Vector2(ground_rect.position.x, ground_rect.position.y - BACKDROP_DEPTH),
-		Vector2(ground_rect.size.x, BACKDROP_DEPTH))
+		Vector2(ground_rect.position.x, ground_rect.position.y - backdrop_depth),
+		Vector2(ground_rect.size.x, backdrop_depth))
+	fade_opacity = float(config["prop_fade"]["opacity"])
+	fade_time = float(config["prop_fade"]["time"])
+	tooltip_show_time = float(config["tooltip"]["show_time"])
+	tooltip_fade_time = float(config["tooltip"]["fade_time"])
 	terrain = Terrain.new(config["terrain"]["points"])
 	zones = config["zones"]
 	for id in GameState.TRAVELERS:
@@ -70,7 +89,7 @@ func _ready() -> void:
 	_build_plants(config["plants"]["kinds"])
 	_build_scenery(config["scenery"])
 	_build_ground()
-	_build_backdrop()
+	_build_backdrop(config["backdrop"]["pieces"])
 	_build_props(config["props"])
 	_build_tooltip()
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
@@ -93,9 +112,9 @@ func _ready() -> void:
 			t.drive(Vector2.ZERO, 1.0 / 60.0)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if DisplayServer.get_name() != "headless":
-		update_hover(get_viewport().get_mouse_position())
+		update_hover(get_viewport().get_mouse_position(), delta)
 
 
 func _physics_process(delta: float) -> void:
@@ -108,6 +127,7 @@ func step(input: Vector2, delta: float) -> void:
 	player.drive(input, delta)
 	partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
+	update_prop_fade(delta)
 
 
 ## Half the width, in metres, the orthographic camera shows.
@@ -234,7 +254,7 @@ func _build_plants(kinds: Array) -> void:
 ## 구상나무 (Korean fir): scenery only, no letters, nothing to forage.
 func _build_scenery(scenery: Dictionary) -> void:
 	for pos in scenery["gusangnamu"]["positions"]:
-		var tree := Node3D.new()
+		var tree := Prop.new()
 		tree.name = "Gusangnamu"
 		tree.position = Vector3(float(pos[0]), terrain.height_at(float(pos[0])), float(pos[1]))
 		var trunk_mesh := CylinderMesh.new()
@@ -253,6 +273,7 @@ func _build_scenery(scenery: Dictionary) -> void:
 			layer.position.y = 1.5 + 1.0 * tier
 			tree.add_child(layer)
 		$Scenery.add_child(tree)
+		_register_prop(tree)
 		keep_out.append(Vector2(float(pos[0]), float(pos[1])))
 
 
@@ -270,13 +291,28 @@ func plant_at(screen_pos: Vector2) -> Node3D:
 	return (hit["collider"] as Node).get_parent() as Node3D
 
 
-## Shows the tooltip for the plant under `screen_pos`, hides it over nothing.
-func update_hover(screen_pos: Vector2) -> void:
+## Drives the hover tooltip. `delta` is the time since the last call, so tests
+## can use simulated time. The name appears when the mouse moves onto a plant,
+## stays tooltip_show_time seconds, then fades over tooltip_fade_time. It comes
+## back only after the mouse has left the plant and entered a plant again; moving
+## straight from one plant onto another starts the new tooltip at once.
+func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
 	var plant := plant_at(screen_pos)
-	_tooltip.visible = plant != null
-	if plant == null:
+	if plant != _hover_plant:
+		_hover_plant = plant
+		_hover_time = 0.0
+		if plant != null:
+			_tooltip_label.text = plant.tooltip_text()
+	elif plant != null:
+		_hover_time += delta
+	var opacity := 0.0
+	if plant != null:
+		var fading := _hover_time - tooltip_show_time
+		opacity = 1.0 if fading <= 0.0 else 1.0 - fading / maxf(tooltip_fade_time, 0.001)
+	_tooltip.visible = opacity > 0.0
+	if not _tooltip.visible:
 		return
-	_tooltip_label.text = plant.tooltip_text()
+	_tooltip.modulate.a = opacity
 	_tooltip.reset_size()
 	var room := get_viewport().get_visible_rect().size - _tooltip.size
 	_tooltip.position = (screen_pos + TOOLTIP_OFFSET).clamp(Vector2.ZERO, room.max(Vector2.ZERO))
@@ -295,38 +331,88 @@ func _build_tooltip() -> void:
 	add_child(layer)
 
 
-## A basalt ridge behind the far edge, topped with simple hills.
-func _build_backdrop() -> void:
-	var slab_mesh := BoxMesh.new()
-	slab_mesh.size = Vector3(backdrop_rect.size.x, RIDGE_HEIGHT, backdrop_rect.size.y)
-	var slab := Traveler.gray_mesh(slab_mesh, Color(0.22, 0.22, 0.23))
-	var center := backdrop_rect.get_center()
-	slab.position = Vector3(center.x, RIDGE_HEIGHT / 2.0, center.y)
-	$Backdrop.add_child(slab)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 11
-	var hill_count := int(backdrop_rect.size.x / 4.0)
-	for i in hill_count:
-		var x := backdrop_rect.position.x + (i + 0.5) * backdrop_rect.size.x / hill_count + rng.randf_range(-1.0, 1.0)
-		var height := rng.randf_range(1.0, 2.0)
-		var hill: MeshInstance3D
-		var reach: float  # how far it extends in z, so it stays on the slab
-		if i % 2 == 0:
+## The ridge and hills behind the far edge, from the data. Each piece's base
+## height is the terrain height at its x plus the piece's offset, so it always
+## stands on the ground at that x. A box may sink below its base so the slope
+## never shows a gap under it.
+func _build_backdrop(pieces: Array) -> void:
+	for piece in pieces:
+		var x := float(piece["x"])
+		var z := float(piece["z"])
+		var size: Array = piece["size"]
+		var c: Array = piece["color"]
+		var color := Color(c[0], c[1], c[2])
+		var base := terrain.height_at(x) + float(piece["offset"])
+		var stretch := float(piece.get("stretch_x", 1.0))
+		var instance: MeshInstance3D
+		var top: float
+		var extent: Vector3  # half-size of the world-space box
+		var middle: float    # world height of the box's centre
+		if piece["shape"] == "cone":
 			var cone := CylinderMesh.new()
 			cone.top_radius = 0.0
-			cone.bottom_radius = rng.randf_range(1.2, 1.8)
-			cone.height = height
-			reach = cone.bottom_radius
-			hill = Traveler.gray_mesh(cone, Color(0.2, 0.3, 0.24))
+			cone.bottom_radius = float(size[0])
+			cone.height = float(size[1])
+			instance = Traveler.gray_mesh(cone, color)
+			top = base + cone.height
+			middle = base + cone.height / 2.0
+			extent = Vector3(cone.bottom_radius * stretch, cone.height / 2.0, cone.bottom_radius)
 		else:
-			var block := BoxMesh.new()
-			block.size = Vector3(rng.randf_range(2.0, 3.0), height, rng.randf_range(1.5, 3.0))
-			reach = block.size.z / 2.0
-			hill = Traveler.gray_mesh(block, Color(0.27, 0.27, 0.29))
-		var z := backdrop_rect.end.y - reach - rng.randf_range(0.0, BACKDROP_DEPTH - 2.0 * reach)
-		hill.scale.x = 2.5  # wide, low mounds
-		hill.position = Vector3(x, RIDGE_HEIGHT + height / 2.0 - 0.1, z)
-		$Backdrop.add_child(hill)
+			var box := BoxMesh.new()
+			var sink := float(piece.get("sink", 0.0))
+			box.size = Vector3(float(size[0]), float(size[1]) + sink, float(size[2]))
+			instance = Traveler.gray_mesh(box, color)
+			top = base + float(size[1])
+			middle = top - box.size.y / 2.0
+			extent = Vector3(box.size.x * stretch, box.size.y, box.size.z) / 2.0
+		instance.scale.x = stretch
+		instance.position = Vector3(x, middle, z)
+		$Backdrop.add_child(instance)
+		backdrop_pieces.append({
+			"data": piece, "base": base, "top": top,
+			"aabb": AABB(Vector3(x, middle, z) - extent, extent * 2.0),
+		})
+
+
+func _register_prop(prop: Node3D) -> void:
+	prop.finish()
+	var cell := floori(prop.bounds.get_center().x / FADE_CELL)
+	if not _props_by_cell.has(cell):
+		_props_by_cell[cell] = []
+	_props_by_cell[cell].append(prop)
+
+
+## True if `prop` stands between the camera and any sampled height of `traveler`.
+## Orthographic camera: every view ray runs along the camera's own z axis.
+func _covers(prop: Node3D, traveler: Node3D) -> bool:
+	var toward: Vector3 = camera.global_transform.basis.z
+	var box: AABB = prop.bounds.grow(Traveler.RADIUS)
+	for height in FADE_SAMPLE_HEIGHTS:
+		var from: Vector3 = traveler.global_position + Vector3(0.0, height, 0.0)
+		if box.intersects_segment(from, from + toward * FADE_REACH) != null:
+			return true
+	return false
+
+
+## Props covering a traveler fade to fade_opacity over fade_time seconds, and
+## back to solid when they no longer do. Only the props in the x cells around
+## each traveler are checked, and only props not yet solid are updated.
+func update_prop_fade(delta: float) -> void:
+	var covering := {}
+	for traveler in travelers.values():
+		var cell := floori(traveler.global_position.x / FADE_CELL)
+		for neighbour in range(cell - 1, cell + 2):
+			for prop in _props_by_cell.get(neighbour, []):
+				if not covering.has(prop) and _covers(prop, traveler):
+					covering[prop] = true
+	for prop in covering:
+		_fading[prop] = true
+	var step := (1.0 - fade_opacity) / maxf(fade_time, 0.001) * delta
+	for prop in _fading.keys():
+		var covered: bool = covering.has(prop)
+		prop.set_alpha(move_toward(prop.alpha, fade_opacity if covered else 1.0, step))
+		if not covered and prop.alpha >= 1.0:
+			_fading.erase(prop)
 
 
 ## Pushes a prop out of the way of plants, scenery and the travelers' starts,
@@ -350,7 +436,7 @@ func _build_props(props: Dictionary) -> void:
 	for i in count:
 		var spot := Vector2(rng.randf_range(area.position.x, area.end.x), rng.randf_range(area.position.y, area.end.y))
 		spot = _clear_of_keep_out(spot)
-		var prop := Node3D.new()
+		var prop := Prop.new()
 		prop.position = Vector3(spot.x, terrain.height_at(spot.x), spot.y)
 		prop.rotation.y = rng.randf_range(0.0, TAU)
 		# The alpine grassland has no forest: its trees are the 구상나무 scenery.
@@ -388,3 +474,4 @@ func _build_props(props: Dictionary) -> void:
 				crown.position.y = 3.2
 				prop.add_child(crown)
 		$Props.add_child(prop)
+		_register_prop(prop)

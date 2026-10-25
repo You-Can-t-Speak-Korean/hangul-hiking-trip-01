@@ -32,8 +32,14 @@ func _ready() -> void:
 	test_terrain_data()
 	test_zones_data()
 	test_plants_data()
+	test_backdrop_data()
+	test_fade_and_tooltip_data()
+	test_names_and_colors_data()
 	print("== Terrain, plants and hover (scene) ==")
 	await test_terrain_scene()
+	print("== Backdrop and prop fade (scene) ==")
+	test_backdrop_scene()
+	test_prop_fade()
 	print("\n%d passed, %d failed" % [passed, failed])
 	get_tree().quit(0 if failed == 0 else 1)
 
@@ -298,16 +304,18 @@ func test_foraging() -> void:
 
 ## True if every sampled screen point looks at ground or backdrop: no sky
 ## below or beside the ground. A ray must hit the ground (which rises with x)
-## over the ground or backdrop footprint, or hit the ridge slab. The top row
-## may look past the backdrop (sky above the ridge), but not past its sides.
-## Known gap: the backdrop ridge is still hard-coded at height 0, so on the
-## high right side it is buried and the far edge shows sky; the far side is not
-## checked on rows below the top. The left, right and near edges still are.
+## inside the ground footprint (walkable stage + apron), or hit a backdrop box.
+## Only the top row may look past the backdrop (sky above the ridge); its left
+## and right sides must still be over land. The left, right, near and far edges
+## are all checked on every other row.
 func _view_over_land(map: Node3D) -> bool:
 	var size: Vector2 = map.get_viewport().get_visible_rect().size
+	var ground: Rect2 = map.ground_rect.grow(0.01)
 	var land: Rect2 = map.ground_rect.merge(map.backdrop_rect).grow(0.01)
-	var back: Rect2 = map.backdrop_rect
-	var ridge := AABB(Vector3(back.position.x, 0.0, back.position.y), Vector3(back.size.x, map.RIDGE_HEIGHT, back.size.y))
+	var boxes: Array[AABB] = []
+	for piece in map.backdrop_pieces:
+		if piece["data"]["shape"] == "box":
+			boxes.append(piece["aabb"])
 	for i in 5:
 		for j in 5:
 			var point := Vector2(size.x * i / 4.0, size.y * j / 4.0)
@@ -324,8 +332,14 @@ func _view_over_land(map: Node3D) -> bool:
 			if j == 0:
 				if spot.x < land.position.x or spot.x > land.end.x:
 					return false
-			elif not _over_land(land, spot) and ridge.intersects_ray(origin, dir) == null:
-				return false
+			elif not ground.has_point(spot):
+				var behind := false
+				for box in boxes:
+					if box.intersects_ray(origin, dir) != null:
+						behind = true
+						break
+				if not behind:
+					return false
 	return true
 
 
@@ -582,6 +596,8 @@ func test_terrain_scene() -> void:
 	map.update_camera(0.0, true)
 	await get_tree().physics_frame
 	var shown_for := {}
+	var hover_points: Array[Vector2] = []  # one screen point per plant that can be found
+	var hover_plants: Array[Node3D] = []
 	var size: Vector2 = map.get_viewport().get_visible_rect().size
 	for plant in map.plants:
 		var screen: Vector2 = map.camera.unproject_position(plant.global_position + Vector3(0, 0.5, 0))
@@ -591,6 +607,9 @@ func test_terrain_scene() -> void:
 		if found != null:
 			map.update_hover(screen)
 			shown_for[found.plant_name] = [map._tooltip.visible, map._tooltip_label.text]
+			if not hover_plants.has(found):
+				hover_plants.append(found)
+				hover_points.append(screen)
 	check(not shown_for.is_empty(), "plants can be found under the mouse")
 	var tips_ok := true
 	for found_name in shown_for:
@@ -604,16 +623,226 @@ func test_terrain_scene() -> void:
 	# Over nothing: the tooltip that was showing goes away.
 	check(map._tooltip.visible, "a tooltip is showing before the mouse moves off the plant")
 	var empty_found := false
+	var empty_point := Vector2.ZERO
 	for gx in 9:
 		for gy in 9:
 			var point := Vector2(size.x * (gx + 0.5) / 9.0, size.y * (gy + 0.5) / 9.0)
 			if not empty_found and map.plant_at(point) == null:
 				map.update_hover(point)
+				empty_point = point
 				empty_found = true
 	check(empty_found and not map._tooltip.visible, "no tooltip over nothing")
+
+	# Tooltip timing, driven by simulated time (the second argument is the time
+	# since the last call).
+	check(hover_points.size() >= 2, "two plants can be found under the mouse (%d)" % hover_points.size())
+	if hover_points.size() >= 2:
+		var on_plant: Vector2 = hover_points[0]
+		var other_plant: Vector2 = hover_points[1]
+		var tip: PanelContainer = map._tooltip
+		map.update_hover(empty_point, 0.0)
+		map.update_hover(on_plant, 0.0)
+		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "the tooltip shows when the mouse enters a plant")
+		map.update_hover(on_plant, 1.9)
+		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "still solid at 1.9 s")
+		map.update_hover(on_plant, 0.3)
+		check(tip.visible and tip.modulate.a > 0.0 and tip.modulate.a < 1.0, "fading at 2.2 s (%.2f)" % tip.modulate.a)
+		map.update_hover(on_plant, 0.4)
+		check(not tip.visible, "gone at 2.6 s")
+		map.update_hover(on_plant, 5.0)
+		map.update_hover(on_plant, 0.0)
+		check(not tip.visible, "it does not return while the mouse stays on the same plant")
+		map.update_hover(empty_point, 0.1)
+		check(not tip.visible, "leaving the plant hides it")
+		map.update_hover(on_plant, 0.0)
+		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "it shows again after the mouse leaves and re-enters the plant")
+		map.update_hover(on_plant, 2.6)
+		check(not tip.visible, "the re-entered tooltip also fades away")
+		map.update_hover(other_plant, 0.0)
+		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "moving straight onto another plant starts a new tooltip at once")
 	map.free()
 
 
-## True if (x, z) is on the ground footprint, ignoring the far side.
-func _over_land(land: Rect2, spot: Vector2) -> bool:
-	return spot.x >= land.position.x and spot.x <= land.end.x and spot.y <= land.end.y
+func _config() -> Dictionary:
+	return Content.mountain("hallasan")["foraging"]
+
+
+func test_backdrop_data() -> void:
+	var config := _config()
+	var backdrop: Dictionary = config["backdrop"]
+	var pieces: Array = backdrop["pieces"]
+	check(pieces.size() > 0 and float(backdrop["depth"]) > 0.0, "the backdrop is in hallasan.json")
+	var terrain = load("res://scenes/foraging/terrain.gd").new(config["terrain"]["points"])
+	var fields_ok := true
+	var above_ok := true
+	var left := INF
+	var right := -INF
+	for piece in pieces:
+		for field in ["shape", "x", "z", "size", "offset", "color"]:
+			fields_ok = fields_ok and piece.has(field)
+		if not fields_ok:
+			break
+		var x := float(piece["x"])
+		var half := float(piece["size"][0]) * float(piece.get("stretch_x", 1.0)) / (1.0 if piece["shape"] == "cone" else 2.0)
+		var base: float = terrain.height_at(x) + float(piece["offset"])
+		var top: float = base + float(piece["size"][1])
+		above_ok = above_ok and float(piece["offset"]) >= 0.0 and base >= terrain.height_at(x)
+		above_ok = above_ok and top >= terrain.height_at(x - half) and top >= terrain.height_at(x + half)
+		if piece["shape"] == "box":
+			left = minf(left, x - half)
+			right = maxf(right, x + half)
+	check(fields_ok, "every backdrop piece has shape, x, z, size, offset and color")
+	check(above_ok, "every backdrop piece sits above the terrain at its x (and across its width)")
+	var ground_x0 := -float(config["apron"]["sides"])
+	var ground_x1 := float(config["stage"]["width"]) + float(config["apron"]["sides"])
+	check(left <= ground_x0 and right >= ground_x1, "the ridge boxes cover the ground's full width (%.0f to %.0f)" % [left, right])
+
+
+func test_fade_and_tooltip_data() -> void:
+	var config := _config()
+	check(is_equal_approx(float(config["prop_fade"]["opacity"]), 0.25) and is_equal_approx(float(config["prop_fade"]["time"]), 0.2), "prop fade opacity and time are in the data")
+	check(is_equal_approx(float(config["tooltip"]["show_time"]), 2.0) and is_equal_approx(float(config["tooltip"]["fade_time"]), 0.5), "tooltip show and fade times are in the data")
+
+
+func test_names_and_colors_data() -> void:
+	var kinds := _hangul_plants()
+	var banned := ["Chinese", "Japanese", "Indian", "Siberian", "European", "American", "Mongolian", "Russian", "Himalayan"]
+	var names_ok := true
+	for kind in kinds:
+		for field in ["hover_name", "description"]:
+			var text := String(kind.get(field, ""))
+			for word in banned:
+				if text.containsn(word):
+					names_ok = false
+					print("  nationality in %s %s: %s" % [kind["id"], field, text])
+	check(names_ok, "no hover name or plant description names a nationality other than Korean")
+	var by_id := {}
+	for kind in kinds:
+		by_id[kind["id"]] = kind
+	check(by_id["ma"]["hover_name"] == "Korean yam", "마 hovers as Korean yam")
+	check(by_id["butsunnamu"]["hover_name"] == "Korean star anise", "붓순나무 hovers as Korean star anise")
+	# Every plant kind has its own colour; hanging kinds also have their own fruit colour.
+	var seen := {}
+	var distinct := true
+	for kind in kinds:
+		var key := str(kind["color"])
+		if seen.has(key):
+			distinct = false
+			print("  colour shared by %s and %s" % [seen[key], kind["id"]])
+		seen[key] = kind["id"]
+	check(distinct, "no two plant kinds share the same colour")
+	var Plant = load("res://scenes/foraging/plant.gd")
+	var fruits := {}
+	var fruits_distinct := true
+	for kind in kinds:
+		if kind["letter_style"] != "hanging":
+			continue
+		var fruit: Color = Plant.fruit_color(kind)
+		var key := fruit.to_html(false)
+		if fruits.has(key):
+			fruits_distinct = false
+		fruits[key] = kind["id"]
+	check(fruits_distinct, "no two hanging kinds share the same fruit colour")
+	var meoru: Color = Plant.fruit_color(by_id["meoru"])
+	var deulchuk: Color = Plant.fruit_color(by_id["deulchuknamu"])
+	check(meoru.r > meoru.g and meoru.b > meoru.g, "머루 fruit is purple")
+	check(deulchuk.b > deulchuk.r and deulchuk.b > deulchuk.g and maxf(deulchuk.r, maxf(deulchuk.g, deulchuk.b)) < 0.4, "들쭉나무 fruit is blue-black")
+	check(absf(meoru.r - deulchuk.r) + absf(meoru.g - deulchuk.g) + absf(meoru.b - deulchuk.b) > 0.4, "들쭉나무 fruit looks clearly different from 머루")
+
+
+func test_backdrop_scene() -> void:
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	var pieces: Array = _config()["backdrop"]["pieces"]
+	check(map.backdrop_pieces.size() == pieces.size() and map.get_node("Backdrop").get_child_count() == pieces.size(), "one backdrop node per piece in the data (%d)" % pieces.size())
+	var above := true
+	for piece in map.backdrop_pieces:
+		above = above and piece["base"] >= map.terrain.height_at(piece["data"]["x"]) and piece["top"] > piece["base"]
+		above = above and piece["aabb"].end.y >= piece["top"] - 0.001
+	check(above, "every backdrop node sits above the terrain at its x")
+	# Camera at every position along the map: left to right, far wall, middle, near wall.
+	var half_d: float = map.stage_depth / 2.0
+	var failures: Array[String] = []
+	var x := 0.0
+	while x <= map.stage_width + 0.001:
+		for z in [-half_d, 0.0, half_d]:
+			map.player.global_position = _ground_point(map, x, z)
+			map.update_camera(0.0, true)
+			if not _view_over_land(map):
+				failures.append("(%.0f, %.0f)" % [x, z])
+		x += 2.0
+	check(failures.is_empty(), "no sky below the far, near, left or right edge from any camera position %s" % str(failures))
+	map.free()
+
+
+func test_prop_fade() -> void:
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	var config := _config()
+	var opacity := float(config["prop_fade"]["opacity"])
+	check(is_equal_approx(map.fade_opacity, opacity) and is_equal_approx(map.fade_time, float(config["prop_fade"]["time"])), "the map reads the fade values from the data")
+	# A tree in the lower forest, well clear of the stage edges.
+	var tree: Node3D = null
+	for prop in map.get_node("Props").get_children():
+		if prop.get_child_count() == 2 and prop.position.x > 8.0 and prop.position.x < 24.0 and absf(prop.position.z) < 6.0:
+			tree = prop
+			break
+	check(tree != null, "there is a tree to test with")
+	if tree == null:
+		map.free()
+		return
+	var tree_xz := Vector2(tree.position.x, tree.position.z)
+	var away := _ground_point(map, 60.0, 0.0)
+	map.partner.global_position = away
+	map.player.global_position = _ground_point(map, tree_xz.x, tree_xz.y - 2.0)  # behind the tree, seen from the camera
+	map.update_prop_fade(0.0)
+	check(is_equal_approx(tree.alpha, 1.0), "a prop has not started to fade at time 0")
+	map.update_prop_fade(0.1)
+	check(tree.alpha < 1.0 and tree.alpha > opacity, "halfway through the fade the tree is part way (%.2f)" % tree.alpha)
+	map.update_prop_fade(0.1)
+	check(is_equal_approx(tree.alpha, opacity), "a tree covering a traveler drops to the data opacity (%.2f)" % tree.alpha)
+	var meshes := tree.find_children("*", "MeshInstance3D", true, false)
+	var tinted := true
+	for mesh in meshes:
+		tinted = tinted and is_equal_approx(mesh.material_override.albedo_color.a, opacity)
+	check(tinted, "every part of the tree is at that opacity")
+	map.update_prop_fade(1.0)
+	check(is_equal_approx(tree.alpha, opacity), "it stays there while it keeps covering")
+	# The partner is covered too.
+	map.player.global_position = away
+	map.partner.global_position = _ground_point(map, tree_xz.x, tree_xz.y - 2.0)
+	map.update_prop_fade(0.1)
+	check(is_equal_approx(tree.alpha, opacity), "a tree covering the partner fades as well")
+	# Moving out from behind it brings it back.
+	map.partner.global_position = _ground_point(map, tree_xz.x + 8.0, tree_xz.y - 2.0)
+	map.update_prop_fade(0.1)
+	check(tree.alpha > opacity and tree.alpha < 1.0, "it fades back gradually (%.2f)" % tree.alpha)
+	map.update_prop_fade(0.1)
+	check(is_equal_approx(tree.alpha, 1.0), "it is fully solid again once it no longer covers anyone")
+	var solid := true
+	for mesh in meshes:
+		solid = solid and mesh.material_override.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED
+	check(solid, "a solid tree is back in the opaque pass")
+	# A tree in front of the camera's view of nobody: a traveler standing nearer the camera does not fade it.
+	map.player.global_position = _ground_point(map, tree_xz.x, tree_xz.y + 3.0)
+	map.update_prop_fade(0.5)
+	check(is_equal_approx(tree.alpha, 1.0), "a tree behind a traveler does not fade")
+
+	# Plants never fade, even with a traveler right behind one and time passing.
+	var plant: Node3D = map.plants[0]
+	map.player.global_position = _ground_point(map, plant.position.x, plant.position.z - 2.0)
+	for i in 10:
+		map.update_prop_fade(0.1)
+	var plants_solid := true
+	for each in map.plants:
+		for mesh in each.find_children("*", "MeshInstance3D", true, false):
+			plants_solid = plants_solid and mesh.material_override.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED and is_equal_approx(mesh.material_override.albedo_color.a, 1.0)
+		for label in each.find_children("*", "Label3D", true, false):
+			plants_solid = plants_solid and is_equal_approx(label.modulate.a, 1.0)
+	check(plants_solid, "plants and their letter labels never fade")
+	check(not ("alpha" in plant), "a plant is not a fading prop")
+	map.free()

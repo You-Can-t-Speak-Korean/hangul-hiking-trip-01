@@ -21,6 +21,7 @@ var letter_style := ""
 var letters: Array[String] = []
 
 var _color := Color.WHITE
+var _fruit_color := Color.WHITE
 
 
 func setup(data: Dictionary, tiles: Array[String]) -> void:
@@ -33,11 +34,22 @@ func setup(data: Dictionary, tiles: Array[String]) -> void:
 	letters = tiles
 	var c: Array = data["color"]
 	_color = Color(c[0], c[1], c[2])
+	_fruit_color = fruit_color(data)
 	name = "%s_%s" % [kind_id, get_instance_id()]
 	var slots := letters.size() if not letters.is_empty() else DECOY_SLOTS
 	_build_mound()
 	var extent := _build_style(slots)
 	_build_pick_area(extent)
+
+
+## The colour of a hanging plant's fruit: "fruit_color" in the data, else the
+## body colour tinted purple.
+static func fruit_color(data: Dictionary) -> Color:
+	if data.has("fruit_color"):
+		var f: Array = data["fruit_color"]
+		return Color(f[0], f[1], f[2])
+	var c: Array = data["color"]
+	return Color(c[0], c[1], c[2]).lerp(Color(0.45, 0.1, 0.5), 0.6)
 
 
 ## What the hover tooltip says: the real name for a target, "???" for a decoy.
@@ -138,7 +150,7 @@ func _hanging(slot: Vector2, letter: String) -> float:
 	var fruit := SphereMesh.new()
 	fruit.radius = 0.4
 	fruit.height = 0.8
-	_mesh(fruit, _color.lerp(Color(0.45, 0.1, 0.5), 0.6), Vector3(slot.x, fruit_y, 0))
+	_mesh(fruit, _fruit_color, Vector3(slot.x, fruit_y, 0))
 	_label(letter, Vector3(slot.x, fruit_y, 0.45))
 	return branch_y
 
