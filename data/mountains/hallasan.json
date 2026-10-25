@@ -1,0 +1,14 @@
+{
+  "_note": "Hallasan content. Stage coordinates are metres: x runs 0..width left to right, z runs -depth/2 (far, into the scene) .. +depth/2 (near the camera). Start positions are [x, z]. The walkable stage is surrounded by a non-walkable ground apron: 'sides' metres on the left, right and near edges, 'far' metres on the far edge (a backdrop ridge stands beyond it). Props: density per 100 m2 of ground (walkable + apron) and a fixed random seed.",
+  "id": "hallasan",
+  "name": "한라산",
+  "foraging": {
+    "stage": {"width": 64.0, "depth": 24.0},
+    "apron": {"sides": 12.0, "far": 3.0},
+    "props": {"density_per_100m2": 6.25, "seed": 7},
+    "start": {
+      "nestor": [6.0, 1.5],
+      "fernanda": [4.0, -1.5]
+    }
+  }
+}

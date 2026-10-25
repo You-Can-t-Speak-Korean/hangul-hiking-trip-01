@@ -5,3 +5,6 @@ export_presets.cfg
 
 # Exploratory reference code, never committed
 reference/
+
+# Screenshots from tests/capture.tscn
+tests/shots/
