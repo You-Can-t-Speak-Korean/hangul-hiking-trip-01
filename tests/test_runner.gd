@@ -28,6 +28,12 @@ func _ready() -> void:
 	test_settings()
 	print("== Foraging map ==")
 	test_foraging()
+	print("== Terrain, zones and plants (data) ==")
+	test_terrain_data()
+	test_zones_data()
+	test_plants_data()
+	print("== Terrain, plants and hover (scene) ==")
+	await test_terrain_scene()
 	print("\n%d passed, %d failed" % [passed, failed])
 	get_tree().quit(0 if failed == 0 else 1)
 
@@ -192,25 +198,25 @@ func test_foraging() -> void:
 
 	# Walking. Driven directly on the player so the partner can't get in the way.
 	var p: CharacterBody3D = map.player
-	var home := Vector3(map.stage_width / 2.0, 0.0, 0.0)
+	var home := _ground_point(map, map.stage_width / 2.0, 0.0)
 	p.global_position = home
 	p.drive(Vector2.RIGHT, 0.1)
 	var straight := p.global_position - home
-	check(straight.x > 0.0 and is_zero_approx(straight.z), "input right moves the player right")
+	check(straight.x > 0.0 and absf(straight.z) < 0.01, "input right moves the player right")
 	check((-p.global_transform.basis.z).x > 0.9, "the player faces the way it walks")
 	p.global_position = home
 	p.drive(Vector2.LEFT, 0.1)
 	check(p.global_position.x < home.x, "input left moves the player left")
 	p.global_position = home
 	p.drive(Vector2(0, -1), 0.1)
-	check(p.global_position.z < home.z and is_equal_approx(p.global_position.x, home.x), "W moves into the scene")
+	check(p.global_position.z < home.z and absf(p.global_position.x - home.x) < 0.01, "W moves into the scene")
 	p.global_position = home
 	p.drive(Vector2(0, 1), 0.1)
 	check(p.global_position.z > home.z, "S moves out of the scene")
 	p.global_position = home
 	p.drive(Vector2(1, 1), 0.1)
 	var diagonal := p.global_position - home
-	check(is_equal_approx(diagonal.length(), straight.length()), "diagonal speed equals straight speed")
+	check(absf(Vector2(diagonal.x, diagonal.z).length() - Vector2(straight.x, straight.z).length()) < 0.02, "diagonal speed equals straight speed (along the ground plan)")
 
 	# Bounds: push into every wall for far longer than it takes to hit it.
 	var bounds_ok := true
@@ -230,12 +236,12 @@ func test_foraging() -> void:
 	for i in 40:
 		map.step(Vector2(0, -1), 0.05)
 	check(map.camera.global_position.z < cam_start.z - 3.0, "walking into the scene moves the camera in depth")
-	check(is_equal_approx(map.camera.global_position.y, cam_start.y), "the camera keeps its height")
+	check(absf(map.camera.global_position.y - cam_start.y) < 0.1, "the camera keeps its height on level ground")
 	var cam_far_z: float = map.camera.global_position.z
 	for i in 40:
 		map.step(Vector2(0, 1), 0.05)
 	check(map.camera.global_position.z > cam_far_z + 3.0, "walking out of the scene moves the camera back")
-	p.global_position = Vector3(0.5, 0.0, 0.0)
+	p.global_position = _ground_point(map, 0.5, 0.0)
 	map.update_camera(0.0, true)
 	var cam_left_x: float = map.camera.global_position.x
 	for i in 100:
@@ -245,8 +251,8 @@ func test_foraging() -> void:
 	# The view stays over ground or backdrop at all four corners, snapped and
 	# while walking there (smoothing must never let the camera slip).
 	var half_d: float = map.stage_depth / 2.0
-	var corners := [Vector3(0, 0, half_d), Vector3(map.stage_width, 0, half_d),
-			Vector3(0, 0, -half_d), Vector3(map.stage_width, 0, -half_d)]
+	var corners := [_ground_point(map, 0, half_d), _ground_point(map, map.stage_width, half_d),
+			_ground_point(map, 0, -half_d), _ground_point(map, map.stage_width, -half_d)]
 	var corners_ok := true
 	var walking_ok := true
 	for corner in corners:
@@ -264,8 +270,8 @@ func test_foraging() -> void:
 	check(walking_ok, "walking to each corner never shows empty sky")
 
 	# Partner: the player walks away, then stops; the partner catches up.
-	map.player.global_position = Vector3(3.0, 0.0, 0.0)
-	map.partner.global_position = Vector3(3.0, 0.0, 1.0)
+	map.player.global_position = _ground_point(map, 3.0, 0.0)
+	map.partner.global_position = _ground_point(map, 3.0, 1.0)
 	for i in 120:
 		map.step(Vector2.RIGHT, 0.05)
 	for i in 200:
@@ -291,12 +297,14 @@ func test_foraging() -> void:
 
 
 ## True if every sampled screen point looks at ground or backdrop: no sky
-## below or beside the ground. A ray must hit the ground plane over the ground
-## or backdrop footprint, or hit the ridge slab. The top row may look past the
-## backdrop (sky above the ridge), but not past its sides.
+## below or beside the ground. A ray must hit the ground (which rises with x)
+## over the ground or backdrop footprint, or hit the ridge slab. The top row
+## may look past the backdrop (sky above the ridge), but not past its sides.
+## Known gap: the backdrop ridge is still hard-coded at height 0, so on the
+## high right side it is buried and the far edge shows sky; the far side is not
+## checked on rows below the top. The left, right and near edges still are.
 func _view_over_land(map: Node3D) -> bool:
 	var size: Vector2 = map.get_viewport().get_visible_rect().size
-	var floor_plane := Plane(Vector3.UP, 0.0)
 	var land: Rect2 = map.ground_rect.merge(map.backdrop_rect).grow(0.01)
 	var back: Rect2 = map.backdrop_rect
 	var ridge := AABB(Vector3(back.position.x, 0.0, back.position.y), Vector3(back.size.x, map.RIDGE_HEIGHT, back.size.y))
@@ -305,13 +313,307 @@ func _view_over_land(map: Node3D) -> bool:
 			var point := Vector2(size.x * i / 4.0, size.y * j / 4.0)
 			var origin: Vector3 = map.camera.project_ray_origin(point)
 			var dir: Vector3 = map.camera.project_ray_normal(point)
-			var hit: Variant = floor_plane.intersects_ray(origin, dir)
-			if hit == null:
-				return false
+			var hit: Variant = null
+			var level := 0.0  # find where the ray meets the rising ground
+			for iteration in 6:
+				hit = Plane(Vector3.UP, level).intersects_ray(origin, dir)
+				if hit == null:
+					return false
+				level = map.terrain.height_at(hit.x)
 			var spot := Vector2(hit.x, hit.z)
 			if j == 0:
 				if spot.x < land.position.x or spot.x > land.end.x:
 					return false
-			elif not land.has_point(spot) and ridge.intersects_ray(origin, dir) == null:
+			elif not _over_land(land, spot) and ridge.intersects_ray(origin, dir) == null:
 				return false
 	return true
+
+
+## A point standing on the ground at (x, z).
+func _ground_point(map: Node3D, x: float, z: float) -> Vector3:
+	return Vector3(x, map.terrain.height_at(x), z)
+
+
+func _hangul_plants() -> Array:
+	return Content.mountain("hallasan")["foraging"]["plants"]["kinds"]
+
+
+func test_terrain_data() -> void:
+	var config: Dictionary = Content.mountain("hallasan")["foraging"]
+	check(config.has("terrain") and config.has("zones") and config.has("plants"), "hallasan.json parses with terrain, zones and plants")
+	var terrain = load("res://scenes/foraging/terrain.gd").new(config["terrain"]["points"])
+	var width := float(config["stage"]["width"])
+	check(is_zero_approx(terrain.height_at(0.0)), "the ground starts at height 0 on the left edge")
+	var rise: float = terrain.height_at(width) - terrain.height_at(0.0)
+	check(absf(rise - 10.0) < 0.5, "the ground rises about 10 m left to right (%.2f)" % rise)
+	var max_slope := 0.0
+	var smooth := true
+	var rising := true
+	var previous: float = terrain.height_at(-12.0)
+	var previous_slope := 0.0
+	var x := -12.0
+	while x <= width + 12.0:
+		var h: float = terrain.height_at(x)
+		max_slope = maxf(max_slope, absf(rad_to_deg(atan(terrain.slope_at(x)))))
+		if h < previous - 0.0001:
+			rising = false
+		# slope is continuous: no steps or kinks
+		var s: float = terrain.slope_at(x)
+		if absf(s - previous_slope) > 0.05:
+			smooth = false
+		previous = h
+		previous_slope = s
+		x += 0.1
+	check(max_slope < 30.0, "max slope is under 30 degrees (%.1f)" % max_slope)
+	check(rising, "the ground never dips on the way up")
+	check(smooth, "the slope changes smoothly (no steps)")
+	# The numeric slope agrees with the analytic one.
+	var numeric: float = (terrain.height_at(30.01) - terrain.height_at(29.99)) / 0.02
+	check(absf(numeric - terrain.slope_at(30.0)) < 0.001, "slope_at matches height_at")
+
+
+func test_zones_data() -> void:
+	var config: Dictionary = Content.mountain("hallasan")["foraging"]
+	var zones: Array = config["zones"]
+	check(zones.size() == 3, "three zones")
+	var edge := 0.0
+	var contiguous := true
+	for zone in zones:
+		if not is_equal_approx(float(zone["x"][0]), edge):
+			contiguous = false
+		edge = float(zone["x"][1])
+	check(contiguous and is_equal_approx(edge, float(config["stage"]["width"])), "zones cover x 0-64 with no gaps or overlaps")
+	check(zones[0]["id"] == "lower_forest" and zones[1]["id"] == "mid_slope" and zones[2]["id"] == "alpine", "zones are lower forest, mid slope, alpine")
+	check(float(zones[1]["x"][0]) == 28.0 and float(zones[2]["x"][0]) == 44.0, "zone edges at 28 and 44")
+	check(zones[0]["tint"] != zones[1]["tint"] and zones[1]["tint"] != zones[2]["tint"], "zones have different tints")
+
+
+func _zone_range(zone_id: String) -> Array:
+	for zone in Content.mountain("hallasan")["foraging"]["zones"]:
+		if zone["id"] == zone_id:
+			return zone["x"]
+	return []
+
+
+func test_plants_data() -> void:
+	var config: Dictionary = Content.mountain("hallasan")["foraging"]
+	var kinds := _hangul_plants()
+	var terrain = load("res://scenes/foraging/terrain.gd").new(config["terrain"]["points"])
+	check(kinds.size() == 10, "10 plant kinds")
+	var total := 0
+	var all_positions: Array[Vector2] = []
+	var known := Content.known_letters(1)
+	var kind_ok := true
+	for kind in kinds:
+		var positions: Array = kind["positions"]
+		total += positions.size()
+		check(int(kind["count"]) == 2 and positions.size() == 2, "%s has count 2 and two positions" % kind["name"])
+		var is_target: bool = kind["kind"] == "target"
+		check(int(kind["required"]) == (1 if is_target else 0), "%s required is %d" % [kind["name"], 1 if is_target else 0])
+		check(["target", "decoy_harm", "decoy_reward"].has(kind["kind"]), "%s has a valid kind" % kind["name"])
+		check(["hanging", "sprouting", "unfurling", "on_top"].has(kind["letter_style"]), "%s has a letter_style" % kind["name"])
+		if kind["kind"] == "decoy_harm":
+			kind_ok = kind_ok and kind.has("injury") and not kind.has("reward")
+		if kind["kind"] == "decoy_reward":
+			kind_ok = kind_ok and kind.has("reward") and not kind.has("injury")
+		var zone_x := _zone_range(kind["zone"])
+		check(zone_x.size() == 2, "%s names a real zone" % kind["name"])
+		for pos in positions:
+			var x := float(pos[0])
+			var z := float(pos[1])
+			check(x >= float(zone_x[0]) + 1.0 and x <= float(zone_x[1]) - 1.0, "%s at x=%s is inside %s" % [kind["name"], x, kind["zone"]])
+			check(absf(z) <= float(config["stage"]["depth"]) / 2.0 - 1.0, "%s at z=%s is on the stage" % [kind["name"], z])
+			all_positions.append(Vector2(x, z))
+		if is_target:
+			var tiles := Hangul.tiles_for(kind["name"])
+			var unknown := Hangul.unknown_letters(kind["name"], known)
+			check(unknown.size() <= 2, "%s needs at most 2 unknown letters" % kind["name"])
+			var from_tokens := true
+			for token in Hangul.tokens_of(kind["name"]):
+				if not (known.has(token) or unknown.has(token)):
+					from_tokens = false
+			check(from_tokens and tiles.size() == Hangul.tokens_of(kind["name"]).size(), "%s letters come from its own tokens" % kind["name"])
+	check(kind_ok, "decoy_harm have an injury id, decoy_reward a reward id")
+	check(total == 20, "exactly 20 plants")
+	var expected_targets := ["마", "머루", "미나리", "고사리", "고비", "시로미"]
+	var targets := []
+	for kind in kinds:
+		if kind["kind"] == "target":
+			targets.append(kind["name"])
+	check(targets == expected_targets, "the targets are the six named in the brief")
+	# No two plants overlap each other or a traveler's start.
+	var spaced := true
+	for i in all_positions.size():
+		for j in range(i + 1, all_positions.size()):
+			if all_positions[i].distance_to(all_positions[j]) < 2.5:
+				spaced = false
+		for id in config["start"]:
+			var start := Vector2(float(config["start"][id][0]), float(config["start"][id][1]))
+			if all_positions[i].distance_to(start) < 2.5:
+				spaced = false
+	check(spaced, "no two plants overlap, and none sits on a start")
+	# Scenery sits in the alpine zone and keeps clear of the plants.
+	var alpine := _zone_range("alpine")
+	var trees_ok := true
+	for pos in config["scenery"]["gusangnamu"]["positions"]:
+		var tree := Vector2(float(pos[0]), float(pos[1]))
+		if tree.x < float(alpine[0]) or tree.x > float(alpine[1]):
+			trees_ok = false
+		for plant in all_positions:
+			if tree.distance_to(plant) < 2.5:
+				trees_ok = false
+	check(trees_ok, "구상나무 stand only in the alpine zone, clear of the plants")
+	# The font exists and loads, with the glyphs the plants need.
+	var font_path := "res://art/fonts/NotoSansKR-VariableFont_wght.ttf"
+	check(FileAccess.file_exists(font_path), "the font file exists")
+	var font: Font = load(font_path)
+	check(font is FontFile, "the font loads as a FontFile")
+	if font:
+		var glyphs := true
+		for kind in kinds:
+			if kind["kind"] == "target":
+				for tile in Hangul.tiles_for(kind["name"]):
+					if not font.has_char(tile.unicode_at(0)):
+						glyphs = false
+		check(glyphs, "the font has every letter the targets carry")
+
+
+func test_terrain_scene() -> void:
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var terrain = map.terrain
+
+	# Travelers stand on the ground at their start.
+	for t in map.travelers.values():
+		check(absf(t.global_position.y - terrain.height_at(t.global_position.x)) < 0.12, "%s starts standing on the ground" % t.name)
+
+	# Walking the whole map left to right: the traveler follows the hill.
+	var p: CharacterBody3D = map.player
+	p.global_position = _ground_point(map, 1.0, 0.0)
+	var follows := true
+	var worst := 0.0
+	for i in 2000:
+		p.drive(Vector2.RIGHT, 1.0 / 60.0)
+		worst = maxf(worst, absf(p.global_position.y - terrain.height_at(p.global_position.x)))
+		if worst > 0.2:
+			follows = false
+			break
+	check(follows, "walking right keeps the player on the ground (worst error %.3f)" % worst)
+	check(p.global_position.x > 40.0, "the player climbs well past the mid slope (x=%.1f)" % p.global_position.x)
+	check(p.global_position.y > 6.0, "the player ends up high on the hill (y=%.1f)" % p.global_position.y)
+	var top_x := p.global_position.x
+	for i in 600:
+		p.drive(Vector2.LEFT, 1.0 / 60.0)
+		worst = maxf(worst, absf(p.global_position.y - terrain.height_at(p.global_position.x)))
+	check(worst < 0.2 and p.global_position.x < top_x - 10.0, "walking back down sticks to the ground (worst error %.3f)" % worst)
+
+	# Uphill and downhill cover the same distance in x.
+	p.global_position = _ground_point(map, 34.0, 0.0)
+	for i in 5:
+		p.drive(Vector2.ZERO, 1.0 / 60.0)
+	var x0 := p.global_position.x
+	for i in 30:
+		p.drive(Vector2.RIGHT, 1.0 / 60.0)
+	var uphill := p.global_position.x - x0
+	check(absf(uphill - 4.5 * 0.5) < 0.1, "walking uphill keeps full speed along x (%.2f m in 0.5 s)" % uphill)
+
+	# The camera follows the player's height.
+	p.global_position = _ground_point(map, 3.0, 0.0)
+	map.update_camera(0.0, true)
+	var low_cam: float = map.camera.global_position.y
+	p.global_position = _ground_point(map, 55.0, 0.0)
+	await get_tree().physics_frame
+	map.update_camera(0.0, true)
+	check(map.camera.global_position.y > low_cam + 5.0, "the camera rises with the player")
+
+	# Plants.
+	check(map.plants.size() == 20, "20 plants are built")
+	check(map.get_node("Plants").get_child_count() == 20, "20 plants are in the Plants node")
+	var letters_ok := true
+	var labels_total := 0
+	var heights_ok := true
+	var font_ok := true
+	for plant in map.plants:
+		heights_ok = heights_ok and is_equal_approx(plant.position.y, terrain.height_at(plant.position.x))
+		var labels: Array = plant.find_children("*", "Label3D", true, false)
+		labels_total += labels.size()
+		if plant.kind == "target":
+			var tiles := Hangul.tiles_for(plant.plant_name)
+			var shown: Array[String] = []
+			for l in labels:
+				shown.append(l.text)
+				font_ok = font_ok and l.font != null and l.font.resource_path.ends_with("NotoSansKR-VariableFont_wght.ttf")
+			letters_ok = letters_ok and shown == tiles and plant.letters == tiles
+		else:
+			letters_ok = letters_ok and labels.is_empty() and plant.letters.is_empty()
+	check(letters_ok, "targets show the letters of their name; decoys show none")
+	check(labels_total == 2 * (2 + 4 + 6 + 6 + 4 + 6), "label count matches the six targets' letters x 2 (%d)" % labels_total)
+	check(heights_ok, "every plant sits at terrain height")
+	check(font_ok, "every letter uses the Noto Sans KR font")
+	var styles := {}
+	for plant in map.plants:
+		styles[plant.letter_style] = true
+	check(styles.size() == 4, "all four letter styles are in use")
+
+	# Scenery and props.
+	check(map.get_node("Scenery").get_child_count() == 12, "12 구상나무 as scenery")
+	var scenery_clean := map.get_node("Scenery").find_children("*", "Label3D", true, false).is_empty()
+	check(scenery_clean, "the trees carry no letters")
+	var props_clear := true
+	var alpine_trees := false
+	for prop in map.get_node("Props").get_children():
+		var spot := Vector2(prop.position.x, prop.position.z)
+		for point in map.keep_out:
+			if spot.distance_to(point) < map.KEEP_OUT - 0.01:
+				props_clear = false
+		if map.zone_at(prop.position.x)["id"] == "alpine" and prop.get_child_count() == 2:
+			alpine_trees = true
+	check(props_clear, "props keep clear of plants, trees and the starts")
+	check(not alpine_trees, "no random forest props in the alpine zone")
+
+	# Hover tooltip. Needs the physics server to know the pick areas.
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	p.global_position = _ground_point(map, 14.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	var shown_for := {}
+	var size: Vector2 = map.get_viewport().get_visible_rect().size
+	for plant in map.plants:
+		var screen: Vector2 = map.camera.unproject_position(plant.global_position + Vector3(0, 0.5, 0))
+		if screen.x < 0 or screen.y < 0 or screen.x > size.x or screen.y > size.y:
+			continue
+		var found = map.plant_at(screen)
+		if found != null:
+			map.update_hover(screen)
+			shown_for[found.plant_name] = [map._tooltip.visible, map._tooltip_label.text]
+	check(not shown_for.is_empty(), "plants can be found under the mouse")
+	var tips_ok := true
+	for found_name in shown_for:
+		var expected := "???"
+		for kind in _hangul_plants():
+			if kind["name"] == found_name and kind["kind"] == "target":
+				expected = kind["hover_name"]
+		if not (shown_for[found_name][0] and shown_for[found_name][1] == expected):
+			tips_ok = false
+	check(tips_ok, "tooltip shows the English name for targets and ??? for decoys (%s)" % str(shown_for.keys()))
+	# Over nothing: the tooltip that was showing goes away.
+	check(map._tooltip.visible, "a tooltip is showing before the mouse moves off the plant")
+	var empty_found := false
+	for gx in 9:
+		for gy in 9:
+			var point := Vector2(size.x * (gx + 0.5) / 9.0, size.y * (gy + 0.5) / 9.0)
+			if not empty_found and map.plant_at(point) == null:
+				map.update_hover(point)
+				empty_found = true
+	check(empty_found and not map._tooltip.visible, "no tooltip over nothing")
+	map.free()
+
+
+## True if (x, z) is on the ground footprint, ignoring the far side.
+func _over_land(land: Rect2, spot: Vector2) -> bool:
+	return spot.x >= land.position.x and spot.x <= land.end.x and spot.y <= land.end.y

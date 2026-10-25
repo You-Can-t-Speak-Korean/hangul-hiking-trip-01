@@ -31,4 +31,8 @@ current = true
 
 [node name="Props" type="Node3D" parent="."]
 
+[node name="Plants" type="Node3D" parent="."]
+
+[node name="Scenery" type="Node3D" parent="."]
+
 [node name="Travelers" type="Node3D" parent="."]

@@ -4,10 +4,16 @@ extends CharacterBody3D
 
 const HEIGHT := 1.7
 const RADIUS := 0.35
+const GRAVITY := 20.0
+const FLOOR_SNAP := 0.3          # stays glued to the ground going downhill
+const FLOOR_MAX_ANGLE := 35.0    # steeper than this is a wall, not floor
 
 var speed: float = 4.5
 ## Where the origin may stand, as a Rect2 over (x, z).
 var bounds := Rect2()
+var on_floor := false
+var _floor_normal := Vector3.UP
+var _fall_speed := 0.0
 
 
 static func gray_mesh(mesh: Mesh, color: Color) -> MeshInstance3D:
@@ -49,8 +55,9 @@ func setup(display_name: String, color: Color) -> void:
 func drive(input: Vector2, delta: float) -> void:
 	var dir := input.limit_length(1.0)
 	if dir.is_zero_approx():
+		_settle(delta)
 		return
-	_move(Vector3(dir.x, 0.0, dir.y) * speed * delta)
+	_move(Vector3(dir.x, 0.0, dir.y) * speed * delta, delta)
 	_face(dir)
 
 
@@ -60,20 +67,43 @@ func follow(target: Vector3, stop_distance: float, delta: float) -> void:
 	to.y = 0.0
 	var distance := to.length()
 	if distance <= stop_distance:
+		_settle(delta)
 		return
 	var dir := to / distance
-	_move(dir * minf(speed * delta, distance - stop_distance))
+	_move(dir * minf(speed * delta, distance - stop_distance), delta)
 	_face(Vector2(dir.x, dir.z))
 
 
-func _move(motion: Vector3) -> void:
-	var hit := move_and_collide(motion)
+## `motion` is the horizontal step. On a slope it is tilted along the ground,
+## so uphill and downhill cover the same distance along x and z.
+func _move(motion: Vector3, delta: float) -> void:
+	var step := motion
+	if on_floor:
+		step.y = -(_floor_normal.x * motion.x + _floor_normal.z * motion.z) / _floor_normal.y
+	var hit := move_and_collide(step)
 	if hit:
 		move_and_collide(hit.get_remainder().slide(hit.get_normal()))
 	var p := global_position
 	p.x = clampf(p.x, bounds.position.x, bounds.end.x)
 	p.z = clampf(p.z, bounds.position.y, bounds.end.y)
 	global_position = p
+	_settle(delta)
+
+
+## Gravity and floor snapping, once per tick whether or not the traveler walked.
+func _settle(delta: float) -> void:
+	var min_up := cos(deg_to_rad(FLOOR_MAX_ANGLE))
+	var hit: KinematicCollision3D
+	if on_floor:
+		_fall_speed = 0.0
+		hit = move_and_collide(Vector3(0.0, -FLOOR_SNAP, 0.0))
+	else:
+		_fall_speed += GRAVITY * delta
+		hit = move_and_collide(Vector3(0.0, -_fall_speed * delta, 0.0))
+	on_floor = hit != null and hit.get_normal().y >= min_up
+	if on_floor:
+		_floor_normal = hit.get_normal()
+		_fall_speed = 0.0
 
 
 func _face(dir: Vector2) -> void:

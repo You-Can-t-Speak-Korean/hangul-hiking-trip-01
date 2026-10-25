@@ -6,9 +6,151 @@
     "stage": {"width": 64.0, "depth": 24.0},
     "apron": {"sides": 12.0, "far": 3.0},
     "props": {"density_per_100m2": 6.25, "seed": 7},
-    "start": {
-      "nestor": [6.0, 1.5],
-      "fernanda": [4.0, -1.5]
+    "start": {"nestor": [6.0, 1.5], "fernanda": [4.0, -1.5]},
+    "terrain": {
+      "_note": "Ground height in metres as a function of x: [x, height] points joined by a smooth monotone curve, flat beyond the first and last point. The ground is flat across z. Max slope must stay under 30 degrees.",
+      "points": [[0, 0.0], [10, 0.9], [20, 2.2], [28, 3.4], [36, 5.2], [44, 7.0], [52, 8.6], [60, 9.7], [64, 10.0]]
+    },
+    "zones": [
+      {"id": "lower_forest", "name": "Lower forest", "x": [0, 28], "tint": [0.16, 0.3, 0.17]},
+      {"id": "mid_slope", "name": "Mid slope", "x": [28, 44], "tint": [0.36, 0.33, 0.19]},
+      {"id": "alpine", "name": "Alpine grassland", "x": [44, 64], "tint": [0.55, 0.55, 0.3]}
+    ],
+    "plants": {
+      "_note": "10 kinds x 2 plants. Positions are [x, z] (y comes from the terrain). kind: target (carries the letters of its name) | decoy_harm (injury) | decoy_reward (reward). Decoys look like their letter_style but carry no letters. Injury and reward ids are placeholders.",
+      "kinds": [
+        {
+          "id": "ma",
+          "name": "마",
+          "hover_name": "Chinese yam",
+          "kind": "target",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 1,
+          "letter_style": "sprouting",
+          "color": [0.3, 0.55, 0.25],
+          "positions": [[9, -4], [22, 5]]
+        },
+        {
+          "id": "meoru",
+          "name": "머루",
+          "hover_name": "wild grape",
+          "kind": "target",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 1,
+          "letter_style": "hanging",
+          "color": [0.22, 0.4, 0.22],
+          "positions": [[12, 2.5], [25, -7]]
+        },
+        {
+          "id": "minari",
+          "name": "미나리",
+          "hover_name": "water dropwort",
+          "kind": "target",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 1,
+          "letter_style": "on_top",
+          "color": [0.35, 0.62, 0.3],
+          "positions": [[15, -6], [3, 8]]
+        },
+        {
+          "id": "gosari",
+          "name": "고사리",
+          "hover_name": "bracken fern",
+          "kind": "target",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 1,
+          "letter_style": "unfurling",
+          "color": [0.26, 0.5, 0.2],
+          "positions": [[11, -8.5], [19, 7]]
+        },
+        {
+          "id": "gobi",
+          "name": "고비",
+          "hover_name": "royal fern",
+          "kind": "target",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 1,
+          "letter_style": "unfurling",
+          "color": [0.4, 0.52, 0.22],
+          "positions": [[17, 0], [7, -8]]
+        },
+        {
+          "id": "keuncheonnamseong",
+          "name": "큰천남성",
+          "hover_name": "jack-in-the-pulpit",
+          "kind": "decoy_harm",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 0,
+          "letter_style": "sprouting",
+          "color": [0.35, 0.28, 0.38],
+          "injury": "poison_swell",
+          "positions": [[14, 5], [24, 0]]
+        },
+        {
+          "id": "butsunnamu",
+          "name": "붓순나무",
+          "hover_name": "Japanese star anise",
+          "kind": "decoy_harm",
+          "zone": "lower_forest",
+          "count": 2,
+          "required": 0,
+          "letter_style": "hanging",
+          "color": [0.18, 0.36, 0.24],
+          "injury": "poison_burst",
+          "positions": [[20, -3.5], [5.5, 5.5]]
+        },
+        {
+          "id": "norugui",
+          "name": "노루귀",
+          "hover_name": "hepatica",
+          "kind": "decoy_reward",
+          "zone": "mid_slope",
+          "count": 2,
+          "required": 0,
+          "letter_style": "sprouting",
+          "color": [0.5, 0.58, 0.45],
+          "reward": "slow_time",
+          "positions": [[33, -3], [40, 4]]
+        },
+        {
+          "id": "simiro",
+          "name": "시로미",
+          "hover_name": "crowberry",
+          "kind": "target",
+          "zone": "alpine",
+          "count": 2,
+          "required": 1,
+          "letter_style": "on_top",
+          "color": [0.2, 0.3, 0.3],
+          "positions": [[50, -4], [58, 5]]
+        },
+        {
+          "id": "deulchuknamu",
+          "name": "들쭉나무",
+          "hover_name": "bog bilberry",
+          "kind": "decoy_reward",
+          "zone": "alpine",
+          "count": 2,
+          "required": 0,
+          "letter_style": "hanging",
+          "color": [0.3, 0.32, 0.42],
+          "reward": "spelling_hint",
+          "positions": [[54, -7], [47, 4]]
+        }
+      ]
+    },
+    "scenery": {
+      "_note": "Scenery with no letters and nothing to forage. Positions are [x, z].",
+      "gusangnamu": {
+        "zone": "alpine",
+        "positions": [[46, -9], [49, 8], [52, 0], [56, -2], [61, -9], [62, 1], [60, 9], [55, 9], [48, -1], [45, -5], [52, -10], [63, -4]]
+      }
     }
   }
 }

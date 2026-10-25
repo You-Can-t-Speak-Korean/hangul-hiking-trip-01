@@ -1,6 +1,7 @@
 extends Node
 ## Needs a display (not headless). Walks the player around the foraging map
-## and saves tests/shots/{start,left_near,right_far,middle}.png.
+## and saves tests/shots/{start,left_near,right_far,middle}.png, plus the
+## terrain shots {zone_lower_forest,zone_mid_slope,zone_alpine,hover}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -15,6 +16,7 @@ func _ready() -> void:
 	var half_depth: float = map.stage_depth / 2.0
 	await _frames(5)
 	_save("start")
+	_save("zone_lower_forest")
 	await _walk_to(map, Vector3(0.0, 0.0, half_depth))
 	await _frames(90)
 	_save("left_near")
@@ -24,6 +26,22 @@ func _ready() -> void:
 	await _walk_to(map, Vector3(map.stage_width / 2.0, 0.0, 0.0))
 	await _frames(90)
 	_save("middle")
+	await _walk_to(map, Vector3(36.0, 0.0, 0.0))
+	await _frames(90)
+	_save("zone_mid_slope")
+	await _walk_to(map, Vector3(54.0, 0.0, 0.0))
+	await _frames(90)
+	_save("zone_alpine")
+	# Hover: the tooltip over the nearest plant in view.
+	var best: Node3D = null
+	for plant in map.plants:
+		var screen: Vector2 = map.camera.unproject_position(plant.global_position + Vector3(0, 0.5, 0))
+		if get_viewport().get_visible_rect().has_point(screen) and (best == null or plant.global_position.distance_to(map.player.global_position) < best.global_position.distance_to(map.player.global_position)):
+			best = plant
+	if best:
+		map.update_hover(map.camera.unproject_position(best.global_position + Vector3(0, 0.5, 0)))
+		await _frames(3)
+		_save("hover")
 	get_tree().quit()
 
 
