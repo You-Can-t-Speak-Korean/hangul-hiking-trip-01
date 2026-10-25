@@ -20,6 +20,7 @@ const FADE_SAMPLE_HEIGHTS := [0.3, 0.85, 1.5]  # feet, waist and head of a trave
 
 const GROUND_STEP := 1.0        # metres between ground mesh vertices along x
 const KEEP_OUT := 1.8           # props are pushed this far from plants, trees and starts
+const NUDGE_PASSES := 12         # a pushed prop can land near another point, so repeat
 const TOOLTIP_OFFSET := Vector2(16.0, 18.0)
 
 const NESTOR_COLOR := Color(0.36, 0.45, 0.65)    # slate blue
@@ -86,7 +87,7 @@ func _ready() -> void:
 	zones = config["zones"]
 	for id in GameState.TRAVELERS:
 		keep_out.append(Vector2(float(config["start"][id][0]), float(config["start"][id][1])))
-	_build_plants(config["plants"]["kinds"])
+	_build_plants(config["plants"])
 	_build_scenery(config["scenery"])
 	_build_ground()
 	_build_backdrop(config["backdrop"]["pieces"])
@@ -235,20 +236,21 @@ func _build_ground() -> void:
 	$Ground.add_child(body)
 
 
-## The 20 plants: positions come from the data, height from the terrain.
-## Targets carry the letters of their own name.
-func _build_plants(kinds: Array) -> void:
-	for kind in kinds:
-		var tiles: Array[String] = []
-		if kind["kind"] == "target":
-			tiles = Hangul.tiles_for(kind["name"])
-		for pos in kind["positions"]:
-			var plant := Plant.new()
-			plant.setup(kind, tiles)
-			plant.position = Vector3(float(pos[0]), terrain.height_at(float(pos[0])), float(pos[1]))
-			$Plants.add_child(plant)
-			plants.append(plant)
-			keep_out.append(Vector2(float(pos[0]), float(pos[1])))
+## The plants: each entry of "placed" is one plant at a fixed position (height
+## from the terrain). A target carries one letter of its name, a decoy none.
+func _build_plants(plants_data: Dictionary) -> void:
+	var kinds := {}
+	for kind in plants_data["kinds"]:
+		kinds[kind["id"]] = kind
+	for entry in plants_data["placed"]:
+		var plant := Plant.new()
+		plant.setup(kinds[entry["kind"]], String(entry.get("letter", "")))
+		var x := float(entry["x"])
+		var z := float(entry["z"])
+		plant.position = Vector3(x, terrain.height_at(x), z)
+		$Plants.add_child(plant)
+		plants.append(plant)
+		keep_out.append(Vector2(x, z))
 
 
 ## 구상나무 (Korean fir): scenery only, no letters, nothing to forage.
@@ -418,7 +420,7 @@ func update_prop_fade(delta: float) -> void:
 ## Pushes a prop out of the way of plants, scenery and the travelers' starts,
 ## so the count (and every random draw) stays the same.
 func _clear_of_keep_out(spot: Vector2) -> Vector2:
-	for pass_index in 2:
+	for pass_index in NUDGE_PASSES:
 		for point in keep_out:
 			var away := spot - point
 			if away.length() < KEEP_OUT:

@@ -409,63 +409,160 @@ func _zone_range(zone_id: String) -> Array:
 	return []
 
 
+func _placed() -> Array:
+	return Content.mountain("hallasan")["foraging"]["plants"]["placed"]
+
+
+## How many plants each kind must have: one per letter token of a target's
+## name (repeats count), 2 per decoy.
+func _expected_counts() -> Dictionary:
+	var counts := {}
+	for kind in _hangul_plants():
+		counts[kind["id"]] = Hangul.tiles_for(kind["name"]).size() if kind["kind"] == "target" else 2
+	return counts
+
+
+## The letters of the given placed entries, left to right.
+func _x_order(entries: Array) -> Array:
+	var sorted := entries.duplicate()
+	sorted.sort_custom(func(a, b): return float(a["x"]) < float(b["x"]))
+	return sorted.map(func(e): return e["letter"])
+
+
 func test_plants_data() -> void:
 	var config: Dictionary = Content.mountain("hallasan")["foraging"]
 	var kinds := _hangul_plants()
-	var terrain = load("res://scenes/foraging/terrain.gd").new(config["terrain"]["points"])
+	var placed := _placed()
 	check(kinds.size() == 10, "10 plant kinds")
-	var total := 0
-	var all_positions: Array[Vector2] = []
 	var known := Content.known_letters(1)
 	var kind_ok := true
+	var by_id := {}
 	for kind in kinds:
-		var positions: Array = kind["positions"]
-		total += positions.size()
-		check(int(kind["count"]) == 2 and positions.size() == 2, "%s has count 2 and two positions" % kind["name"])
-		var is_target: bool = kind["kind"] == "target"
-		check(int(kind["required"]) == (1 if is_target else 0), "%s required is %d" % [kind["name"], 1 if is_target else 0])
+		by_id[kind["id"]] = kind
+		check(not kind.has("count") and not kind.has("required") and not kind.has("positions"), "%s has no count/required/positions (plants are in 'placed')" % kind["name"])
 		check(["target", "decoy_harm", "decoy_reward"].has(kind["kind"]), "%s has a valid kind" % kind["name"])
 		check(["hanging", "sprouting", "unfurling", "on_top"].has(kind["letter_style"]), "%s has a letter_style" % kind["name"])
 		if kind["kind"] == "decoy_harm":
 			kind_ok = kind_ok and kind.has("injury") and not kind.has("reward")
 		if kind["kind"] == "decoy_reward":
 			kind_ok = kind_ok and kind.has("reward") and not kind.has("injury")
-		var zone_x := _zone_range(kind["zone"])
-		check(zone_x.size() == 2, "%s names a real zone" % kind["name"])
-		for pos in positions:
-			var x := float(pos[0])
-			var z := float(pos[1])
-			check(x >= float(zone_x[0]) + 1.0 and x <= float(zone_x[1]) - 1.0, "%s at x=%s is inside %s" % [kind["name"], x, kind["zone"]])
-			check(absf(z) <= float(config["stage"]["depth"]) / 2.0 - 1.0, "%s at z=%s is on the stage" % [kind["name"], z])
-			all_positions.append(Vector2(x, z))
-		if is_target:
-			var tiles := Hangul.tiles_for(kind["name"])
+		check(_zone_range(kind["zone"]).size() == 2, "%s names a real zone" % kind["name"])
+		if kind["kind"] == "target":
 			var unknown := Hangul.unknown_letters(kind["name"], known)
 			check(unknown.size() <= 2, "%s needs at most 2 unknown letters" % kind["name"])
-			var from_tokens := true
-			for token in Hangul.tokens_of(kind["name"]):
-				if not (known.has(token) or unknown.has(token)):
-					from_tokens = false
-			check(from_tokens and tiles.size() == Hangul.tokens_of(kind["name"]).size(), "%s letters come from its own tokens" % kind["name"])
 	check(kind_ok, "decoy_harm have an injury id, decoy_reward a reward id")
-	check(total == 20, "exactly 20 plants")
-	var expected_targets := ["마", "머루", "미나리", "고사리", "고비", "시로미"]
+
+	# Counts: one plant per letter token for a target, 2 for a decoy, 36 in all.
+	var expected := {"ma": 2, "meoru": 4, "minari": 6, "gosari": 6, "gobi": 4, "simiro": 6,
+			"keuncheonnamseong": 2, "butsunnamu": 2, "norugui": 2, "deulchuknamu": 2}
+	check(_expected_counts() == expected, "the letter-token counts are 마 2, 머루 4, 미나리 6, 고사리 6, 고비 4, 시로미 6, decoys 2")
+	check(placed.size() == 36, "exactly 36 plants (%d)" % placed.size())
+	var letter_plants := 0
+	for entry in placed:
+		if entry.has("letter"):
+			letter_plants += 1
+	check(letter_plants == 28, "28 letter plants (%d)" % letter_plants)
 	var targets := []
 	for kind in kinds:
 		if kind["kind"] == "target":
 			targets.append(kind["name"])
-	check(targets == expected_targets, "the targets are the six named in the brief")
-	# No two plants overlap each other or a traveler's start.
-	var spaced := true
-	for i in all_positions.size():
-		for j in range(i + 1, all_positions.size()):
-			if all_positions[i].distance_to(all_positions[j]) < 2.5:
-				spaced = false
-		for id in config["start"]:
-			var start := Vector2(float(config["start"][id][0]), float(config["start"][id][1]))
-			if all_positions[i].distance_to(start) < 2.5:
-				spaced = false
-	check(spaced, "no two plants overlap, and none sits on a start")
+	check(targets == ["마", "머루", "미나리", "고사리", "고비", "시로미"], "the targets are the six named in the brief")
+
+	var half_depth := float(config["stage"]["depth"]) / 2.0
+	var starts: Array[Vector2] = []
+	for id in config["start"]:
+		starts.append(Vector2(float(config["start"][id][0]), float(config["start"][id][1])))
+	var by_kind := {}
+	for entry in placed:
+		check(by_id.has(entry["kind"]), "a placed plant names a real kind (%s)" % entry["kind"])
+		if not by_id.has(entry["kind"]):
+			continue
+		if not by_kind.has(entry["kind"]):
+			by_kind[entry["kind"]] = []
+		by_kind[entry["kind"]].append(entry)
+	for id in expected:
+		check(by_kind.get(id, []).size() == int(expected[id]), "%s has %d plants" % [by_id[id]["name"], expected[id]])
+
+	var font_path := "res://art/fonts/NotoSansKR-VariableFont_wght.ttf"
+	var font: Font = load(font_path)
+	var zone_ok := true
+	var stage_ok := true
+	var letters_ok := true
+	var glyphs_ok := true
+	for id in by_kind:
+		var kind: Dictionary = by_id[id]
+		var zone_x := _zone_range(kind["zone"])
+		for entry in by_kind[id]:
+			var x := float(entry["x"])
+			var z := float(entry["z"])
+			zone_ok = zone_ok and x >= float(zone_x[0]) + 1.0 and x <= float(zone_x[1]) - 1.0
+			stage_ok = stage_ok and absf(z) <= half_depth - 1.0
+			if kind["kind"] == "target":
+				var letter := String(entry.get("letter", ""))
+				letters_ok = letters_ok and letter.length() == 1
+				glyphs_ok = glyphs_ok and font != null and letter.length() == 1 and font.has_char(letter.unicode_at(0))
+			else:
+				letters_ok = letters_ok and not entry.has("letter")
+	check(zone_ok, "every plant is inside its kind's zone (1 m from the edges)")
+	check(stage_ok, "every plant is on the stage")
+	check(letters_ok, "each target plant carries exactly one letter; decoys carry none")
+	check(glyphs_ok, "the font has every letter the plants carry")
+	check(FileAccess.file_exists(font_path) and font is FontFile, "the font file exists and loads as a FontFile")
+
+	# The letters of each target kind are exactly the tokens of its name.
+	var multiset_ok := true
+	for id in by_kind:
+		if by_id[id]["kind"] != "target":
+			continue
+		var carried := []
+		for entry in by_kind[id]:
+			carried.append(String(entry["letter"]))
+		carried.sort()
+		var wanted: Array = Array(Hangul.tiles_for(by_id[id]["name"]))
+		wanted.sort()
+		if carried != wanted:
+			multiset_ok = false
+			print("  letters of %s: %s, wanted %s" % [id, carried, wanted])
+	check(multiset_ok, "each target's plants carry exactly the letters of its name (repeats included)")
+
+	# Placement rules.
+	var same_ok := true
+	var all_ok := true
+	var start_ok := true
+	for i in placed.size():
+		var a := Vector2(float(placed[i]["x"]), float(placed[i]["z"]))
+		for start in starts:
+			if a.distance_to(start) < 6.0:
+				start_ok = false
+		for j in range(i + 1, placed.size()):
+			var b := Vector2(float(placed[j]["x"]), float(placed[j]["z"]))
+			if a.distance_to(b) < 2.0:
+				all_ok = false
+			if placed[i]["kind"] == placed[j]["kind"] and a.distance_to(b) < 4.0:
+				same_ok = false
+	check(same_ok, "two plants of the same kind are at least 4 m apart")
+	check(all_ok, "no two plants are closer than 2 m")
+	check(start_ok, "no plant is within 6 m of a traveler's start")
+	var spread_ok := true
+	var order_ok := true
+	for id in by_kind:
+		if by_id[id]["kind"] != "target":
+			continue
+		var zone_x := _zone_range(by_id[id]["zone"])
+		var low := INF
+		var high := -INF
+		for entry in by_kind[id]:
+			low = minf(low, float(entry["x"]))
+			high = maxf(high, float(entry["x"]))
+		if high - low < 0.6 * (float(zone_x[1]) - float(zone_x[0])):
+			spread_ok = false
+			print("  %s spans only %.1f m" % [id, high - low])
+		if _x_order(by_kind[id]) == Array(Hangul.tiles_for(by_id[id]["name"])):
+			order_ok = false
+			print("  %s letters run in word order along x" % id)
+	check(spread_ok, "each target kind's plants span at least 60% of its zone's width")
+	check(order_ok, "no word's letters run in word order from left to right")
+
 	# Scenery sits in the alpine zone and keeps clear of the plants.
 	var alpine := _zone_range("alpine")
 	var trees_ok := true
@@ -473,23 +570,10 @@ func test_plants_data() -> void:
 		var tree := Vector2(float(pos[0]), float(pos[1]))
 		if tree.x < float(alpine[0]) or tree.x > float(alpine[1]):
 			trees_ok = false
-		for plant in all_positions:
-			if tree.distance_to(plant) < 2.5:
+		for entry in placed:
+			if tree.distance_to(Vector2(float(entry["x"]), float(entry["z"]))) < 2.5:
 				trees_ok = false
 	check(trees_ok, "구상나무 stand only in the alpine zone, clear of the plants")
-	# The font exists and loads, with the glyphs the plants need.
-	var font_path := "res://art/fonts/NotoSansKR-VariableFont_wght.ttf"
-	check(FileAccess.file_exists(font_path), "the font file exists")
-	var font: Font = load(font_path)
-	check(font is FontFile, "the font loads as a FontFile")
-	if font:
-		var glyphs := true
-		for kind in kinds:
-			if kind["kind"] == "target":
-				for tile in Hangul.tiles_for(kind["name"]):
-					if not font.has_char(tile.unicode_at(0)):
-						glyphs = false
-		check(glyphs, "the font has every letter the targets carry")
 
 
 func test_terrain_scene() -> void:
@@ -545,29 +629,46 @@ func test_terrain_scene() -> void:
 	check(map.camera.global_position.y > low_cam + 5.0, "the camera rises with the player")
 
 	# Plants.
-	check(map.plants.size() == 20, "20 plants are built")
-	check(map.get_node("Plants").get_child_count() == 20, "20 plants are in the Plants node")
+	check(map.plants.size() == 36, "36 plants are built")
+	check(map.get_node("Plants").get_child_count() == 36, "36 plants are in the Plants node")
 	var letters_ok := true
 	var labels_total := 0
 	var heights_ok := true
 	var font_ok := true
+	var boxes_ok := true
+	var big_ok := true
+	var carried := {}  # kind id -> letters shown
 	for plant in map.plants:
 		heights_ok = heights_ok and is_equal_approx(plant.position.y, terrain.height_at(plant.position.x))
 		var labels: Array = plant.find_children("*", "Label3D", true, false)
 		labels_total += labels.size()
+		for mesh in plant.find_children("*", "MeshInstance3D", true, false):
+			boxes_ok = boxes_ok and not (mesh.mesh is BoxMesh)
 		if plant.kind == "target":
-			var tiles := Hangul.tiles_for(plant.plant_name)
-			var shown: Array[String] = []
+			letters_ok = letters_ok and labels.size() == 1 and labels[0].text == plant.letter and plant.letter.length() == 1
 			for l in labels:
-				shown.append(l.text)
 				font_ok = font_ok and l.font != null and l.font.resource_path.ends_with("NotoSansKR-VariableFont_wght.ttf")
-			letters_ok = letters_ok and shown == tiles and plant.letters == tiles
+				big_ok = big_ok and l.pixel_size * l.font_size >= 1.0
+				if not carried.has(plant.kind_id):
+					carried[plant.kind_id] = []
+				carried[plant.kind_id].append(l.text)
 		else:
-			letters_ok = letters_ok and labels.is_empty() and plant.letters.is_empty()
-	check(letters_ok, "targets show the letters of their name; decoys show none")
-	check(labels_total == 2 * (2 + 4 + 6 + 6 + 4 + 6), "label count matches the six targets' letters x 2 (%d)" % labels_total)
+			letters_ok = letters_ok and labels.is_empty() and plant.letter.is_empty()
+	check(letters_ok, "each target plant shows one letter; decoys show none")
+	var words_ok := true
+	for kind in _hangul_plants():
+		if kind["kind"] == "target":
+			var shown: Array = carried.get(kind["id"], [])
+			shown.sort()
+			var wanted: Array = Array(Hangul.tiles_for(kind["name"]))
+			wanted.sort()
+			words_ok = words_ok and shown == wanted
+	check(words_ok, "the letters shown on each target's plants are the letters of its name")
+	check(labels_total == 28, "28 letter labels (%d)" % labels_total)
 	check(heights_ok, "every plant sits at terrain height")
 	check(font_ok, "every letter uses the Noto Sans KR font")
+	check(big_ok, "every letter is about a metre tall")
+	check(boxes_ok, "no plant has a box (backing card) behind its letter")
 	var styles := {}
 	for plant in map.plants:
 		styles[plant.letter_style] = true
@@ -748,6 +849,20 @@ func test_names_and_colors_data() -> void:
 	check(meoru.r > meoru.g and meoru.b > meoru.g, "머루 fruit is purple")
 	check(deulchuk.b > deulchuk.r and deulchuk.b > deulchuk.g and maxf(deulchuk.r, maxf(deulchuk.g, deulchuk.b)) < 0.4, "들쭉나무 fruit is blue-black")
 	check(absf(meoru.r - deulchuk.r) + absf(meoru.g - deulchuk.g) + absf(meoru.b - deulchuk.b) > 0.4, "들쭉나무 fruit looks clearly different from 머루")
+	var butsun: Color = Plant.fruit_color(by_id["butsunnamu"])
+	check(butsun.r > 0.6 and butsun.r > butsun.g and butsun.g > butsun.b and butsun.b < 0.3, "붓순나무 fruit is a warm brown-orange")
+	var far_apart := true
+	var hanging: Array[Color] = []
+	for kind in kinds:
+		if kind["letter_style"] == "hanging":
+			hanging.append(Plant.fruit_color(kind))
+	check(hanging.size() == 3, "three hanging kinds: 머루, 붓순나무, 들쭉나무")
+	for i in hanging.size():
+		for j in range(i + 1, hanging.size()):
+			var d := absf(hanging[i].r - hanging[j].r) + absf(hanging[i].g - hanging[j].g) + absf(hanging[i].b - hanging[j].b)
+			if d <= 0.4:
+				far_apart = false
+	check(far_apart, "every pair of hanging fruit colours is clearly different")
 
 
 func test_backdrop_scene() -> void:
