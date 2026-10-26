@@ -15,6 +15,7 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_curriculum",
 	"test_hallasan_words",
 	"test_game_state",
+	"test_heart_units",
 	"test_settings",
 	"test_foraging",
 	"test_terrain_data",
@@ -45,7 +46,7 @@ const EXPECTED_SECTIONS: Array[String] = [
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 725
+const MIN_CHECKS := 745
 
 
 func check(condition: bool, label: String) -> void:
@@ -69,6 +70,7 @@ func _ready() -> void:
 	test_hallasan_words()
 	print("== Game state ==")
 	test_game_state()
+	test_heart_units()
 	print("== Settings ==")
 	test_settings()
 	print("== Foraging map ==")
@@ -191,14 +193,14 @@ func test_hallasan_words() -> void:
 func test_game_state() -> void:
 	GameState.game_id = "hallasan"
 	GameState.new_hike(0)
-	check(GameState.hearts["nestor"] == 5 and GameState.hearts["fernanda"] == 5, "5 hearts at the start of the hike")
+	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "5 hearts (10 units) at the start of the hike")
 	GameState.begin_scene("foraging")
 	check(not GameState.damage("nestor", "eye_branch"), "first hit doesn't kill")
-	check(GameState.hearts["nestor"] == 4, "damage removes exactly one heart")
-	check(GameState.hearts["fernanda"] == 5, "the other traveler is untouched")
+	check(GameState.heart_units["nestor"] == 8, "damage removes exactly one heart")
+	check(GameState.heart_units["fernanda"] == 10, "the other traveler is untouched")
 	check(GameState.score_word("머루") == 10 and GameState.ddeok == 10, "review word scores the review value")
 	GameState.begin_scene("animals")
-	check(GameState.hearts["nestor"] == 4, "no refill between scenes")
+	check(GameState.heart_units["nestor"] == 8, "no refill between scenes")
 	check(GameState.score_word("고사리") == 30 and GameState.ddeok == 40, "bonus guess scores the bonus value")
 	check(GameState.score_word("노루", true) == 100, "monster capture scores its value")
 	GameState.ddeok = 40
@@ -206,18 +208,18 @@ func test_game_state() -> void:
 	var deaths := []
 	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
 	GameState.travelers_died.connect(on_death)
-	GameState.hearts["nestor"] = 1
+	GameState.heart_units["nestor"] = 2
 	var died := GameState.damage("nestor", "antler_skewer")
 	check(died, "1 heart to 0 kills")
 	check(deaths.size() == 1, "death signal emitted once")
 	check(deaths[0] == ["nestor", "fernanda", "antler_skewer"], "signal names dead, survivor and injury")
 	GameState.damage("nestor", "antler_skewer")
-	check(GameState.hearts["nestor"] == 0, "hearts never go below 0")
+	check(GameState.heart_units["nestor"] == 0, "hearts never go below 0")
 	check(deaths.size() == 1, "hitting the dead doesn't re-emit the signal")
 	GameState.travelers_died.disconnect(on_death)
 	GameState.add_ddeok(100)
 	GameState.restart_scene()
-	check(GameState.hearts["nestor"] == 4 and GameState.hearts["fernanda"] == 5, "restart restores both travelers' hearts")
+	check(GameState.heart_units["nestor"] == 8 and GameState.heart_units["fernanda"] == 10, "restart restores both travelers' hearts")
 	check(GameState.ddeok == 40, "restart restores ddeok from the scene's start")
 	GameState.difficulty = "easy"
 	var easy := GameState.time_limit("머리")
@@ -225,6 +227,71 @@ func test_game_state() -> void:
 	check(GameState.time_limit("머리") < easy, "diffi is faster than easy")
 	GameState.difficulty = "soso"
 	_section_done("test_game_state")
+
+
+func test_heart_units() -> void:
+	var upu = Content.rules.get("half_units_per_heart")
+	check(typeof(upu) == TYPE_FLOAT and upu == floorf(upu) and upu > 0, "rules half_units_per_heart is a positive integer")
+	check(GameState.units_per_heart() == 2 and GameState.max_units() == 10, "Hallasan: 5 hearts are 10 units")
+	var changes := []
+	var on_change := func(t, units): changes.append([t, units])
+	GameState.hearts_changed.connect(on_change)
+	var deaths := []
+	var on_death := func(dead, survivor, injury): deaths.append(dead)
+	GameState.travelers_died.connect(on_death)
+
+	GameState.new_hike(0)
+	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "hike start: everyone at max units")
+	GameState.begin_scene("units")
+	check(not GameState.damage_units("nestor", 1), "a half hit doesn't kill")
+	check(GameState.heart_units["nestor"] == 9, "1 unit leaves 9")
+	check(GameState.whole_hearts("nestor") == 4 and GameState.has_half("nestor"), "9 units is 4 hearts and a half")
+	check(is_equal_approx(GameState.hearts_for_display("nestor"), 4.5), "9 units displays as 4.5 hearts")
+	check(changes.back() == ["nestor", 9], "hearts_changed carries units on damage")
+	GameState.damage_units("nestor", 1)
+	check(GameState.heart_units["nestor"] == 8 and not GameState.has_half("nestor"), "two half hits equal one whole heart")
+	GameState.new_hike(0)
+	GameState.damage("fernanda", "test")
+	check(GameState.heart_units["fernanda"] == 8, "the whole-heart damage call takes exactly 2 units")
+
+	# Heal: caps, no-op on the dead, exact round trip.
+	GameState.new_hike(0)
+	GameState.heal("nestor", 1)
+	check(GameState.heart_units["nestor"] == 10, "heal caps at max")
+	GameState.damage_units("nestor", 3)
+	changes.clear()
+	GameState.heal("nestor", 3)
+	check(GameState.heart_units["nestor"] == 10 and changes.back() == ["nestor", 10], "heal then damage round-trips; signal carries units")
+	GameState.damage_units("nestor", 3)
+	GameState.heal("nestor", 1)
+	check(GameState.heart_units["nestor"] == 8, "heal raises by exactly the units given")
+
+	# Floor and death.
+	GameState.new_hike(0)
+	deaths.clear()
+	GameState.heart_units["nestor"] = 1
+	check(GameState.damage_units("nestor", 5, "x"), "damage past 0 kills")
+	check(GameState.heart_units["nestor"] == 0 and deaths == ["nestor"], "units floor at 0 and the death fires once")
+	changes.clear()
+	GameState.heal("nestor", 4)
+	check(GameState.heart_units["nestor"] == 0 and changes.is_empty(), "healing the dead does nothing")
+	check(GameState.damage_units("nestor", 1) and deaths.size() == 1, "hitting the dead doesn't re-emit death")
+
+	# Restart restores an odd unit count exactly.
+	GameState.new_hike(0)
+	GameState.damage_units("fernanda", 3)
+	GameState.begin_scene("odd")
+	GameState.damage_units("fernanda", 4)
+	GameState.heal("nestor", 1)
+	changes.clear()
+	GameState.restart_scene()
+	check(GameState.heart_units["fernanda"] == 7 and GameState.heart_units["nestor"] == 10, "restart restores the snapshot exactly, odd units included")
+	check(changes.has(["fernanda", 7]) and changes.has(["nestor", 10]), "restart emits hearts_changed in units")
+
+	GameState.hearts_changed.disconnect(on_change)
+	GameState.travelers_died.disconnect(on_death)
+	GameState.new_hike(0)
+	_section_done("test_heart_units")
 
 
 func test_settings() -> void:

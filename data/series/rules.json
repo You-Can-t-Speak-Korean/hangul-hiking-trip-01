@@ -1,6 +1,7 @@
 {
   "_note": "Tunable numbers. All values are 🟡 placeholders until playtesting (Hallasan Roadmap §8: scoring values and timer lengths are open).",
   "hearts_per_traveler": 5,
+  "half_units_per_heart": 2,
   "difficulty": {
     "easy":  {"label": "Easy",             "time_scale": 1.6},
     "soso":  {"label": "So So",            "time_scale": 1.0},
