@@ -27,6 +27,9 @@ const GROUND_STEP := 1.0        # metres between ground mesh vertices along x
 const KEEP_OUT := 1.8           # props are pushed this far from plants, trees and starts
 const NUDGE_PASSES := 12         # a pushed prop can land near another point, so repeat
 const TOOLTIP_OFFSET := Vector2(16.0, 18.0)
+const WALK_UP_TIP_LIFT := 1.2   # metres above a plant where its walk-up name is anchored
+const RING_SEGMENTS := 48
+const RING_LIFT := 0.04         # metres above the ground, so the ring never z-fights
 
 const NESTOR_COLOR := Color(0.36, 0.45, 0.65)    # slate blue
 const FERNANDA_COLOR := Color(0.95, 0.55, 0.70)  # pink
@@ -69,8 +72,14 @@ var _aim_height := 0.0
 var _steam_stream: AudioStreamWAV
 var _tooltip: PanelContainer
 var _tooltip_label: Label
-var _hover_plant: Node3D
+var _hover_plant: Node3D   # the plant under the mouse
+var _tip_plant: Node3D     # the plant whose name is up (hover or walk-up; the latest wins)
+var _tip_by_mouse := false
 var _hover_time := 0.0
+var _ring: MeshInstance3D
+var _ring_material: StandardMaterial3D
+var _ring_time := 0.0
+var _ring_plant: Node3D
 var _props_by_cell: Dictionary = {}  # int cell of x -> Array of Prop
 var _fading: Dictionary = {}         # Prop -> true, while its opacity is not 1.0
 
@@ -113,7 +122,8 @@ func _ready() -> void:
 	discovery_hud = DiscoveryHud.new()
 	add_child(discovery_hud)
 	discovery_hud.setup(discovery)
-	picking = Picking.new(config["picking"], config["plants"])
+	picking = Picking.new(config["picking"], config["plants"], config["reach_ring"])
+	_build_ring()
 	basket_hud = BasketHud.new()
 	add_child(basket_hud)
 	basket_hud.setup(picking, config["basket_hud"])
@@ -149,6 +159,9 @@ func _physics_process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		click(event.position)
+	elif event.is_action_pressed("p1_pick"):  # no echo: holding Space picks once
+		pick_nearest()
+		get_viewport().set_input_as_handled()
 
 
 ## One tick of the map. Public so tests and the capture scene can drive it
@@ -163,6 +176,7 @@ func step(input: Vector2, delta: float) -> void:
 	partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
 	update_prop_fade(delta)
+	_update_reach(delta)
 	var spots: Array[Vector2] = []
 	for traveler in travelers.values():
 		spots.append(Vector2(traveler.global_position.x, traveler.global_position.z))
@@ -189,6 +203,70 @@ func click(screen_pos: Vector2) -> bool:
 		return false
 	var plant := plant_at(screen_pos)
 	return plant != null and picking.start_walk(plants.find(plant))
+
+
+## Space: picks the nearest plant in reach that still has its letter, at once,
+## and cancels any click-walk. Returns true if something was picked.
+func pick_nearest() -> bool:
+	picking.cancel_walk()
+	if not picks_allowed():
+		return false
+	var index: int = picking.nearest_pickable(Vector2(player.global_position.x, player.global_position.z))
+	if index < 0:
+		return false
+	pick_plant(plants[index])
+	return true
+
+
+## The player's reach: flashes the name of each plant it walks up to (the
+## partner never does) and keeps the ring on the nearest pickable plant.
+func _update_reach(delta: float) -> void:
+	var spot := Vector2(player.global_position.x, player.global_position.z)
+	var entered: Array[int] = picking.entered_reach(spot)
+	if not entered.is_empty():
+		_start_tooltip(plants[entered[entered.size() - 1]], false)
+	_ring_time += delta
+	var index: int = picking.nearest_pickable(spot)
+	_ring.visible = index >= 0
+	if index >= 0:
+		var plant := plants[index]
+		if plant != _ring_plant:
+			_ring_plant = plant
+			_ring.mesh = _ring_mesh(plant.global_position)
+		_ring.global_position = plant.global_position
+		_ring_material.albedo_color.a = picking.ring_alpha_at(_ring_time)
+
+
+## The ring's mesh: an annulus of the same size for every plant, its height
+## following the ground along x so a slope never hides part of it.
+func _ring_mesh(centre: Vector3) -> ArrayMesh:
+	var outer: float = picking.ring_radius()
+	var inner := maxf(outer - picking.ring_width, 0.0)
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in RING_SEGMENTS:
+		var dir0 := Vector2.from_angle(TAU * i / RING_SEGMENTS)
+		var dir1 := Vector2.from_angle(TAU * (i + 1) / RING_SEGMENTS)
+		var quad: Array[Vector3] = []
+		for c: Vector2 in [dir0 * inner, dir0 * outer, dir1 * outer, dir1 * inner]:
+			quad.append(Vector3(c.x, terrain.height_at(centre.x + c.x) - centre.y + RING_LIFT, c.y))
+		for index in [0, 1, 2, 0, 2, 3]:
+			surface.add_vertex(quad[index])
+	return surface.commit()
+
+
+func _build_ring() -> void:
+	_ring = MeshInstance3D.new()
+	_ring.name = "ReachRing"
+	_ring_material = StandardMaterial3D.new()
+	_ring_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_ring_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_ring_material.albedo_color = Color(picking.ring_color, picking.ring_alpha)
+	_ring.material_override = _ring_material
+	_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_ring.visible = false
+	add_child(_ring)
 
 
 ## One tick of a click-to-walk: the direction to walk, and the pick on arrival.
@@ -433,22 +511,25 @@ func plant_at(screen_pos: Vector2) -> Node3D:
 	return (hit["collider"] as Node).get_parent() as Node3D
 
 
-## Drives the hover tooltip. `delta` is the time since the last call, so tests
-## can use simulated time. The name appears when the mouse moves onto a plant,
-## stays tooltip_steady_time seconds, then flickers (starting hidden) for
-## tooltip_flicker_time seconds and is gone. It comes back only after the mouse has left the plant and entered a plant again; moving
-## straight from one plant onto another starts the new tooltip at once.
+## Drives the tooltip. `delta` is the time since the last call, so tests can use
+## simulated time. A name appears when the mouse moves onto a plant (or the
+## player walks into reach of one, see _start_tooltip), stays tooltip_steady_time
+## seconds, then flickers (starting hidden) for tooltip_flicker_time seconds and
+## is gone. The mouse brings it back only after it has left the plant and entered
+## a plant again; moving straight from one plant onto another starts the new
+## tooltip at once. Only one is up at a time: the latest trigger wins.
 func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
 	var plant := plant_at(screen_pos)
 	if plant != _hover_plant:
 		_hover_plant = plant
-		_hover_time = 0.0
 		if plant != null:
-			_tooltip_label.text = plant.tooltip_text()
-	elif plant != null:
+			_start_tooltip(plant, true)
+		elif _tip_by_mouse:
+			_tip_plant = null
+	elif _tip_plant != null:
 		_hover_time += delta
 	var opacity := 0.0
-	if plant != null:
+	if _tip_plant != null:
 		var flicker := _hover_time - tooltip_steady_time
 		if flicker <= 0.0:
 			opacity = 1.0
@@ -459,8 +540,22 @@ func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
 		return
 	_tooltip.modulate.a = opacity
 	_tooltip.reset_size()
+	var anchor := screen_pos + TOOLTIP_OFFSET
+	if not _tip_by_mouse:
+		anchor = camera.unproject_position(_tip_plant.global_position + Vector3(0.0, WALK_UP_TIP_LIFT, 0.0)) + TOOLTIP_OFFSET
 	var room := get_viewport().get_visible_rect().size - _tooltip.size
-	_tooltip.position = (screen_pos + TOOLTIP_OFFSET).clamp(Vector2.ZERO, room.max(Vector2.ZERO))
+	_tooltip.position = anchor.clamp(Vector2.ZERO, room.max(Vector2.ZERO))
+
+
+## Puts a plant's name up from the start of its timings, replacing any other.
+func _start_tooltip(plant: Node3D, by_mouse: bool) -> void:
+	_tip_plant = plant
+	_tip_by_mouse = by_mouse
+	_hover_time = 0.0
+	_tooltip_label.text = plant.tooltip_text()
+	if not by_mouse:  # shown now, not at the next update_hover
+		_tooltip.visible = true
+		_tooltip.modulate.a = 1.0
 
 
 func _build_tooltip() -> void:

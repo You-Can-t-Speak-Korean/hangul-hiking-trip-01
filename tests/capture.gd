@@ -6,7 +6,8 @@ extends Node
 ## tooltip_0_7s_flicker_hidden,tooltip_1_2s_gone,letters_lower_forest,letters_alpine,
 ## fruits_meoru_butsunnamu,fruit_deulchuk,hud_empty,hud_ma_meoru,hud_all_six,
 ## letters_decoys_targets,spread_topdown}.png, and the picking shots
-## {pick_walking,pick_target_basket,pick_decoy_steam}.png, and the basket shots
+## {pick_walking,pick_target_basket,pick_decoy_steam}.png, the reach shots
+## {reach_ring_target,reach_ring_decoy,walk_up_flash}.png, and the basket shots
 ## {basket_empty,basket_1_tile,basket_28_tiles,hud_discovery_two_entries}.png.
 
 const SHOT_DIR := "res://tests/shots/"
@@ -123,6 +124,7 @@ func _ready() -> void:
 		if child is CanvasLayer:
 			child.queue_free()
 	await _picking_shots()
+	await _reach_shots()
 	await _basket_shots()
 	get_tree().quit()
 
@@ -288,6 +290,55 @@ func _picking_shots() -> void:
 		map.step(Vector2.ZERO, DELTA)
 		await get_tree().process_frame
 	_save("pick_decoy_steam")
+	map.free()
+
+
+## The reach ring on a target and on a decoy (same code path, to show they
+## match), and the name that flashes when the player walks up to a plant.
+func _reach_shots() -> void:
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	map.partner.global_position = Vector3(69.0, map.terrain.height_at(69.0), 0.0)
+	var spots := {}
+	for want_target in [true, false]:
+		for plant in map.plants:
+			if (plant.kind == "target") != want_target or plant.letter == "" or plant.global_position.x < 8.0:
+				continue
+			var alone := true
+			for other in map.plants:
+				alone = alone and (other == plant or other.global_position.distance_to(plant.global_position) > 4.0)
+			if alone:
+				spots[want_target] = plant
+				break
+	for want_target in [true, false]:
+		var plant: Node3D = spots[want_target]
+		var at := plant.global_position + Vector3(0.9, 0.0, 0.4)
+		map.player.global_position = Vector3(at.x, map.terrain.height_at(at.x), at.z)
+		map.step(Vector2.ZERO, 0.0)
+		map.update_camera(0.0, true)
+		for i in 20:  # props covering the player fade out (0.2 s)
+			map.step(Vector2.ZERO, DELTA)
+			await get_tree().process_frame
+		map._ring_time = 0.0  # the same point of the pulse for both shots
+		map.step(Vector2.ZERO, 0.0)
+		map._tip_plant = null  # the walk-up name has its own shot
+		map.update_hover(Vector2(-10.0, -10.0), 0.0)
+		await _frames(3)
+		_save("reach_ring_target" if want_target else "reach_ring_decoy")
+	# Walk up: from outside the radius to inside it, then 0.1 s into the flash.
+	var plant: Node3D = spots[true]
+	map.player.global_position = plant.global_position + Vector3(4.0, 0.0, 0.0)
+	map.step(Vector2.ZERO, 0.0)
+	map.player.global_position = plant.global_position + Vector3(0.9, 0.0, 0.4)
+	map.step(Vector2.ZERO, 0.0)
+	map.update_camera(0.0, true)
+	await _frames(3)
+	map.update_hover(Vector2(-10.0, -10.0), 0.1)
+	await _frames(3)
+	_save("walk_up_flash")
 	map.free()
 
 

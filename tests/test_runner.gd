@@ -35,11 +35,14 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_picking_scene",
 	"test_basket_hud_data",
 	"test_hud_clicks_and_layout",
+	"test_reach_data",
+	"test_reach_logic",
+	"test_reach_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 530
+const MIN_CHECKS := 590
 
 
 func check(condition: bool, label: String) -> void:
@@ -92,6 +95,10 @@ func _ready() -> void:
 	print("== HUD clicks and basket layout ==")
 	test_basket_hud_data()
 	await test_hud_clicks_and_layout()
+	print("== Keyboard picking, walk-up names, reach ring ==")
+	test_reach_data()
+	test_reach_logic()
+	await test_reach_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -238,7 +245,7 @@ func test_settings() -> void:
 
 
 func test_foraging() -> void:
-	for action in ["p1_left", "p1_right", "p1_up", "p1_down", "p2_left", "p2_right", "p2_up", "p2_down", "p2_pick"]:
+	for action in ["p1_left", "p1_right", "p1_up", "p1_down", "p2_left", "p2_right", "p2_up", "p2_down", "p1_pick", "p2_pick"]:
 		check(InputMap.has_action(action), "input action %s exists" % action)
 	var data := Content.mountain("hallasan")
 	check(data.get("name") == "한라산", "hallasan.json loads")
@@ -808,28 +815,28 @@ func test_terrain_scene() -> void:
 		map.update_hover(empty_point, 0.0)
 		map.update_hover(on_plant, 0.0)
 		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "the tooltip shows when the mouse enters a plant")
-		map.update_hover(on_plant, 0.4)
-		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "solid at 0.4 s")
+		map.update_hover(on_plant, 0.2)
+		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "solid at 0.2 s")
 		var saw_visible := false
 		var saw_hidden := false
-		for step in 8:  # 0.5 s to 0.9 s, sampled mid-step
-			map.update_hover(on_plant, 0.15 if step == 0 else 0.05)
-			map.update_hover(on_plant, 0.05)
+		for step in 8:  # 0.25 s to 0.45 s, sampled mid-step
+			map.update_hover(on_plant, 0.075 if step == 0 else 0.025)
+			map.update_hover(on_plant, 0.025)
 			if tip.visible:
 				saw_visible = true
 			else:
 				saw_hidden = true
-		check(saw_visible and saw_hidden, "flickers between 0.5 s and 0.9 s (visible %s, hidden %s)" % [saw_visible, saw_hidden])
-		map.update_hover(on_plant, 0.1)
-		check(not tip.visible, "gone at 1.0 s")
+		check(saw_visible and saw_hidden, "flickers between 0.25 s and 0.45 s (visible %s, hidden %s)" % [saw_visible, saw_hidden])
+		map.update_hover(on_plant, 0.05)
+		check(not tip.visible, "gone at 0.5 s")
 		map.update_hover(on_plant, 5.0)
 		map.update_hover(on_plant, 0.0)
 		check(not tip.visible, "it does not return while the mouse stays on the same plant")
-		map.update_hover(empty_point, 0.1)
+		map.update_hover(empty_point, 0.05)
 		check(not tip.visible, "leaving the plant hides it")
 		map.update_hover(on_plant, 0.0)
 		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "it shows again after the mouse leaves and re-enters the plant")
-		map.update_hover(on_plant, 1.1)
+		map.update_hover(on_plant, 0.55)
 		check(not tip.visible, "the re-entered tooltip also goes away")
 		map.update_hover(other_plant, 0.0)
 		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "moving straight onto another plant starts a new tooltip at once")
@@ -1122,7 +1129,7 @@ func test_backdrop_data() -> void:
 func test_fade_and_tooltip_data() -> void:
 	var config := _config()
 	check(is_equal_approx(float(config["prop_fade"]["opacity"]), 0.25) and is_equal_approx(float(config["prop_fade"]["time"]), 0.2), "prop fade opacity and time are in the data")
-	check(is_equal_approx(float(config["tooltip"]["steady_time"]), 0.5) and is_equal_approx(float(config["tooltip"]["flicker_time"]), 0.4) and is_equal_approx(float(config["tooltip"]["flicker_rate"]), 10.0) and not config["tooltip"].has("show_time") and not config["tooltip"].has("fade_time"), "tooltip steady, flicker time and rate are in the data; the old show/fade values are gone")
+	check(is_equal_approx(float(config["tooltip"]["steady_time"]), 0.25) and is_equal_approx(float(config["tooltip"]["flicker_time"]), 0.2) and is_equal_approx(float(config["tooltip"]["flicker_rate"]), 20.0) and not config["tooltip"].has("show_time") and not config["tooltip"].has("fade_time"), "tooltip steady (halved), flicker time (halved) and rate (doubled) are in the data; the old show/fade values are gone")
 	_section_done("test_fade_and_tooltip_data")
 
 
@@ -1721,3 +1728,287 @@ func test_hud_clicks_and_layout() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_hud_clicks_and_layout")
+
+
+# ---- Keyboard picking, walk-up names and the reach ring ----
+
+func _key_event(keycode: Key, pressed := true, echo := false) -> InputEventKey:
+	var event := InputEventKey.new()
+	event.physical_keycode = keycode
+	event.keycode = keycode
+	event.pressed = pressed
+	event.echo = echo
+	return event
+
+
+func _bound_keys(action: String) -> Array:
+	return InputMap.action_get_events(action).map(func(e): return [e.physical_keycode, e.location])
+
+
+func test_reach_data() -> void:
+	var config := _config()
+	var tip: Dictionary = config["tooltip"]
+	var total := float(tip["steady_time"]) + float(tip["flicker_time"])
+	check(is_equal_approx(float(tip["steady_time"]), 0.25) and is_equal_approx(float(tip["flicker_time"]), 0.2) and is_equal_approx(float(tip["flicker_rate"]), 20.0), "tooltip timings are halved and the flicker rate doubled")
+	check(is_equal_approx(total, 0.45), "a hover name is up for 0.45 s in all (was 0.9 s)")
+	check(_bound_keys("p1_pick") == [[KEY_SPACE, 0]], "p1_pick is bound to Space only")
+	check(_bound_keys("p2_pick") == [[KEY_ENTER, 0], [KEY_KP_ENTER, 2]], "p2_pick is bound to Enter and the keypad Enter")
+	var moves := {"p1_left": KEY_A, "p1_right": KEY_D, "p1_up": KEY_W, "p1_down": KEY_S,
+			"p2_left": KEY_LEFT, "p2_right": KEY_RIGHT, "p2_up": KEY_UP, "p2_down": KEY_DOWN}
+	var moves_ok := true
+	for action in moves:
+		moves_ok = moves_ok and _bound_keys(action) == [[moves[action], 0]]
+	check(moves_ok, "P1 moves on WASD and P2 on the arrow keys, unchanged")
+	var ring: Dictionary = config.get("reach_ring", {})
+	check(not ring.is_empty(), "hallasan.json has a reach_ring block")
+	var rc = ring.get("color")
+	check(rc is Array and rc.size() == 3 and rc.all(func(c): return c is float and c >= 0.0 and c <= 1.0), "reach_ring.color has three channels in 0..1")
+	check(ring.get("alpha") is float and ring["alpha"] > 0.0 and ring["alpha"] <= 0.5, "reach_ring.alpha is low (0..0.5]")
+	check(ring.get("radius_offset") is float and config["picking"]["pick_radius"] + ring["radius_offset"] > ring.get("width", 0.0), "reach_ring.radius_offset keeps the ring inside the reach and wider than its line")
+	check(ring.get("width") is float and ring["width"] > 0.0 and ring.get("pulse_speed") is float and ring["pulse_speed"] >= 0.0, "reach_ring.width is positive and pulse_speed is not negative")
+	check(ring.get("pulse_depth") is float and ring["pulse_depth"] >= 0.0 and ring["pulse_depth"] <= 1.0, "reach_ring.pulse_depth is in 0..1")
+	var p = PickingScript.new(config["picking"], config["plants"], ring)
+	check(p.ring_color == Color(rc[0], rc[1], rc[2]) and is_equal_approx(p.ring_alpha, float(ring["alpha"])) and is_equal_approx(p.ring_radius(), float(config["picking"]["pick_radius"]) + float(ring["radius_offset"])), "Picking reads the ring values from the data")
+	_section_done("test_reach_data")
+
+
+func _close_pair_data() -> Dictionary:
+	return {
+		"kinds": [{"id": "t", "kind": "target"}, {"id": "d", "kind": "decoy"}],
+		"placed": [
+			{"kind": "t", "x": 10.0, "z": 0.0, "letter": "ㄱ"},
+			{"kind": "d", "x": 11.0, "z": 0.0, "letter": "ㄴ"},
+			{"kind": "t", "x": 30.0, "z": 0.0},
+		]}
+
+
+func test_reach_logic() -> void:
+	var config := _config()
+	var p = PickingScript.new(config["picking"], _close_pair_data(), config["reach_ring"])
+	var r: float = p.pick_radius
+	check(p.nearest_pickable(Vector2(10.4, 0.0)) == 0, "with two letters in reach the nearer one is chosen (first)")
+	check(p.nearest_pickable(Vector2(10.6, 0.0)) == 1, "with two letters in reach the nearer one is chosen (second)")
+	check(p.nearest_pickable(Vector2(10.0 - r - 0.01, 0.0)) == -1, "nothing just outside the radius")
+	check(p.nearest_pickable(Vector2(10.0 - r + 0.01, 0.0)) == 0, "something just inside the radius")
+	check(p.nearest_pickable(Vector2(30.0, 0.0)) == -1, "a letterless plant is never pickable")
+	check(p.entered_reach(Vector2(0.0, 0.0)).is_empty(), "far away nothing is entered")
+	check(Array(p.entered_reach(Vector2(10.4, 0.0))) == [1, 0], "entering reports both plants, nearest last")
+	check(p.entered_reach(Vector2(10.45, 0.0)).is_empty(), "staying inside reports nothing again")
+	check(p.entered_reach(Vector2(14.0, 0.0)).is_empty(), "leaving reports nothing")
+	check(Array(p.entered_reach(Vector2(10.4, 0.0))) == [1, 0], "re-entering reports the plants again")
+	var p2 = PickingScript.new(config["picking"], _close_pair_data(), config["reach_ring"])
+	check(Array(p2.entered_reach(Vector2(30.5, 0.0))) == [2], "a letterless plant is entered too")
+	p2.pick(0)
+	check(p2.nearest_pickable(Vector2(10.0, 0.0)) == 1, "after a pick the nearest pickable is the next one")
+	var lo: float = p.ring_alpha_at(0.0)
+	var alphas: Array[float] = []
+	for i in 40:
+		alphas.append(p.ring_alpha_at(i * 0.1))
+	check(is_equal_approx(lo, p.ring_alpha) and alphas.min() >= p.ring_alpha * (1.0 - p.ring_pulse_depth) - 0.0001 and alphas.max() <= p.ring_alpha + 0.0001, "the ring alpha pulses between its bounds")
+	_section_done("test_reach_logic")
+
+
+## The two closest plants with letters. The real layout keeps plants about 3 m
+## apart, more than twice the pick radius, so tests widen the radius to put both in reach.
+func _close_pair(map: Node3D) -> Array:
+	for i in map.plants.size():
+		for j in range(i + 1, map.plants.size()):
+			var a: Node3D = map.plants[i]
+			var b: Node3D = map.plants[j]
+			if a.letter != "" and b.letter != "" and a.global_position.distance_to(b.global_position) < 3.2:
+				return [a, b]
+	return []
+
+
+## A plant with a letter and no other plant within 3 x pick_radius.
+func _lone_plant(map: Node3D, wanted_kind: String) -> Node3D:
+	for plant in map.plants:
+		if (plant.kind == "target") != (wanted_kind == "target") or plant.letter == "":
+			continue
+		var alone := true
+		for other in map.plants:
+			if other != plant and other.global_position.distance_to(plant.global_position) < 3.0 * map.picking.pick_radius:
+				alone = false
+		if alone:
+			return plant
+	return null
+
+
+func _stand_near(map: Node3D, plant: Node3D, offset := Vector2(0.4, 0.2)) -> void:
+	map.player.global_position = _ground_point(map, plant.global_position.x + offset.x, plant.global_position.z + offset.y)
+
+
+func _fresh_reach_map() -> Node3D:
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	map.partner.global_position = _ground_point(map, 69.0, 0.0)
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	return map
+
+
+func test_reach_scene() -> void:
+	var map: Node3D = await _fresh_reach_map()
+	var target := _lone_plant(map, "target")
+	var decoy := _lone_plant(map, "decoy")
+	check(target != null and decoy != null, "an isolated target and an isolated decoy exist")
+	if target == null or decoy == null:
+		map.free()
+		return
+
+	# Space picks.
+	_stand_near(map, target)
+	var letter: String = target.letter
+	var handled: bool = map.pick_nearest()
+	check(handled and map.picking.basket == [letter] and target.letter == "", "Space picks the target in reach into the basket")
+	_stand_near(map, decoy)
+	var tiles_before: int = map.basket_hud.find_child("Tiles", true, false).get_child_count()
+	map._unhandled_input(_key_event(KEY_SPACE))
+	check(decoy.letter == "" and map.picking.basket == [letter], "a synthetic Space event picks the decoy and the basket is unchanged")
+	check(map.find_children("*", "CPUParticles3D", false, false).size() == 1, "the decoy pick makes steam")
+	check(map.basket_hud.find_child("Tiles", true, false).get_child_count() == tiles_before, "and no tile")
+	map._unhandled_input(_key_event(KEY_SPACE))
+	check(map.find_children("*", "CPUParticles3D", false, false).size() == 1 and map.picking.basket == [letter], "Space on a letterless plant does nothing")
+	map._unhandled_input(_key_event(KEY_SPACE, true, true))
+	map._unhandled_input(_key_event(KEY_SPACE, false))
+	check(map.picking.basket == [letter], "an echo or a key release does nothing")
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	var nothing: bool = map.picking.nearest_pickable(Vector2(map.player.global_position.x, map.player.global_position.z)) == -1
+	check(nothing and not map.pick_nearest() and map.picking.basket == [letter], "Space does nothing with no plant in reach")
+	map.free()
+
+	# Two in reach: the nearest.
+	map = await _fresh_reach_map()
+	var pair := _close_pair(map)
+	check(not pair.is_empty(), "two letter-bearing plants lie close together")
+	if not pair.is_empty():
+		var a: Node3D = pair[0]
+		var b: Node3D = pair[1]
+		var toward: Vector3 = (b.global_position - a.global_position)
+		toward.y = 0.0
+		var mid := a.global_position + toward * 0.65  # nearer b
+		map.picking.pick_radius = 2.5
+		map.player.global_position = _ground_point(map, mid.x, mid.z)
+		check(map.picking.nearest_pickable(Vector2(mid.x, mid.z)) == map.plants.find(b), "the second plant is the nearer one")
+		var a_in: bool = Vector2(mid.x - a.global_position.x, mid.z - a.global_position.z).length() <= map.picking.pick_radius
+		check(a_in, "both plants are in reach")
+		map.pick_nearest()
+		check(b.letter == "" and a.letter != "", "Space picked the nearest, not the other")
+	map.free()
+
+	# Gating: dead and restarting.
+	map = await _fresh_reach_map()
+	target = _lone_plant(map, "target")
+	_stand_near(map, target)
+	map.restarting = true
+	map._unhandled_input(_key_event(KEY_SPACE))
+	check(target.letter != "" and map.picking.basket.is_empty(), "Space while restarting takes nothing")
+	map.restarting = false
+	while GameState.is_alive("fernanda") and GameState.is_alive("nestor"):
+		GameState.damage("fernanda", "test")
+	map._unhandled_input(_key_event(KEY_SPACE))
+	check(target.letter != "" and map.picking.basket.is_empty(), "Space with the travelers dead takes nothing")
+	map.free()
+
+	# Space cancels a click-walk.
+	map = await _fresh_reach_map()
+	target = _lone_plant(map, "target")
+	var far := _lone_plant(map, "decoy")
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	check(map.picking.start_walk(map.plants.find(far)) and map.picking.walk_target >= 0, "a walk is under way")
+	map._unhandled_input(_key_event(KEY_SPACE))
+	check(map.picking.walk_target == -1, "Space cancels the click-walk")
+	map.free()
+
+	# Walk-up flash.
+	map = await _fresh_reach_map()
+	target = _lone_plant(map, "target")
+	decoy = _lone_plant(map, "decoy")
+	map.partner.global_position = _ground_point(map, decoy.global_position.x + 0.3, decoy.global_position.z)
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._tip_plant == null, "the partner standing next to a plant triggers no name")
+	_stand_near(map, target)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._tip_plant == target and map._tooltip.visible and map._tooltip_label.text == target.tooltip_text() and target.tooltip_text() != "???", "walking up to a target flashes its English name")
+	map._tip_plant = null
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._tip_plant == null, "it does not re-trigger while the player stays in reach")
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	_stand_near(map, target)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._tip_plant == target, "it triggers again after leaving the radius and re-entering")
+	check(map.picking.has_letter(map.plants.find(target)), "(the target still has its letter)")
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	_stand_near(map, decoy)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._tip_plant == decoy and map._tooltip_label.text == "???", "a decoy flashes ??? the same way")
+	map._start_tooltip(target, true)
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	_stand_near(map, decoy)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._tip_plant == decoy and not map._tip_by_mouse, "a walk-up replaces a mouse tooltip: the latest trigger wins")
+	# Timings come from the same data: steady, then gone after the flicker.
+	map._hover_time = 0.0
+	map.update_hover(Vector2(-10.0, -10.0), 0.0)
+	map.update_hover(Vector2(-10.0, -10.0), 0.2)
+	check(map._tooltip.visible, "a walk-up name is still solid at 0.2 s")
+	map.update_hover(Vector2(-10.0, -10.0), 0.3)
+	check(not map._tooltip.visible, "and gone after 0.5 s (steady + flicker)")
+	# Letterless plants flash too.
+	_stand_near(map, target)
+	map.pick_nearest()
+	map.player.global_position = _ground_point(map, 0.5, 0.0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	map._tip_plant = null
+	_stand_near(map, target)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(target.letter == "" and map._tip_plant == target, "a letterless plant flashes its name on walk-up")
+	map.free()
+
+	# The ring.
+	map = await _fresh_reach_map()
+	target = _lone_plant(map, "target")
+	decoy = _lone_plant(map, "decoy")
+	check(not map._ring.visible, "no ring when nothing is in reach")
+	_stand_near(map, target)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	var ring_a: MeshInstance3D = map._ring
+	check(ring_a.visible and map._ring_plant == target and ring_a.global_position.is_equal_approx(target.global_position), "the ring sits on the target in reach")
+	var color_a: Color = map._ring_material.albedo_color
+	var size_a: Vector3 = ring_a.mesh.get_aabb().size
+	var time_a: float = map._ring_time
+	_stand_near(map, decoy)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map._ring.visible and map._ring_plant == decoy and map._ring.global_position.is_equal_approx(decoy.global_position), "the ring moves to the decoy in reach")
+	var size_b: Vector3 = map._ring.mesh.get_aabb().size
+	var color_b: Color = map._ring_material.albedo_color
+	check(is_equal_approx(size_a.x, size_b.x) and is_equal_approx(size_a.z, size_b.z), "the ring is the same size on a target and a decoy")
+	var expected_alpha: float = map.picking.ring_alpha_at(map._ring_time)
+	check(color_a.r == color_b.r and color_a.g == color_b.g and color_a.b == color_b.b and is_equal_approx(color_b.a, expected_alpha) and is_equal_approx(color_a.a, map.picking.ring_alpha_at(time_a)), "the ring has the same colour and the same alpha curve on both")
+	check(map.find_children("ReachRing", "MeshInstance3D", true, false).size() == 1, "there is only ever one ring")
+	map.pick_nearest()
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(not map._ring.visible, "a letterless plant gets no ring")
+	var pair2 := _close_pair(map)
+	if not pair2.is_empty():
+		var a2: Node3D = pair2[0]
+		var b2: Node3D = pair2[1]
+		var dir: Vector3 = b2.global_position - a2.global_position
+		dir.y = 0.0
+		var spot := a2.global_position + dir * 0.65
+		map.picking.pick_radius = 2.5
+		map.player.global_position = _ground_point(map, spot.x, spot.z)
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+		check(map._ring.visible and map._ring_plant == b2 and map.find_children("ReachRing", "MeshInstance3D", true, false).size() == 1, "with two in reach the ring marks only the nearest")
+	map.free()
+	_section_done("test_reach_scene")

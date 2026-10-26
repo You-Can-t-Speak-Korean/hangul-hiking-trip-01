@@ -15,25 +15,44 @@ var basket: Array[String] = []
 ## The plant being walked to, or -1.
 var walk_target := -1
 
+## The reach ring (data: foraging.reach_ring). The same for every plant.
+var ring_color := Color(0.95, 0.95, 0.85)
+var ring_alpha := 0.3
+var ring_radius_offset := -0.6
+var ring_width := 0.07
+var ring_pulse_speed := 0.6
+var ring_pulse_depth := 0.4
+
 const PROGRESS := 0.02  # metres closer that count as moving toward the target
 
-var _slots: Array[Dictionary] = []  # per plant: {"letter", "decoy"}
+var _slots: Array[Dictionary] = []  # per plant: {"letter", "decoy", "spot"}
 var _best_distance := INF
 var _stalled := 0.0
+var _inside := {}  # plant index -> true, while the walker is within pick_radius
 
 
-## `config` is foraging.picking, `plants_data` is foraging.plants.
-func _init(config: Dictionary, plants_data: Dictionary) -> void:
+## `config` is foraging.picking, `plants_data` is foraging.plants, `ring` is
+## foraging.reach_ring (optional; the defaults above are used without it).
+func _init(config: Dictionary, plants_data: Dictionary, ring: Dictionary = {}) -> void:
 	pick_radius = float(config["pick_radius"])
 	stuck_timeout = float(config["walk_stuck_timeout"])
 	steam_duration = float(config["steam_duration"])
 	var c: Array = config["steam_color"]
 	steam_color = Color(c[0], c[1], c[2])
+	if not ring.is_empty():
+		var rc: Array = ring["color"]
+		ring_color = Color(rc[0], rc[1], rc[2])
+		ring_alpha = float(ring["alpha"])
+		ring_radius_offset = float(ring["radius_offset"])
+		ring_width = float(ring["width"])
+		ring_pulse_speed = float(ring["pulse_speed"])
+		ring_pulse_depth = float(ring["pulse_depth"])
 	var decoy := {}
 	for kind in plants_data["kinds"]:
 		decoy[kind["id"]] = kind["kind"] != "target"
 	for entry in plants_data["placed"]:
-		_slots.append({"letter": String(entry.get("letter", "")), "decoy": decoy[entry["kind"]]})
+		_slots.append({"letter": String(entry.get("letter", "")), "decoy": decoy[entry["kind"]],
+				"spot": Vector2(float(entry["x"]), float(entry["z"]))})
 
 
 func plant_count() -> int:
@@ -98,3 +117,45 @@ func walk_update(distance: float, delta: float) -> String:
 			cancel_walk()
 			return "stuck"
 	return "walking"
+
+
+## The plant that still has its letter and is nearest to `spot` (x, z) within
+## pick_radius, or -1. Decoys and targets are treated alike.
+func nearest_pickable(spot: Vector2) -> int:
+	var best := -1
+	var best_distance := INF
+	for i in _slots.size():
+		var distance := spot.distance_to(_slots[i]["spot"])
+		if has_letter(i) and distance <= pick_radius and distance < best_distance:
+			best = i
+			best_distance = distance
+	return best
+
+
+## Call once per tick with the walker's (x, z). Returns the plants (any, with or
+## without a letter) it has just come within pick_radius of, nearest last. A
+## plant is reported again only after the walker has left its radius.
+func entered_reach(spot: Vector2) -> Array[int]:
+	var entered: Array[int] = []
+	for i in _slots.size():
+		var distance := spot.distance_to(_slots[i]["spot"])
+		if distance <= pick_radius:
+			if not _inside.has(i):
+				_inside[i] = true
+				entered.append(i)
+		else:
+			_inside.erase(i)
+	entered.sort_custom(func(a: int, b: int) -> bool:
+		return spot.distance_to(_slots[a]["spot"]) > spot.distance_to(_slots[b]["spot"]))
+	return entered
+
+
+## The ring's outer radius, and its alpha at `time` seconds (pulses between
+## ring_alpha and ring_alpha * (1 - ring_pulse_depth)).
+func ring_radius() -> float:
+	return maxf(pick_radius + ring_radius_offset, ring_width)
+
+
+func ring_alpha_at(time: float) -> float:
+	var wave := 0.5 + 0.5 * cos(TAU * ring_pulse_speed * time)
+	return ring_alpha * (1.0 - ring_pulse_depth * (1.0 - wave))
