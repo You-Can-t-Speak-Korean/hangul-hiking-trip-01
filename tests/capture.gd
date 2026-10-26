@@ -3,7 +3,8 @@ extends Node
 ## and saves tests/shots/{start,left_near,right_far,middle}.png, plus the
 ## terrain shots {zone_lower_forest,zone_mid_slope,zone_alpine}.png, and
 ## {tree_fade,tooltip_shown,tooltip_faded,letters_lower_forest,letters_alpine,
-## fruits_meoru_butsunnamu,fruit_deulchuk,spread_topdown}.png.
+## fruits_meoru_butsunnamu,fruit_deulchuk,hud_empty,hud_ma_meoru,hud_all_six,
+## letters_decoys_targets,spread_topdown}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -26,6 +27,7 @@ func _ready() -> void:
 	var half_depth: float = map.stage_depth / 2.0
 	await _frames(5)
 	_save("start")
+	_save("hud_empty")
 	_save("zone_lower_forest")
 	await _walk_to(map, Vector3(0.0, 0.0, half_depth))
 	await _frames(90)
@@ -86,8 +88,58 @@ func _ready() -> void:
 	await _walk_to(map, Vector3(48.0, 0.0, 0.0))
 	await _frames(90)
 	_save("fruit_deulchuk")
+	# The discovery HUD, on a fresh map so the walk above has not filled the list.
+	map.free()
+	map = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	await _teleport(map, _clean_spot(map, "ma"))
+	await _teleport(map, _clean_spot(map, "meoru"))
+	await _frames(5)
+	_save("hud_ma_meoru")
+	for id in ["minari", "gosari", "gobi", "simiro"]:
+		await _teleport(map, _clean_spot(map, id))
+	await _frames(5)
+	_save("hud_all_six")
+	# Decoys and targets side by side: 붓순나무 (15, 1.5), 큰천남성 (13, 4), 머루 and 고비 nearby.
+	await _teleport(map, Vector2(16.0, 1.0))
+	await _frames(5)
+	_save("letters_decoys_targets")
 	await _topdown(map)
 	get_tree().quit()
+
+
+## A point 2.4 m from a plant of the kind with no other target kind within the
+## discovery radius, so a traveler standing there discovers only this kind.
+func _clean_spot(map: Node3D, kind_id: String) -> Vector2:
+	var radius: float = map.discovery.radius
+	for plant in map.plants:
+		if plant.kind_id != kind_id:
+			continue
+		for degrees in range(0, 360, 15):
+			var point := Vector2(plant.position.x, plant.position.z) + Vector2.from_angle(deg_to_rad(degrees)) * 2.4
+			var clear: bool = point.x > 1.0 and point.x < map.stage_width - 1.0 and absf(point.y) < map.stage_depth / 2.0 - 1.0
+			for other in map.plants:
+				if other.kind == "target" and other.kind_id != kind_id and Vector2(other.position.x, other.position.z).distance_to(point) <= radius + 1.5:
+					clear = false
+			if clear:
+				return point
+	push_error("no clean spot for " + kind_id)
+	return Vector2.ZERO
+
+
+## Puts both travelers at a spot, ticks the map, and lets the HUD fade in.
+func _teleport(map: Node3D, spot: Vector2) -> void:
+	var ids: Array = map.travelers.keys()
+	for i in ids.size():
+		var x: float = spot.x + 0.8 * i
+		map.travelers[ids[i]].global_position = Vector3(x, map.terrain.height_at(x), spot.y)
+	map.update_camera(0.0, true)
+	for frame in 40:  # 0.4 s fade-in is 24 ticks
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
 
 
 ## Debug only: a straight-down view of the whole map with one coloured marker

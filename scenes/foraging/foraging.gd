@@ -7,6 +7,8 @@ const Traveler := preload("res://scenes/foraging/traveler.gd")
 const Terrain := preload("res://scenes/foraging/terrain.gd")
 const Plant := preload("res://scenes/foraging/plant.gd")
 const Prop := preload("res://scenes/foraging/prop.gd")
+const Discovery := preload("res://scenes/foraging/discovery.gd")
+const DiscoveryHud := preload("res://scenes/foraging/discovery_hud.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -42,6 +44,9 @@ var zones: Array = []
 ## as Vector2s over (x, z).
 var plants: Array[Node3D] = []
 var keep_out: Array[Vector2] = []
+## Which target kinds the travelers have walked up to, and the HUD that lists them.
+var discovery
+var discovery_hud: CanvasLayer
 var travelers: Dictionary = {}
 var player: CharacterBody3D
 var partner: CharacterBody3D
@@ -93,6 +98,10 @@ func _ready() -> void:
 	_build_backdrop(config["backdrop"]["pieces"])
 	_build_props(config["props"])
 	_build_tooltip()
+	discovery = Discovery.new(config["discovery"], config["plants"])
+	discovery_hud = DiscoveryHud.new()
+	add_child(discovery_hud)
+	discovery_hud.setup(discovery)
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
 		var traveler := Traveler.new()
@@ -129,6 +138,11 @@ func step(input: Vector2, delta: float) -> void:
 	partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
 	update_prop_fade(delta)
+	var spots: Array[Vector2] = []
+	for traveler in travelers.values():
+		spots.append(Vector2(traveler.global_position.x, traveler.global_position.z))
+	discovery.update(spots, delta)
+	discovery_hud.refresh()
 
 
 ## Half the width, in metres, the orthographic camera shows.

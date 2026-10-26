@@ -114,6 +114,15 @@ func is_readable(word: String, known: Array) -> bool:
 	return unknown_letters(word, known).is_empty()
 
 
+## How many syllable blocks a word has.
+func syllable_count(word: String) -> int:
+	var count := 0
+	for ch in word:
+		if is_syllable(ch):
+			count += 1
+	return count
+
+
 ## The plain letters (no "-" prefix) a word is built from, for tile trays.
 func tiles_for(word: String) -> Array[String]:
 	var tiles: Array[String] = []

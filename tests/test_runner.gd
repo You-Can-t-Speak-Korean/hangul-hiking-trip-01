@@ -35,8 +35,13 @@ func _ready() -> void:
 	test_backdrop_data()
 	test_fade_and_tooltip_data()
 	test_names_and_colors_data()
+	print("== Decoy letters and discovery (data) ==")
+	test_decoy_letters()
+	test_discovery_logic()
 	print("== Terrain, plants and hover (scene) ==")
 	await test_terrain_scene()
+	print("== Discovery list (scene) ==")
+	test_discovery_scene()
 	print("== Backdrop and prop fade (scene) ==")
 	test_backdrop_scene()
 	test_prop_fade()
@@ -457,11 +462,15 @@ func test_plants_data() -> void:
 			"keuncheonnamseong": 2, "butsunnamu": 2, "norugui": 2, "deulchuknamu": 2}
 	check(_expected_counts() == expected, "the letter-token counts are 마 2, 머루 4, 미나리 6, 고사리 6, 고비 4, 시로미 6, decoys 2")
 	check(placed.size() == 36, "exactly 36 plants (%d)" % placed.size())
+	var target_letter_plants := 0
 	var letter_plants := 0
 	for entry in placed:
 		if entry.has("letter"):
 			letter_plants += 1
-	check(letter_plants == 28, "28 letter plants (%d)" % letter_plants)
+			if by_id[entry["kind"]]["kind"] == "target":
+				target_letter_plants += 1
+	check(target_letter_plants == 28, "28 target letter plants (%d)" % target_letter_plants)
+	check(letter_plants == 36, "every one of the 36 plants carries a letter (%d)" % letter_plants)
 	var targets := []
 	for kind in kinds:
 		if kind["kind"] == "target":
@@ -497,15 +506,12 @@ func test_plants_data() -> void:
 			var z := float(entry["z"])
 			zone_ok = zone_ok and x >= float(zone_x[0]) + 1.0 and x <= float(zone_x[1]) - 1.0
 			stage_ok = stage_ok and absf(z) <= half_depth - 1.0
-			if kind["kind"] == "target":
-				var letter := String(entry.get("letter", ""))
-				letters_ok = letters_ok and letter.length() == 1
-				glyphs_ok = glyphs_ok and font != null and letter.length() == 1 and font.has_char(letter.unicode_at(0))
-			else:
-				letters_ok = letters_ok and not entry.has("letter")
+			var letter := String(entry.get("letter", ""))
+			letters_ok = letters_ok and letter.length() == 1
+			glyphs_ok = glyphs_ok and font != null and letter.length() == 1 and font.has_char(letter.unicode_at(0))
 	check(zone_ok, "every plant is inside its kind's zone (1 m from the edges)")
 	check(stage_ok, "every plant is on the stage")
-	check(letters_ok, "each target plant carries exactly one letter; decoys carry none")
+	check(letters_ok, "every plant, target or decoy, carries exactly one letter")
 	check(glyphs_ok, "the font has every letter the plants carry")
 	check(FileAccess.file_exists(font_path) and font is FontFile, "the font file exists and loads as a FontFile")
 
@@ -644,17 +650,15 @@ func test_terrain_scene() -> void:
 		labels_total += labels.size()
 		for mesh in plant.find_children("*", "MeshInstance3D", true, false):
 			boxes_ok = boxes_ok and not (mesh.mesh is BoxMesh)
-		if plant.kind == "target":
-			letters_ok = letters_ok and labels.size() == 1 and labels[0].text == plant.letter and plant.letter.length() == 1
-			for l in labels:
-				font_ok = font_ok and l.font != null and l.font.resource_path.ends_with("NotoSansKR-VariableFont_wght.ttf")
-				big_ok = big_ok and l.pixel_size * l.font_size >= 1.0
+		letters_ok = letters_ok and labels.size() == 1 and labels[0].text == plant.letter and plant.letter.length() == 1
+		for l in labels:
+			font_ok = font_ok and l.font != null and l.font.resource_path.ends_with("NotoSansKR-VariableFont_wght.ttf")
+			big_ok = big_ok and l.pixel_size * l.font_size >= 1.0
+			if plant.kind == "target":
 				if not carried.has(plant.kind_id):
 					carried[plant.kind_id] = []
 				carried[plant.kind_id].append(l.text)
-		else:
-			letters_ok = letters_ok and labels.is_empty() and plant.letter.is_empty()
-	check(letters_ok, "each target plant shows one letter; decoys show none")
+	check(letters_ok, "every plant, target or decoy, shows exactly one letter")
 	var words_ok := true
 	for kind in _hangul_plants():
 		if kind["kind"] == "target":
@@ -664,7 +668,7 @@ func test_terrain_scene() -> void:
 			wanted.sort()
 			words_ok = words_ok and shown == wanted
 	check(words_ok, "the letters shown on each target's plants are the letters of its name")
-	check(labels_total == 28, "28 letter labels (%d)" % labels_total)
+	check(labels_total == 36, "36 letter labels, one per plant (%d)" % labels_total)
 	check(heights_ok, "every plant sits at terrain height")
 	check(font_ok, "every letter uses the Noto Sans KR font")
 	check(big_ok, "every letter is about a metre tall")
@@ -766,6 +770,249 @@ func test_terrain_scene() -> void:
 
 func _config() -> Dictionary:
 	return Content.mountain("hallasan")["foraging"]
+
+
+## The letters used by the six target words.
+func _allowed_letters() -> Array[String]:
+	var allowed: Array[String] = []
+	for kind in _hangul_plants():
+		if kind["kind"] == "target":
+			for tile in Hangul.tiles_for(kind["name"]):
+				if not allowed.has(tile):
+					allowed.append(tile)
+	return allowed
+
+
+func test_decoy_letters() -> void:
+	var allowed := _allowed_letters()
+	check(allowed.size() == 11, "the target words use 11 different letters (%d)" % allowed.size())
+	var by_id := {}
+	for kind in _hangul_plants():
+		by_id[kind["id"]] = kind
+	var per_kind := {}
+	var decoys := 0
+	var one_each := true
+	for entry in _placed():
+		if by_id[entry["kind"]]["kind"] == "target":
+			continue
+		decoys += 1
+		var letter := String(entry.get("letter", ""))
+		one_each = one_each and letter.length() == 1 and allowed.has(letter)
+		if not per_kind.has(entry["kind"]):
+			per_kind[entry["kind"]] = []
+		per_kind[entry["kind"]].append(letter)
+	check(decoys == 8, "8 decoy plants (%d)" % decoys)
+	check(one_each, "each decoy has exactly one letter, from the target words' letters")
+	var differ := per_kind.size() == 4
+	var seen := {}
+	for id in per_kind:
+		differ = differ and per_kind[id].size() == 2 and per_kind[id][0] != per_kind[id][1]
+		for letter in per_kind[id]:
+			seen[letter] = true
+	check(differ, "the two plants of a decoy kind carry different letters")
+	check(seen.size() >= 6, "the decoys do not all repeat one letter (%d different)" % seen.size())
+
+
+## A point `dist` metres from `spot` (over x, z) on the stage, at which no
+## target plant of a kind other than `own` is within the discovery radius, and,
+## when `own` is empty, no target plant at all. Vector2.INF if there is none.
+func _probe(spot: Vector2, dist: float, own: String) -> Vector2:
+	var config := _config()
+	var radius := float(config["discovery"]["radius"])
+	var half_depth := float(config["stage"]["depth"]) / 2.0
+	var by_id := {}
+	for kind in _hangul_plants():
+		by_id[kind["id"]] = kind
+	for degrees in range(0, 360, 15):
+		var point := spot + Vector2.from_angle(deg_to_rad(degrees)) * dist
+		if point.x < 1.0 or point.x > float(config["stage"]["width"]) - 1.0 or absf(point.y) > half_depth - 1.0:
+			continue
+		var clear := true
+		for entry in _placed():
+			if by_id[entry["kind"]]["kind"] != "target" or entry["kind"] == own:
+				continue
+			if point.distance_to(Vector2(float(entry["x"]), float(entry["z"]))) <= radius + 0.05:
+				clear = false
+		if clear:
+			return point
+	return Vector2.INF
+
+
+## First placed plant of a kind, as (x, z).
+func _spot_of(kind_id: String, index: int = 0) -> Vector2:
+	var found := 0
+	for entry in _placed():
+		if entry["kind"] == kind_id:
+			if found == index:
+				return Vector2(float(entry["x"]), float(entry["z"]))
+			found += 1
+	return Vector2.INF
+
+
+func _new_discovery():
+	return load("res://scenes/foraging/discovery.gd").new(_config()["discovery"], _config()["plants"])
+
+
+## Some point `dist` m from one of a kind's plants where no other target is near. Returns Vector2.INF if neither plant has one.
+func _near_kind(kind_id: String, dist: float) -> Vector2:
+	for index in 2:
+		var point := _probe(_spot_of(kind_id, index), dist, kind_id)
+		if point != Vector2.INF:
+			return point
+	return Vector2.INF
+
+
+func test_discovery_logic() -> void:
+	var config := _config()
+	check(is_equal_approx(float(config["discovery"]["radius"]), 3.0), "the discovery radius is 3.0 m in the data")
+	check(is_equal_approx(float(config["discovery"]["fade_time"]), 0.4), "the discovery fade time is 0.4 s in the data")
+	var d = _new_discovery()
+	check(is_equal_approx(d.radius, 3.0) and is_equal_approx(d.fade_time, 0.4), "Discovery reads the radius and fade time from the data")
+	check(d.entries.is_empty(), "the list is empty at the start")
+	var starts: Array[Vector2] = []
+	for id in config["start"]:
+		starts.append(Vector2(float(config["start"][id][0]), float(config["start"][id][1])))
+	d.update(starts, 0.1)
+	check(d.entries.is_empty(), "no target is within the radius of either start position")
+
+	# Syllable blocks, counted from the Korean names.
+	var expected := {"ma": 1, "meoru": 2, "minari": 3, "gosari": 3, "gobi": 2, "simiro": 3}
+	var all = _new_discovery()
+	var every: Array[Vector2] = []
+	for entry in _placed():
+		every.append(Vector2(float(entry["x"]), float(entry["z"])))
+	all.update(every, 0.0)
+	var counts := {}
+	var no_korean := true
+	for entry in all.entries:
+		counts[entry["id"]] = entry["syllables"]
+		for key in entry:
+			for ch in str(entry[key]):
+				if ch.unicode_at(0) >= 0x1100:
+					no_korean = false
+	check(counts == expected, "syllable counts are 마 1, 머루 2, 미나리 3, 고사리 3, 고비 2, 시로미 3 (%s)" % str(counts))
+	check(no_korean, "no list entry holds Korean text or a letter")
+	check(all.entries.size() == 6, "walking up to everything discovers exactly the six targets (%d)" % all.entries.size())
+
+	# One kind at a time.
+	var near_ma := _near_kind("ma", 2.5)
+	check(near_ma != Vector2.INF, "there is a spot 2.5 m from a 마 with no other target near")
+	var outside := _near_kind("ma", 3.3)
+	check(outside != Vector2.INF, "there is a spot 3.3 m from a 마 with no other target near")
+	if near_ma == Vector2.INF or outside == Vector2.INF:
+		return
+	var far: Vector2 = Vector2(float(config["stage"]["width"]) - 1.0, 0.0)
+	d = _new_discovery()
+	d.update([far, outside], 0.1)
+	check(d.entries.is_empty(), "3.3 m from a 마 plant discovers nothing")
+	var found: Array[String] = d.update([far, near_ma], 0.1)
+	check(found == ["ma"] and d.discovered_ids() == ["ma"], "the second traveler within the radius discovers 마, and only 마")
+	d = _new_discovery()
+	d.update([near_ma, far], 0.1)
+	check(d.discovered_ids() == ["ma"], "the first traveler can discover too")
+	d.update([far, far], 0.1)
+	check(d.is_discovered("ma") and d.entries.size() == 1, "a discovered kind stays discovered")
+	d.update([near_ma, far], 0.1)
+	check(d.entries.size() == 1, "walking back up to it adds nothing twice")
+
+	# Order of discovery is kept.
+	var near_meoru := _near_kind("meoru", 2.5)
+	var near_simiro := _near_kind("simiro", 2.5)
+	check(near_meoru != Vector2.INF and near_simiro != Vector2.INF, "there are clean spots near 머루 and 시로미")
+	d = _new_discovery()
+	d.update([near_simiro, far], 0.1)
+	d.update([near_meoru, far], 0.1)
+	d.update([near_ma, far], 0.1)
+	check(d.discovered_ids() == ["simiro", "meoru", "ma"], "entries keep the order they were discovered in (%s)" % str(d.discovered_ids()))
+
+	# Decoys discover nothing.
+	var decoy_ok := true
+	var decoys_tried := 0
+	var by_id := {}
+	for kind in _hangul_plants():
+		by_id[kind["id"]] = kind
+	for entry in _placed():
+		if by_id[entry["kind"]]["kind"] == "target":
+			continue
+		var point := _probe(Vector2(float(entry["x"]), float(entry["z"])), 2.0, "")
+		if point == Vector2.INF:
+			continue
+		decoys_tried += 1
+		var fresh = _new_discovery()
+		fresh.update([point, point], 0.1)
+		decoy_ok = decoy_ok and fresh.entries.is_empty()
+	check(decoys_tried > 0 and decoy_ok, "standing next to a decoy discovers nothing (%d tried)" % decoys_tried)
+
+	# A new Discovery (a scene restart) starts empty.
+	check(_new_discovery().entries.is_empty(), "a new Discovery starts empty")
+
+	# Fade-in.
+	d = _new_discovery()
+	d.update([near_ma, far], 0.1)
+	check(is_zero_approx(d.opacity(d.entries[0])), "a new entry starts invisible")
+	d.update([far, far], 0.2)
+	check(d.opacity(d.entries[0]) > 0.0 and d.opacity(d.entries[0]) < 1.0, "it is part way after 0.2 s")
+	d.update([far, far], 0.3)
+	check(is_equal_approx(d.opacity(d.entries[0]), 1.0), "it is solid after 0.4 s")
+
+
+func test_discovery_scene() -> void:
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	var hud: CanvasLayer = map.discovery_hud
+	check(hud != null and hud is CanvasLayer, "the foraging scene has a discovery HUD (CanvasLayer)")
+	check(map.discovery.entries.is_empty() and hud.find_children("*", "Label", true, false).is_empty(), "the list is empty when the scene starts")
+	map.step(Vector2.ZERO, 0.1)
+	check(map.discovery.entries.is_empty(), "standing at the start discovers nothing")
+	var near_ma := _near_kind("ma", 2.5)
+	var near_meoru := _near_kind("meoru", 2.5)
+	check(near_ma != Vector2.INF and near_meoru != Vector2.INF, "clean spots exist for 마 and 머루")
+	if near_ma == Vector2.INF or near_meoru == Vector2.INF:
+		map.free()
+		return
+	# Put both travelers on a spot and tick.
+	for spot in [near_ma, near_meoru]:
+		for id in map.travelers:
+			map.travelers[id].global_position = _ground_point(map, spot.x, spot.y)
+		map.step(Vector2.ZERO, 0.1)
+	check(map.discovery.discovered_ids() == ["ma", "meoru"], "walking up to 마 then 머루 lists them in that order")
+	for i in 10:
+		map.step(Vector2.ZERO, 0.1)
+	var labels: Array = hud.find_children("*", "Label", true, false)
+	var texts: Array = labels.map(func(l): return l.text)
+	check(texts == ["Korean yam", "wild grape"], "the HUD shows the English names (%s)" % str(texts))
+	var rows: Array = hud.find_children("Blocks", "HBoxContainer", true, false)
+	var blocks: Array = rows.map(func(r): return r.get_child_count())
+	check(blocks == [1, 2], "마 shows 1 block and 머루 2 (%s)" % str(blocks))
+	var plain := true
+	for row in rows:
+		for block in row.get_children():
+			plain = plain and block is Panel and block.find_children("*", "Label", true, false).is_empty()
+	check(plain, "the blocks are empty squares with no text in them")
+	var korean := false
+	for l in labels:
+		for ch in str(l.text):
+			if ch.unicode_at(0) >= 0x1100:
+				korean = true
+	check(not korean, "no Korean text or letters are shown in the list")
+	var big := true
+	for l in labels:
+		big = big and l.get_theme_font_size("font_size") >= 20
+	check(big, "the names use a readable font size")
+	# The HUD sits at the top left.
+	var top_left := true
+	for child in hud.get_children():
+		top_left = top_left and child is Control and child.position.x < 40.0 and child.position.y < 40.0
+	check(top_left, "the list is at the top left")
+	# A new scene starts with an empty list.
+	map.free()
+	var again: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(again)
+	again.set_physics_process(false)
+	check(again.discovery.entries.is_empty(), "a restarted scene starts with an empty list")
+	again.free()
 
 
 func test_backdrop_data() -> void:
