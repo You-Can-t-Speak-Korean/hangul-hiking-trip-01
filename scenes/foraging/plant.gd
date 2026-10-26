@@ -19,6 +19,8 @@ var letter_style := ""
 var letter := ""  # the one letter this plant carries; empty on a decoy
 
 var _color := Color.WHITE
+var _letter_label: Label3D
+var _letter_spot := Vector3.ZERO  # where the letter floats, local to the plant
 var _fruit_color := Color.WHITE
 
 
@@ -47,6 +49,22 @@ static func fruit_color(data: Dictionary) -> Color:
 		return Color(f[0], f[1], f[2])
 	var c: Array = data["color"]
 	return Color(c[0], c[1], c[2]).lerp(Color(0.45, 0.1, 0.5), 0.6)
+
+
+## Removes the letter from the plant (its label goes, the plant stays) and
+## returns it. Empty if the plant is already letterless.
+func take_letter() -> String:
+	var taken := letter
+	letter = ""
+	if _letter_label != null:
+		_letter_label.queue_free()
+		_letter_label = null
+	return taken
+
+
+## Where the letter floats, in world space.
+func letter_position() -> Vector3:
+	return to_global(_letter_spot)
 
 
 ## What the hover tooltip says: the real name for a target, "???" for a decoy.
@@ -113,6 +131,8 @@ func _label(pos: Vector3) -> void:
 	label.outline_modulate = Color(0.08, 0.06, 0.1)
 	label.position = pos
 	add_child(label)
+	_letter_label = label
+	_letter_spot = pos
 
 
 ## One fruit on a string under a branch; the letter is printed on the fruit.

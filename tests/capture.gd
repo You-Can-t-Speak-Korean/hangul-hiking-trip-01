@@ -5,7 +5,8 @@ extends Node
 ## {tree_fade,tooltip_0_2s,tooltip_0_65s_flicker_visible,
 ## tooltip_0_7s_flicker_hidden,tooltip_1_2s_gone,letters_lower_forest,letters_alpine,
 ## fruits_meoru_butsunnamu,fruit_deulchuk,hud_empty,hud_ma_meoru,hud_all_six,
-## letters_decoys_targets,spread_topdown}.png.
+## letters_decoys_targets,spread_topdown}.png, and the picking shots
+## {pick_walking,pick_target_basket,pick_decoy_steam}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -116,6 +117,11 @@ func _ready() -> void:
 	await _frames(5)
 	_save("letters_decoys_targets")
 	await _topdown(map)
+	map.free()  # its plants' pick areas would answer the picking shots' clicks
+	for child in get_children():  # and the top-down legend would cover the HUD
+		if child is CanvasLayer:
+			child.queue_free()
+	await _picking_shots()
 	get_tree().quit()
 
 
@@ -232,3 +238,66 @@ func _save(label: String) -> void:
 	var path := ProjectSettings.globalize_path(SHOT_DIR + label + ".png")
 	var err := get_viewport().get_texture().get_image().save_png(path)
 	print("%s -> %s (%s)" % [label, path, "ok" if err == OK else "error %d" % err])
+
+
+## Picking, on a fresh map: click a target (mid-walk, then picked with a tile in
+## the basket), then click a decoy and catch its steam puff.
+func _picking_shots() -> void:
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	map.partner.global_position = Vector3(60.0, map.terrain.height_at(60.0), 0.0)
+	map.player.global_position = Vector3(14.0, map.terrain.height_at(14.0), 0.0)
+	map.update_camera(0.0, true)
+	await _frames(5)
+	for i in 5:
+		await get_tree().physics_frame
+	var target: Node3D = _on_screen(map, true, 3.5)
+	if target == null:
+		push_error("no target plant on screen")
+		map.free()
+		return
+	map.click(map.camera.unproject_position(target.global_position + Vector3(0, 0.5, 0)))
+	for i in 30:  # about half a second of walking
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("pick_walking")
+	while map.picking.walk_target >= 0:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	for i in 20:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("pick_target_basket")
+	for i in 5:
+		await get_tree().physics_frame
+	var decoy: Node3D = _on_screen(map, false, 0.0)
+	if decoy == null:
+		push_error("no decoy plant on screen")
+		map.free()
+		return
+	map.click(map.camera.unproject_position(decoy.global_position + Vector3(0, 0.5, 0)))
+	while map.picking.walk_target >= 0:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	for i in 18:  # 0.3 s into the puff
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("pick_decoy_steam")
+	map.free()
+
+
+## The nearest plant on screen (target or decoy) at least `min_distance` from the player.
+func _on_screen(map: Node3D, want_target: bool, min_distance: float) -> Node3D:
+	var best: Node3D = null
+	for plant in map.plants:
+		var screen: Vector2 = map.camera.unproject_position(plant.global_position + Vector3(0, 0.5, 0))
+		var distance: float = plant.global_position.distance_to(map.player.global_position)
+		if (plant.kind == "target") == want_target and plant.letter != "" and distance >= min_distance \
+				and get_viewport().get_visible_rect().grow(-40.0).has_point(screen) \
+				and (best == null or distance < best.global_position.distance_to(map.player.global_position)) \
+				and map.plant_at(screen) == plant:
+			best = plant
+	return best

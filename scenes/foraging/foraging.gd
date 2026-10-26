@@ -9,6 +9,9 @@ const Plant := preload("res://scenes/foraging/plant.gd")
 const Prop := preload("res://scenes/foraging/prop.gd")
 const Discovery := preload("res://scenes/foraging/discovery.gd")
 const DiscoveryHud := preload("res://scenes/foraging/discovery_hud.gd")
+const Picking := preload("res://scenes/foraging/picking.gd")
+const BasketHud := preload("res://scenes/foraging/basket_hud.gd")
+const SteamSound := preload("res://scenes/foraging/steam_sound.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -47,6 +50,11 @@ var keep_out: Array[Vector2] = []
 ## Which target kinds the travelers have walked up to, and the HUD that lists them.
 var discovery
 var discovery_hud: CanvasLayer
+## Which letters are still on their plants and what is in the basket, and the basket's HUD.
+var picking
+var basket_hud: CanvasLayer
+## Set while the scene is being restarted after a death; picks are ignored.
+var restarting := false
 var travelers: Dictionary = {}
 var player: CharacterBody3D
 var partner: CharacterBody3D
@@ -58,6 +66,7 @@ var tooltip_flicker_time := 0.4  # seconds it then flickers before it is gone (d
 var tooltip_flicker_rate := 10.0  # visible/hidden changes per second while flickering (data: tooltip)
 
 var _aim_height := 0.0
+var _steam_stream: AudioStreamWAV
 var _tooltip: PanelContainer
 var _tooltip_label: Label
 var _hover_plant: Node3D
@@ -104,6 +113,10 @@ func _ready() -> void:
 	discovery_hud = DiscoveryHud.new()
 	add_child(discovery_hud)
 	discovery_hud.setup(discovery)
+	picking = Picking.new(config["picking"], config["plants"])
+	basket_hud = BasketHud.new()
+	add_child(basket_hud)
+	basket_hud.setup(picking)
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
 		var traveler := Traveler.new()
@@ -133,10 +146,20 @@ func _physics_process(delta: float) -> void:
 	step(Input.get_vector("p1_left", "p1_right", "p1_up", "p1_down"), delta)
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		click(event.position)
+
+
 ## One tick of the map. Public so tests and the capture scene can drive it
 ## without a keyboard.
 func step(input: Vector2, delta: float) -> void:
-	player.drive(input, delta)
+	var walk := input
+	if not input.is_zero_approx() or not picks_allowed():
+		picking.cancel_walk()  # the keys take over
+	elif picking.walk_target >= 0:
+		walk = _walk_step(delta)
+	player.drive(walk, delta)
 	partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
 	update_prop_fade(delta)
@@ -145,6 +168,107 @@ func step(input: Vector2, delta: float) -> void:
 		spots.append(Vector2(traveler.global_position.x, traveler.global_position.z))
 	discovery.update(spots, delta)
 	discovery_hud.refresh()
+	basket_hud.refresh(delta)
+
+
+## False while restarting or once the travelers are dead (no one can pick).
+func picks_allowed() -> bool:
+	if restarting:
+		return false
+	for id in GameState.TRAVELERS:
+		if not GameState.is_alive(id):
+			return false
+	return true
+
+
+## A left click at a screen point. If it is on a plant that still has its
+## letter, the player walks to it (a later click retargets). Uses the hover's
+## plant_at(). Returns true if a walk started.
+func click(screen_pos: Vector2) -> bool:
+	if not picks_allowed():
+		return false
+	var plant := plant_at(screen_pos)
+	return plant != null and picking.start_walk(plants.find(plant))
+
+
+## One tick of a click-to-walk: the direction to walk, and the pick on arrival.
+func _walk_step(delta: float) -> Vector2:
+	var plant := plants[picking.walk_target]
+	var to := Vector2(plant.global_position.x - player.global_position.x, plant.global_position.z - player.global_position.z)
+	match picking.walk_update(to.length(), delta):
+		"arrived":
+			pick_plant(plant)
+		"walking":
+			return to.normalized()
+	return Vector2.ZERO
+
+
+## Takes a plant's letter: a target's goes to the basket, a decoy's vanishes in
+## steam. Does nothing if it is gone already or picks are not allowed.
+func pick_plant(plant: Node3D) -> void:
+	var result: Dictionary = picking.pick(plants.find(plant), picks_allowed())
+	if result["result"] == "none":
+		return
+	var at: Vector3 = plant.letter_position()
+	plant.take_letter()
+	if result["result"] == "basket":
+		basket_hud.refresh(0.0)
+	else:
+		_puff(at)
+		_play_tsss()
+
+
+## A one-shot puff of grey-white steam at a world position.
+func _puff(at: Vector3) -> CPUParticles3D:
+	var steam := CPUParticles3D.new()
+	steam.one_shot = true
+	steam.emitting = true
+	steam.amount = 24
+	steam.lifetime = picking.steam_duration
+	steam.explosiveness = 0.6
+	steam.direction = Vector3.UP
+	steam.spread = 35.0
+	steam.initial_velocity_min = 0.6
+	steam.initial_velocity_max = 1.4
+	steam.gravity = Vector3(0.0, 0.4, 0.0)  # steam rises
+	steam.scale_amount_min = 1.0
+	steam.scale_amount_max = 1.9
+	var fade := Gradient.new()
+	fade.set_color(0, Color(1, 1, 1, 0.9))
+	fade.set_color(1, Color(1, 1, 1, 0.0))
+	steam.color = picking.steam_color
+	steam.color_ramp = fade
+	var ball := SphereMesh.new()
+	ball.radius = 0.22
+	ball.height = 0.44
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.vertex_color_use_as_albedo = true
+	ball.material = material
+	steam.mesh = ball
+	var cleanup := Timer.new()  # frees the puff once its particles are gone
+	cleanup.wait_time = picking.steam_duration * 2.0
+	cleanup.one_shot = true
+	cleanup.autostart = true
+	cleanup.timeout.connect(steam.queue_free)
+	steam.add_child(cleanup)
+	add_child(steam)
+	steam.global_position = at
+	return steam
+
+
+## The placeholder "tsss". Skipped when there is no audio output (headless).
+func _play_tsss() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	if _steam_stream == null:
+		_steam_stream = SteamSound.make()
+	var player_node := AudioStreamPlayer.new()
+	player_node.stream = _steam_stream
+	player_node.finished.connect(player_node.queue_free)
+	add_child(player_node)
+	player_node.play()
 
 
 ## Half the width, in metres, the orthographic camera shows.

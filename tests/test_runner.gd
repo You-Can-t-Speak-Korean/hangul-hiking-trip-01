@@ -29,11 +29,15 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_discovery_scene",
 	"test_backdrop_scene",
 	"test_prop_fade",
+	"test_picking_data",
+	"test_picking_logic",
+	"test_steam_sound",
+	"test_picking_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 410
+const MIN_CHECKS := 486
 
 
 func check(condition: bool, label: String) -> void:
@@ -78,6 +82,11 @@ func _ready() -> void:
 	print("== Backdrop and prop fade (scene) ==")
 	test_backdrop_scene()
 	test_prop_fade()
+	print("== Picking ==")
+	test_picking_data()
+	test_picking_logic()
+	test_steam_sound()
+	await test_picking_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -1271,3 +1280,297 @@ func test_prop_fade() -> void:
 	check(not ("alpha" in plant), "a plant is not a fading prop")
 	map.free()
 	_section_done("test_prop_fade")
+
+
+const PickingScript := preload("res://scenes/foraging/picking.gd")
+
+
+func _new_picking():
+	var config := _config()
+	return PickingScript.new(config["picking"], config["plants"])
+
+
+func test_picking_data() -> void:
+	var block: Dictionary = _config().get("picking", {})
+	check(not block.is_empty(), "hallasan.json has a picking block")
+	for key in ["pick_radius", "walk_stuck_timeout", "steam_duration"]:
+		check(block.get(key) is float and float(block[key]) > 0.0, "picking.%s is a positive number" % key)
+	var color = block.get("steam_color")
+	check(color is Array and color.size() == 3, "picking.steam_color is present with three channels")
+	if color is Array and color.size() == 3:
+		var in_range := true
+		for channel in color:
+			in_range = in_range and channel is float and channel >= 0.0 and channel <= 1.0
+		check(in_range, "picking.steam_color channels are in 0..1")
+	var p = _new_picking()
+	check(is_equal_approx(p.pick_radius, float(block["pick_radius"])) and is_equal_approx(p.stuck_timeout, float(block["walk_stuck_timeout"])), "Picking reads the radius and stuck timeout from the data")
+	check(is_equal_approx(p.steam_duration, float(block["steam_duration"])) and p.steam_color == Color(color[0], color[1], color[2]), "Picking reads the steam values from the data")
+	_section_done("test_picking_data")
+
+
+func test_picking_logic() -> void:
+	var placed: Array = _config()["plants"]["placed"]
+	var kinds := {}
+	for kind in _config()["plants"]["kinds"]:
+		kinds[kind["id"]] = kind["kind"]
+	var p = _new_picking()
+	check(p.plant_count() == 36 and p.letters_left() == 36, "36 plants start with their letters")
+	check(p.basket.is_empty(), "the basket starts empty")
+	# Every target letter, in pick order (the order is shuffled so it is not placement order).
+	var order: Array[int] = []
+	for i in placed.size():
+		if kinds[placed[i]["kind"]] == "target":
+			order.append(i)
+	check(order.size() == 28, "there are 28 target plants")
+	order.reverse()
+	var expected: Array[String] = []
+	var in_order := true
+	for i in order:
+		var result: Dictionary = p.pick(i)
+		expected.append(placed[i]["letter"])
+		in_order = in_order and result["result"] == "basket" and result["letter"] == placed[i]["letter"] and p.basket == expected
+	check(in_order, "picking each of the 28 target letters adds exactly that letter, in pick order")
+	check(p.basket.size() == 28 and p.letters_left() == 8, "28 in the basket, the 8 decoy letters left")
+	# Decoys: nothing in the basket, the letter is gone.
+	var decoys_ok := true
+	for i in placed.size():
+		if kinds[placed[i]["kind"]] == "target":
+			continue
+		var before: Array = p.basket.duplicate()
+		var result: Dictionary = p.pick(i)
+		decoys_ok = decoys_ok and result["result"] == "steam" and result["letter"] == placed[i]["letter"] and p.basket == before and not p.has_letter(i)
+	check(decoys_ok, "picking a decoy adds nothing and marks its letter gone")
+	check(p.letters_left() == 0 and p.basket.size() == 28, "all letters gone, basket unchanged by decoys")
+	# Double pick.
+	check(p.pick(order[0])["result"] == "none" and p.basket.size() == 28, "a letter can't be picked twice")
+	check(not p.start_walk(order[0]), "a letterless plant is not a walk target")
+	# Dead or restarting.
+	var q = _new_picking()
+	check(q.pick(0, false)["result"] == "none" and q.basket.is_empty() and q.has_letter(0), "a disallowed pick takes nothing")
+	check(q.pick(-1)["result"] == "none" and q.pick(99)["result"] == "none", "out-of-range plants can't be picked")
+	# A new Picking (a scene restart) is full again with an empty basket.
+	check(_new_picking().letters_left() == 36 and _new_picking().basket.is_empty(), "a new Picking has all 36 letters and an empty basket")
+	# Walking.
+	var w = _new_picking()
+	check(w.walk_update(5.0, 0.1) == "idle", "no walk, no update")
+	check(w.start_walk(0) and w.walk_target == 0, "a click starts a walk")
+	check(w.start_walk(3) and w.walk_target == 3, "another click retargets")
+	check(w.walk_update(5.0, 0.1) == "walking" and w.walk_update(4.0, 0.1) == "walking", "closing in keeps walking")
+	check(w.walk_update(w.pick_radius, 0.1) == "arrived" and w.walk_target == -1, "within the pick radius the walk ends as arrived")
+	w.start_walk(0)
+	var state := ""
+	var ticks := 0
+	while state != "stuck" and ticks < 100:
+		state = w.walk_update(4.0, 0.1)
+		ticks += 1
+	check(state == "stuck" and w.walk_target == -1, "no progress ends the walk as stuck")
+	check(absf(ticks * 0.1 - (w.stuck_timeout + 0.1)) < 0.15, "stuck fires after about the stuck timeout (%d ticks)" % ticks)
+	w.start_walk(0)
+	var moved := true
+	for i in 50:  # a slow but steady approach is never stuck
+		moved = moved and w.walk_update(20.0 - 0.1 * i, 0.1) == "walking"
+	check(moved, "steady progress is never stuck")
+	w.cancel_walk()
+	check(w.walk_target == -1, "cancel_walk ends the walk")
+	_section_done("test_picking_logic")
+
+
+func test_steam_sound() -> void:
+	var stream: AudioStreamWAV = load("res://scenes/foraging/steam_sound.gd").make()
+	check(stream.format == AudioStreamWAV.FORMAT_16_BITS and not stream.stereo, "the tsss is 16-bit mono")
+	var samples := stream.data.size() / 2
+	var length := float(samples) / stream.mix_rate
+	check(length > 0.2 and length < 1.0, "the tsss is a short burst (%.2f s)" % length)
+	var peak_early := 0
+	var peak_late := 0
+	for i in samples:
+		var v := absi(stream.data.decode_s16(i * 2))
+		if i < samples / 4:
+			peak_early = maxi(peak_early, v)
+		elif i > samples * 3 / 4:
+			peak_late = maxi(peak_late, v)
+	check(peak_early > 1000 and peak_late < peak_early / 4, "it is audible and dies away (%d -> %d)" % [peak_early, peak_late])
+	_section_done("test_steam_sound")
+
+
+## The first plant on screen, nearest the player, that `wanted` accepts and the
+## hover ray finds. Returns {"plant", "screen"} or {}.
+func _visible_plant(map: Node3D, wanted: Callable) -> Dictionary:
+	var size: Vector2 = map.get_viewport().get_visible_rect().size
+	var best := {}
+	var best_distance := INF
+	for plant in map.plants:
+		var screen: Vector2 = map.camera.unproject_position(plant.global_position + Vector3(0, 0.5, 0))
+		if screen.x < 0 or screen.y < 0 or screen.x > size.x or screen.y > size.y or not wanted.call(plant):
+			continue
+		var distance: float = plant.global_position.distance_to(map.player.global_position)
+		if map.plant_at(screen) == plant and distance < best_distance and plant.letter != "":
+			best = {"plant": plant, "screen": screen}
+			best_distance = distance
+	return best
+
+
+func _click_event(at: Vector2) -> InputEventMouseButton:
+	var event := InputEventMouseButton.new()
+	event.button_index = MOUSE_BUTTON_LEFT
+	event.pressed = true
+	event.position = at
+	return event
+
+
+## Ticks the map until the walk ends (or 10 s pass). Returns the ticks used.
+func _walk_until_done(map: Node3D) -> int:
+	var ticks := 0
+	while map.picking.walk_target >= 0 and ticks < 600:
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+		ticks += 1
+	return ticks
+
+
+func test_picking_scene() -> void:
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	check(map.picking != null and map.basket_hud is CanvasLayer, "the map has a picking state and a basket HUD")
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.partner.global_position = _ground_point(map, 60.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+
+	# Basket HUD at rest.
+	var texts: Array = map.basket_hud.find_children("*", "Label", true, false).map(func(l): return l.text)
+	check(texts == ["망태기"], "the empty basket shows only its label (%s)" % str(texts))
+	check(map.basket_hud._panel.anchor_top == 1.0 and map.basket_hud._panel.anchor_left == 1.0, "the basket is anchored at the bottom right, clear of the discovery list down the left")
+
+	# A target: click it (a synthetic mouse event), the player walks over and picks it.
+	var target := _visible_plant(map, func(p): return p.kind == "target")
+	check(not target.is_empty(), "a target plant is on screen to click")
+	var decoy := _visible_plant(map, func(p): return p.kind != "target")
+	check(not decoy.is_empty(), "a decoy plant is on screen to click")
+	if target.is_empty() or decoy.is_empty():
+		map.free()
+		return
+	var plant: Node3D = target["plant"]
+	var letter: String = plant.letter
+	var labels_before := plant.find_children("*", "Label3D", true, false).size()
+	var start: Vector3 = map.player.global_position
+	map._unhandled_input(_click_event(target["screen"]))
+	check(map.picking.walk_target == map.plants.find(plant), "left-clicking a plant starts a walk to it")
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	for i in 5:
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+	var to_plant := Vector2(plant.global_position.x - start.x, plant.global_position.z - start.z)
+	var moved := Vector2(map.player.global_position.x - start.x, map.player.global_position.z - start.z)
+	check(moved.length() > 0.1 and moved.normalized().dot(to_plant.normalized()) > 0.99, "the player walks straight toward it")
+	check(is_equal_approx(moved.length(), map.player.speed * 6.0 / 60.0) or moved.length() <= map.player.speed * 6.0 / 60.0 + 0.01, "at the normal walk speed")
+	_walk_until_done(map)
+	var gap := Vector2(plant.global_position.x - map.player.global_position.x, plant.global_position.z - map.player.global_position.z).length()
+	check(gap <= map.picking.pick_radius + 0.01, "it stops within the pick radius (%.2f m)" % gap)
+	check(map.picking.basket == [letter], "the letter is in the basket (%s)" % str(map.picking.basket))
+	check(plant.letter == "" and not map.picking.has_letter(map.plants.find(plant)), "the plant is letterless afterwards")
+	await get_tree().process_frame  # queue_free of the label
+	check(plant.find_children("*", "Label3D", true, false).size() == labels_before - 1, "its letter label is gone, the plant stays")
+	check(plant.is_inside_tree() and plant.get_node("PickArea") != null, "the plant stays in the world with its pick area")
+	check(map.plant_at(target["screen"]) == plant and plant.tooltip_text() != "", "hover names still work on a letterless plant")
+	for i in 20:
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+	var tiles: Array = map.basket_hud.find_child("Tiles", true, false).get_children()
+	check(tiles.size() == 1 and tiles[0].find_children("*", "Label", true, false)[0].text == letter, "the basket HUD shows a tile with that letter")
+	check(is_equal_approx(tiles[0].scale.x, 1.0), "the tile has popped in to full size")
+	check(map.find_children("*", "CPUParticles3D", false, false).is_empty(), "a target pick makes no steam")
+	# Clicking the letterless plant does nothing.
+	check(not map.click(target["screen"]) and map.picking.walk_target == -1, "clicking a letterless plant does nothing")
+	check(map.picking.basket == [letter], "and the basket is unchanged")
+
+	# A decoy: letter gone in steam, nothing in the basket.
+	var decoy_plant: Node3D = decoy["plant"]
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var decoy_screen: Vector2 = map.camera.unproject_position(decoy_plant.global_position + Vector3(0, 0.5, 0))
+	check(map.plant_at(decoy_screen) == decoy_plant, "the decoy can still be found under the mouse")
+	map._unhandled_input(_click_event(decoy_screen))
+	check(map.picking.walk_target == map.plants.find(decoy_plant), "clicking a decoy starts a walk too")
+	_walk_until_done(map)
+	check(map.picking.basket == [letter], "a decoy's letter never enters the basket")
+	check(decoy_plant.letter == "" and not map.picking.has_letter(map.plants.find(decoy_plant)), "the decoy's letter is gone")
+	var puffs := map.find_children("*", "CPUParticles3D", false, false)
+	check(puffs.size() == 1, "a steam puff plays")
+	if puffs.size() == 1:
+		var puff: CPUParticles3D = puffs[0]
+		check(puff.one_shot and puff.emitting and is_equal_approx(puff.lifetime, map.picking.steam_duration), "it is a one-shot puff of the data's duration")
+		check(puff.color == map.picking.steam_color, "it has the data's steam colour")
+		check(puff.global_position.distance_to(decoy_plant.letter_position()) < 0.01, "it is at the vanished letter")
+	check(map.basket_hud.find_child("Tiles", true, false).get_child_count() == 1, "the basket HUD gained no tile")
+	check(map.picking.letters_left() == 34, "34 letters remain")
+
+	# WASD cancels a walk; a second click retargets.
+	var second := _visible_plant(map, func(p): return p.kind == "target")
+	if not second.is_empty():
+		map.player.global_position = _ground_point(map, 14.0, 0.0)
+		map.click(second["screen"])
+		var first_target: int = map.picking.walk_target
+		check(first_target >= 0, "a walk is under way")
+		var other := _visible_plant(map, func(p): return p != second["plant"] and p.kind == "target")
+		if not other.is_empty():
+			map.click(other["screen"])
+			check(map.picking.walk_target == map.plants.find(other["plant"]) and map.picking.walk_target != first_target, "clicking another plant retargets")
+		map.step(Vector2.RIGHT, 1.0 / 60.0)
+		check(map.picking.walk_target == -1, "any WASD input cancels the walk")
+		var before: Vector3 = map.player.global_position
+		map.step(Vector2.ZERO, 0.1)
+		var drift: Vector3 = map.player.global_position - before
+		check(Vector2(drift.x, drift.z).length() < 0.001, "and the player then stands still")
+	map.free()
+
+	# Dead or restarting: clicks and picks are ignored.
+	var gated: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(gated)
+	gated.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	gated.player.global_position = _ground_point(gated, 14.0, 0.0)
+	gated.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var near := _visible_plant(gated, func(p): return p.kind == "target")
+	check(gated.picks_allowed(), "picks are allowed in a live scene")
+	gated.restarting = true
+	check(not gated.picks_allowed() and not gated.click(near["screen"]) and gated.picking.walk_target == -1, "a click while restarting is ignored")
+	gated.pick_plant(near["plant"])
+	check(gated.picking.basket.is_empty() and near["plant"].letter != "", "a pick while restarting takes nothing")
+	gated.restarting = false
+	while GameState.is_alive("fernanda") and GameState.is_alive("nestor"):
+		GameState.damage("fernanda", "test")
+	check(not gated.picks_allowed() and not gated.click(near["screen"]), "a click with the travelers dead is ignored")
+	gated.pick_plant(near["plant"])
+	check(gated.picking.basket.is_empty() and near["plant"].letter != "", "a pick with the travelers dead takes nothing")
+	GameState.new_hike()
+	check(gated.picks_allowed() and gated.click(near["screen"]), "after the hike restarts a click works again")
+	gated.step(Vector2.ZERO, 0.0)
+	while GameState.is_alive("nestor"):  # they die mid-walk
+		GameState.damage("nestor", "test")
+	gated.step(Vector2.ZERO, 0.1)
+	check(gated.picking.walk_target == -1, "a walk in progress is dropped when the travelers die")
+	GameState.new_hike()
+	gated.free()
+
+	# A restarted scene: the basket is empty and all 36 letters are back.
+	var again: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(again)
+	again.set_physics_process(false)
+	check(again.picking.basket.is_empty() and again.picking.letters_left() == 36, "a restarted scene has an empty basket and 36 letters")
+	var back := true
+	for plant_node in again.plants:
+		back = back and plant_node.letter != "" and plant_node.find_children("*", "Label3D", true, false).size() == 1
+	check(back, "every plant shows its letter again")
+	check(again.basket_hud.find_child("Tiles", true, false).get_child_count() == 0, "the basket HUD is empty again")
+	again.free()
+	GameState.new_hike()
+	_section_done("test_picking_scene")
