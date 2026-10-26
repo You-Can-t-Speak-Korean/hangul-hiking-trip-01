@@ -53,8 +53,9 @@ var partner: CharacterBody3D
 
 var fade_opacity := 1.0   # opacity of a prop covering a traveler (data: prop_fade)
 var fade_time := 0.2      # seconds to fade in or out (data: prop_fade)
-var tooltip_show_time := 2.0  # seconds the hover name stays solid (data: tooltip)
-var tooltip_fade_time := 0.5  # seconds it then takes to fade out (data: tooltip)
+var tooltip_steady_time := 0.5   # seconds the hover name stays solid (data: tooltip)
+var tooltip_flicker_time := 0.4  # seconds it then flickers before it is gone (data: tooltip)
+var tooltip_flicker_rate := 10.0  # visible/hidden changes per second while flickering (data: tooltip)
 
 var _aim_height := 0.0
 var _tooltip: PanelContainer
@@ -86,8 +87,9 @@ func _ready() -> void:
 		Vector2(ground_rect.size.x, backdrop_depth))
 	fade_opacity = float(config["prop_fade"]["opacity"])
 	fade_time = float(config["prop_fade"]["time"])
-	tooltip_show_time = float(config["tooltip"]["show_time"])
-	tooltip_fade_time = float(config["tooltip"]["fade_time"])
+	tooltip_steady_time = float(config["tooltip"]["steady_time"])
+	tooltip_flicker_time = float(config["tooltip"]["flicker_time"])
+	tooltip_flicker_rate = float(config["tooltip"]["flicker_rate"])
 	terrain = Terrain.new(config["terrain"]["points"])
 	zones = config["zones"]
 	for id in GameState.TRAVELERS:
@@ -309,8 +311,8 @@ func plant_at(screen_pos: Vector2) -> Node3D:
 
 ## Drives the hover tooltip. `delta` is the time since the last call, so tests
 ## can use simulated time. The name appears when the mouse moves onto a plant,
-## stays tooltip_show_time seconds, then fades over tooltip_fade_time. It comes
-## back only after the mouse has left the plant and entered a plant again; moving
+## stays tooltip_steady_time seconds, then flickers (starting hidden) for
+## tooltip_flicker_time seconds and is gone. It comes back only after the mouse has left the plant and entered a plant again; moving
 ## straight from one plant onto another starts the new tooltip at once.
 func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
 	var plant := plant_at(screen_pos)
@@ -323,8 +325,11 @@ func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
 		_hover_time += delta
 	var opacity := 0.0
 	if plant != null:
-		var fading := _hover_time - tooltip_show_time
-		opacity = 1.0 if fading <= 0.0 else 1.0 - fading / maxf(tooltip_fade_time, 0.001)
+		var flicker := _hover_time - tooltip_steady_time
+		if flicker <= 0.0:
+			opacity = 1.0
+		elif flicker < tooltip_flicker_time:
+			opacity = 1.0 if int(flicker * tooltip_flicker_rate) % 2 == 1 else 0.0
 	_tooltip.visible = opacity > 0.0
 	if not _tooltip.visible:
 		return

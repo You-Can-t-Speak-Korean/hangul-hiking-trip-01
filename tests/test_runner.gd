@@ -5,6 +5,35 @@ extends Node
 
 var passed := 0
 var failed := 0
+## Each test section ends with _section_done("<its name>"). A script error stops a
+## section before that line, so the section is missing from the list below.
+var finished: Array[String] = []
+
+## Every section _ready() runs. Add a new section's name here when adding it.
+const EXPECTED_SECTIONS: Array[String] = [
+	"test_compose",
+	"test_curriculum",
+	"test_hallasan_words",
+	"test_game_state",
+	"test_settings",
+	"test_foraging",
+	"test_terrain_data",
+	"test_zones_data",
+	"test_plants_data",
+	"test_backdrop_data",
+	"test_fade_and_tooltip_data",
+	"test_names_and_colors_data",
+	"test_decoy_letters",
+	"test_discovery_logic",
+	"test_terrain_scene",
+	"test_discovery_scene",
+	"test_backdrop_scene",
+	"test_prop_fade",
+]
+
+## The run fails if fewer checks than this ran. After adding tests, raise it to
+## the printed total minus a small margin (currently 5).
+const MIN_CHECKS := 410
 
 
 func check(condition: bool, label: String) -> void:
@@ -13,6 +42,10 @@ func check(condition: bool, label: String) -> void:
 	else:
 		failed += 1
 		print("  FAIL: ", label)
+
+
+func _section_done(section: String) -> void:
+	finished.append(section)
 
 
 func _ready() -> void:
@@ -45,6 +78,10 @@ func _ready() -> void:
 	print("== Backdrop and prop fade (scene) ==")
 	test_backdrop_scene()
 	test_prop_fade()
+	for section in EXPECTED_SECTIONS:
+		if not finished.has(section):
+			check(false, "section did not run to its end: " + section)
+	check(passed + failed >= MIN_CHECKS, "at least %d checks ran (%d)" % [MIN_CHECKS, passed + failed])
 	print("\n%d passed, %d failed" % [passed, failed])
 	get_tree().quit(0 if failed == 0 else 1)
 
@@ -74,6 +111,7 @@ func test_compose() -> void:
 			ok = false
 			break
 	check(ok, "compose(decompose(x)) == x across the block")
+	_section_done("test_compose")
 
 
 func test_curriculum() -> void:
@@ -106,6 +144,7 @@ func test_curriculum() -> void:
 		if from < 0 or from > int(hopes[word]):
 			note = "  <-- later than hoped"
 		print("    %s: hoped %d, readable from %d%s" % [word, hopes[word], from, note])
+	_section_done("test_curriculum")
 
 
 func test_hallasan_words() -> void:
@@ -118,6 +157,7 @@ func test_hallasan_words() -> void:
 		check(Hangul.is_readable(w, known), "%s is a review word" % w)
 	for w in bonus:
 		check(not Hangul.is_readable(w, known), "%s is a bonus guess" % w)
+	_section_done("test_hallasan_words")
 
 
 func test_game_state() -> void:
@@ -156,6 +196,7 @@ func test_game_state() -> void:
 	GameState.difficulty = "diffi"
 	check(GameState.time_limit("머리") < easy, "diffi is faster than easy")
 	GameState.difficulty = "soso"
+	_section_done("test_game_state")
 
 
 func test_settings() -> void:
@@ -179,6 +220,7 @@ func test_settings() -> void:
 	check(not FileAccess.file_exists(test_path), "test settings file deleted")
 	Settings.path = real_path
 	Settings.load_settings()
+	_section_done("test_settings")
 
 
 func test_foraging() -> void:
@@ -305,6 +347,7 @@ func test_foraging() -> void:
 	check(dense.get_node("Props").get_child_count() == roundi(original * 2.0 * map_area / 100.0), "doubling the density doubles the props")
 	config["props"]["density_per_100m2"] = original
 	dense.free()
+	_section_done("test_foraging")
 
 
 ## True if every sampled screen point looks at ground or backdrop: no sky
@@ -389,6 +432,7 @@ func test_terrain_data() -> void:
 	# The numeric slope agrees with the analytic one.
 	var numeric: float = (terrain.height_at(30.01) - terrain.height_at(29.99)) / 0.02
 	check(absf(numeric - terrain.slope_at(30.0)) < 0.001, "slope_at matches height_at")
+	_section_done("test_terrain_data")
 
 
 func test_zones_data() -> void:
@@ -405,6 +449,7 @@ func test_zones_data() -> void:
 	check(zones[0]["id"] == "lower_forest" and zones[1]["id"] == "mid_slope" and zones[2]["id"] == "alpine", "zones are lower forest, mid slope, alpine")
 	check(float(zones[1]["x"][0]) == 28.0 and float(zones[2]["x"][0]) == 44.0, "zone edges at 28 and 44")
 	check(zones[0]["tint"] != zones[1]["tint"] and zones[1]["tint"] != zones[2]["tint"], "zones have different tints")
+	_section_done("test_zones_data")
 
 
 func _zone_range(zone_id: String) -> Array:
@@ -580,6 +625,7 @@ func test_plants_data() -> void:
 			if tree.distance_to(Vector2(float(entry["x"]), float(entry["z"]))) < 2.5:
 				trees_ok = false
 	check(trees_ok, "구상나무 stand only in the alpine zone, clear of the plants")
+	_section_done("test_plants_data")
 
 
 func test_terrain_scene() -> void:
@@ -748,12 +794,20 @@ func test_terrain_scene() -> void:
 		map.update_hover(empty_point, 0.0)
 		map.update_hover(on_plant, 0.0)
 		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "the tooltip shows when the mouse enters a plant")
-		map.update_hover(on_plant, 1.9)
-		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "still solid at 1.9 s")
-		map.update_hover(on_plant, 0.3)
-		check(tip.visible and tip.modulate.a > 0.0 and tip.modulate.a < 1.0, "fading at 2.2 s (%.2f)" % tip.modulate.a)
 		map.update_hover(on_plant, 0.4)
-		check(not tip.visible, "gone at 2.6 s")
+		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "solid at 0.4 s")
+		var saw_visible := false
+		var saw_hidden := false
+		for step in 8:  # 0.5 s to 0.9 s, sampled mid-step
+			map.update_hover(on_plant, 0.15 if step == 0 else 0.05)
+			map.update_hover(on_plant, 0.05)
+			if tip.visible:
+				saw_visible = true
+			else:
+				saw_hidden = true
+		check(saw_visible and saw_hidden, "flickers between 0.5 s and 0.9 s (visible %s, hidden %s)" % [saw_visible, saw_hidden])
+		map.update_hover(on_plant, 0.1)
+		check(not tip.visible, "gone at 1.0 s")
 		map.update_hover(on_plant, 5.0)
 		map.update_hover(on_plant, 0.0)
 		check(not tip.visible, "it does not return while the mouse stays on the same plant")
@@ -761,11 +815,12 @@ func test_terrain_scene() -> void:
 		check(not tip.visible, "leaving the plant hides it")
 		map.update_hover(on_plant, 0.0)
 		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "it shows again after the mouse leaves and re-enters the plant")
-		map.update_hover(on_plant, 2.6)
-		check(not tip.visible, "the re-entered tooltip also fades away")
+		map.update_hover(on_plant, 1.1)
+		check(not tip.visible, "the re-entered tooltip also goes away")
 		map.update_hover(other_plant, 0.0)
 		check(tip.visible and is_equal_approx(tip.modulate.a, 1.0), "moving straight onto another plant starts a new tooltip at once")
 	map.free()
+	_section_done("test_terrain_scene")
 
 
 func _config() -> Dictionary:
@@ -811,6 +866,7 @@ func test_decoy_letters() -> void:
 			seen[letter] = true
 	check(differ, "the two plants of a decoy kind carry different letters")
 	check(seen.size() >= 6, "the decoys do not all repeat one letter (%d different)" % seen.size())
+	_section_done("test_decoy_letters")
 
 
 ## A point `dist` metres from `spot` (over x, z) on the stage, at which no
@@ -954,6 +1010,7 @@ func test_discovery_logic() -> void:
 	check(d.opacity(d.entries[0]) > 0.0 and d.opacity(d.entries[0]) < 1.0, "it is part way after 0.2 s")
 	d.update([far, far], 0.3)
 	check(is_equal_approx(d.opacity(d.entries[0]), 1.0), "it is solid after 0.4 s")
+	_section_done("test_discovery_logic")
 
 
 func test_discovery_scene() -> void:
@@ -1013,6 +1070,7 @@ func test_discovery_scene() -> void:
 	again.set_physics_process(false)
 	check(again.discovery.entries.is_empty(), "a restarted scene starts with an empty list")
 	again.free()
+	_section_done("test_discovery_scene")
 
 
 func test_backdrop_data() -> void:
@@ -1044,12 +1102,14 @@ func test_backdrop_data() -> void:
 	var ground_x0 := -float(config["apron"]["sides"])
 	var ground_x1 := float(config["stage"]["width"]) + float(config["apron"]["sides"])
 	check(left <= ground_x0 and right >= ground_x1, "the ridge boxes cover the ground's full width (%.0f to %.0f)" % [left, right])
+	_section_done("test_backdrop_data")
 
 
 func test_fade_and_tooltip_data() -> void:
 	var config := _config()
 	check(is_equal_approx(float(config["prop_fade"]["opacity"]), 0.25) and is_equal_approx(float(config["prop_fade"]["time"]), 0.2), "prop fade opacity and time are in the data")
-	check(is_equal_approx(float(config["tooltip"]["show_time"]), 2.0) and is_equal_approx(float(config["tooltip"]["fade_time"]), 0.5), "tooltip show and fade times are in the data")
+	check(is_equal_approx(float(config["tooltip"]["steady_time"]), 0.5) and is_equal_approx(float(config["tooltip"]["flicker_time"]), 0.4) and is_equal_approx(float(config["tooltip"]["flicker_rate"]), 10.0) and not config["tooltip"].has("show_time") and not config["tooltip"].has("fade_time"), "tooltip steady, flicker time and rate are in the data; the old show/fade values are gone")
+	_section_done("test_fade_and_tooltip_data")
 
 
 func test_names_and_colors_data() -> void:
@@ -1110,6 +1170,7 @@ func test_names_and_colors_data() -> void:
 			if d <= 0.4:
 				far_apart = false
 	check(far_apart, "every pair of hanging fruit colours is clearly different")
+	_section_done("test_names_and_colors_data")
 
 
 func test_backdrop_scene() -> void:
@@ -1137,6 +1198,7 @@ func test_backdrop_scene() -> void:
 		x += 2.0
 	check(failures.is_empty(), "no sky below the far, near, left or right edge from any camera position %s" % str(failures))
 	map.free()
+	_section_done("test_backdrop_scene")
 
 
 func test_prop_fade() -> void:
@@ -1208,3 +1270,4 @@ func test_prop_fade() -> void:
 	check(plants_solid, "plants and their letter labels never fade")
 	check(not ("alpha" in plant), "a plant is not a fading prop")
 	map.free()
+	_section_done("test_prop_fade")

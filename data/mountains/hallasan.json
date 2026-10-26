@@ -7,7 +7,7 @@
     "apron": {"sides": 12.0, "far": 3.0},
     "props": {"density_per_100m2": 6.25, "seed": 7},
     "prop_fade": {"_note": "Trees, rocks and other props between the camera and a traveler fade to 'opacity' (0..1) over 'time' seconds, and fade back when they no longer cover one.", "opacity": 0.25, "time": 0.2},
-    "tooltip": {"_note": "The plant hover name stays 'show_time' seconds, then fades out over 'fade_time' seconds. It returns only after the mouse leaves the plant and enters a plant again.", "show_time": 2.0, "fade_time": 0.5},
+    "tooltip": {"_note": "The plant hover name stays solid for 'steady_time' seconds, then flickers for 'flicker_time' seconds at 'flicker_rate' visible/hidden changes per second, then is gone. It returns only after the mouse leaves the plant and enters a plant again.", "steady_time": 0.5, "flicker_time": 0.4, "flicker_rate": 10},
     "discovery": {"_note": "A target kind joins the discovery list when a traveler comes within 'radius' metres (horizontal) of any plant of that kind. 'fade_time' seconds is the fade-in of a new entry.", "radius": 3.0, "fade_time": 0.4},
     "start": {"nestor": [6.0, 1.5], "fernanda": [4.0, -1.5]},
     "terrain": {

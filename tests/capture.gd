@@ -2,7 +2,8 @@ extends Node
 ## Needs a display (not headless). Walks the player around the foraging map
 ## and saves tests/shots/{start,left_near,right_far,middle}.png, plus the
 ## terrain shots {zone_lower_forest,zone_mid_slope,zone_alpine}.png, and
-## {tree_fade,tooltip_shown,tooltip_faded,letters_lower_forest,letters_alpine,
+## {tree_fade,tooltip_0_2s,tooltip_0_65s_flicker_visible,
+## tooltip_0_7s_flicker_hidden,tooltip_1_2s_gone,letters_lower_forest,letters_alpine,
 ## fruits_meoru_butsunnamu,fruit_deulchuk,hud_empty,hud_ma_meoru,hud_all_six,
 ## letters_decoys_targets,spread_topdown}.png.
 
@@ -69,11 +70,18 @@ func _ready() -> void:
 		var at: Vector2 = map.camera.unproject_position(best.global_position + Vector3(0, 0.5, 0))
 		map.update_hover(Vector2.ZERO, 0.0)
 		map.update_hover(at, 0.0)
+		map.update_hover(at, 0.2)
 		await _frames(3)
-		_save("tooltip_shown")
-		map.update_hover(at, 2.6)  # past the 2 s + 0.5 s
+		_save("tooltip_0_2s")
+		map.update_hover(at, 0.45)  # 0.65 s: flicker, visible phase
 		await _frames(3)
-		_save("tooltip_faded")
+		_save("tooltip_0_65s_flicker_visible")
+		map.update_hover(at, 0.05)  # 0.7 s: flicker, hidden phase
+		await _frames(3)
+		_save("tooltip_0_7s_flicker_hidden")
+		map.update_hover(at, 0.5)  # 1.2 s: gone
+		await _frames(3)
+		_save("tooltip_1_2s_gone")
 	# Several single-letter plants of different kinds in the lower forest, then the alpine 시로미.
 	await _walk_to(map, Vector3(16.0, 0.0, 1.0))
 	await _frames(60)
