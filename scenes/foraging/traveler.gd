@@ -14,6 +14,9 @@ var bounds := Rect2()
 var on_floor := false
 var _floor_normal := Vector3.UP
 var _fall_speed := 0.0
+var _body_material: StandardMaterial3D
+var _body_color := Color.WHITE
+var _flash: Tween
 
 
 static func gray_mesh(mesh: Mesh, color: Color) -> MeshInstance3D:
@@ -32,6 +35,8 @@ func setup(display_name: String, color: Color) -> void:
 	capsule.radius = RADIUS
 	capsule.height = HEIGHT
 	var body := gray_mesh(capsule, color)
+	_body_material = body.material_override
+	_body_color = color
 	body.position.y = HEIGHT / 2.0
 	add_child(body)
 
@@ -48,6 +53,21 @@ func setup(display_name: String, color: Color) -> void:
 	collision.shape = shape
 	collision.position.y = HEIGHT / 2.0
 	add_child(collision)
+
+
+## Placeholder hit feedback: the body flashes `tint` and fades back to its own
+## colour over `time` seconds.
+func flash(tint: Color, time: float) -> void:
+	if _flash != null and _flash.is_valid():
+		_flash.kill()
+	_body_material.albedo_color = tint
+	_flash = create_tween()
+	_flash.tween_property(_body_material, "albedo_color", _body_color, time)
+
+
+## The body's current colour, so tests can see the flash.
+func body_color() -> Color:
+	return _body_material.albedo_color
 
 
 ## Walks with an input vector: x = along the stage, y = depth (up = into the

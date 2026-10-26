@@ -14,6 +14,8 @@ const BasketHud := preload("res://scenes/foraging/basket_hud.gd")
 const Spelling := preload("res://scenes/foraging/spelling.gd")
 const SpellingHud := preload("res://scenes/foraging/spelling_hud.gd")
 const SteamSound := preload("res://scenes/foraging/steam_sound.gd")
+const Damage := preload("res://scenes/foraging/damage.gd")
+const HeartsHud := preload("res://scenes/foraging/hearts_hud.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -62,8 +64,14 @@ var basket_hud: CanvasLayer
 ## tree; the HUDs run while paused (process mode ALWAYS), the map does not.
 var spelling
 var spelling_hud: CanvasLayer
-## Set while the scene is being restarted after a death; picks are ignored.
+## What a failed syllable costs, applied when the spelling view has closed.
+var damage
+var hearts_hud: CanvasLayer
+## Set from the moment both travelers die until the scene is restarted: picks,
+## walks and opening the spelling view are ignored (begin_death_beat sets it).
 var restarting := false
+## Placeholder gore and the death beat (data: foraging.gore_placeholder).
+var gore: Dictionary = {}
 var travelers: Dictionary = {}
 var player: CharacterBody3D
 var partner: CharacterBody3D
@@ -74,7 +82,14 @@ var tooltip_steady_time := 0.5   # seconds the hover name stays solid (data: too
 var tooltip_flicker_time := 0.4  # seconds it then flickers before it is gone (data: tooltip)
 var tooltip_flicker_rate := 10.0  # visible/hidden changes per second while flickering (data: tooltip)
 
+## Both travelers have died: the death beat starts (the screen dims) and the
+## scene restarts when it ends.
+signal death_beat_started
+signal restarted
+
 var _aim_height := 0.0
+var _beat_left := -1.0  # seconds of death beat left; -1 when none is playing
+var _dim: ColorRect
 var _steam_stream: AudioStreamWAV
 var _tooltip: PanelContainer
 var _tooltip_label: Label
@@ -140,6 +155,13 @@ func _ready() -> void:
 	spelling_hud.setup(spelling, basket_hud)
 	spelling_hud.changed.connect(_on_spelling_changed)
 	spelling_hud.closed.connect(_on_spelling_closed)
+	damage = Damage.new(config["damage"])
+	gore = config["gore_placeholder"]
+	spelling.syllable_failed.connect(_on_syllable_failed)
+	hearts_hud = HeartsHud.new()
+	add_child(hearts_hud)
+	hearts_hud.setup(config["hearts_hud"])
+	GameState.begin_scene("foraging")  # a death restores the hearts held now
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
 		var traveler := Traveler.new()
@@ -166,6 +188,7 @@ func _exit_tree() -> void:
 
 
 func _process(delta: float) -> void:
+	tick_beat(delta)
 	if DisplayServer.get_name() != "headless":
 		update_hover(get_viewport().get_mouse_position(), delta)
 
@@ -236,6 +259,121 @@ func _on_spelling_changed() -> void:
 ## The view went away (closed, finished, or the failure flash ended): play on.
 func _on_spelling_closed() -> void:
 	get_tree().paused = false
+	var result: Dictionary = damage.settle()
+	if result["failures"] == 0:
+		return
+	_play_hits()
+	if result["died"]:
+		begin_death_beat()
+
+
+## A syllable failed: the damage waits until the view has closed.
+func _on_syllable_failed(_word_id: String, _block_index: int, _letters: Array) -> void:
+	damage.queue_failure()
+
+
+## Placeholder gore on both travelers: a blood burst and a red flash, the
+## second traveler's about gore.stagger seconds after the first.
+func _play_hits() -> void:
+	var delay := 0.0
+	for id in GameState.TRAVELERS:
+		if delay <= 0.0:
+			_hit(id)
+		else:
+			get_tree().create_timer(delay).timeout.connect(_hit.bind(id))
+		delay += float(gore["stagger"])
+
+
+func _hit(id: String) -> void:
+	var traveler: Node3D = travelers[id]
+	traveler.flash(_gore_color("tint_color"), float(gore["tint_duration"]))
+	_blood(traveler.global_position + Vector3(0.0, Traveler.HEIGHT * 0.65, 0.0))
+
+
+func _gore_color(key: String) -> Color:
+	var c: Array = gore[key]
+	return Color(c[0], c[1], c[2])
+
+
+## A short spray of dark red droplets at a world position.
+func _blood(at: Vector3) -> CPUParticles3D:
+	var spray := CPUParticles3D.new()
+	spray.name = "Blood"
+	spray.one_shot = true
+	spray.emitting = true
+	spray.amount = 40
+	spray.lifetime = float(gore["burst_duration"])
+	spray.explosiveness = 0.9
+	spray.direction = Vector3.UP
+	spray.spread = 75.0
+	spray.initial_velocity_min = 2.0
+	spray.initial_velocity_max = 4.5
+	spray.gravity = Vector3(0.0, -9.0, 0.0)
+	var drop := SphereMesh.new()
+	drop.radius = 0.07
+	drop.height = 0.14
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_color = _gore_color("blood_color")
+	drop.material = material
+	spray.mesh = drop
+	var cleanup := Timer.new()
+	cleanup.wait_time = float(gore["burst_duration"]) * 2.0
+	cleanup.one_shot = true
+	cleanup.autostart = true
+	cleanup.timeout.connect(spray.queue_free)
+	spray.add_child(cleanup)
+	add_child(spray)
+	spray.global_position = at
+	return spray
+
+
+## Both travelers are dead: from now on nothing can be picked, walked to or
+## opened, the screen dims, and when gore.death_beat seconds have passed the
+## scene restarts. Does nothing if the beat is already playing.
+func begin_death_beat() -> void:
+	if restarting:
+		return
+	restarting = true
+	_beat_left = float(gore["death_beat"])
+	picking.cancel_walk()
+	var layer := CanvasLayer.new()
+	layer.layer = 20
+	_dim = ColorRect.new()
+	_dim.color = Color(0.0, 0.0, 0.0, 0.0)
+	_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(_dim)
+	add_child(layer)
+	death_beat_started.emit()
+
+
+func is_death_beat_playing() -> bool:
+	return _beat_left >= 0.0
+
+
+## Advances the death beat (a no-op otherwise). Public so tests and the capture
+## scene can drive it without waiting.
+func tick_beat(delta: float) -> void:
+	if _beat_left < 0.0:
+		return
+	_beat_left -= delta
+	var total := maxf(float(gore["death_beat"]), 0.001)
+	_dim.color.a = float(gore["death_dim_alpha"]) * clampf(1.0 - _beat_left / total, 0.0, 1.0)
+	if _beat_left <= 0.0:
+		_beat_left = -1.0
+		_restart()
+
+
+## The end of the beat: the hearts and DDEOK go back to what the scene began
+## with, and the scene is reloaded, which clears the basket, the discovery list
+## and the spelling progress. (A map that is not the current scene, as in the
+## tests, only restores GameState and announces `restarted`.)
+func _restart() -> void:
+	GameState.restart_scene()
+	restarted.emit()
+	if get_tree().current_scene == self:
+		get_tree().reload_current_scene()
 
 
 ## A left click at a screen point. If it is on a plant that still has its

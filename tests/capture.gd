@@ -10,7 +10,9 @@ extends Node
 ## {reach_ring_target,reach_ring_decoy,walk_up_flash}.png, and the basket shots
 ## {basket_empty,basket_1_tile,basket_28_tiles,hud_discovery_two_entries}.png, and the
 ## spelling shots {spelling_open_3_blocks,spelling_block_locked,spelling_half_filled,
-## spelling_failure_flash,spelling_entry_done}.png.
+## spelling_failure_flash,spelling_entry_done}.png, and the hearts shots
+## {hearts_full,hearts_4_5,hearts_low,blood_burst,death_beat_dim}.png. Pass
+## `-- --hearts-only` to take only the hearts shots.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -26,6 +28,10 @@ const MARKER_COLORS := {
 
 func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SHOT_DIR))
+	if "--hearts-only" in OS.get_cmdline_user_args():
+		await _hearts_shots()
+		get_tree().quit()
+		return
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
 	map.set_physics_process(false)  # this script drives the map
@@ -129,6 +135,7 @@ func _ready() -> void:
 	await _reach_shots()
 	await _basket_shots()
 	await _spelling_shots()
+	await _hearts_shots()
 	get_tree().quit()
 
 
@@ -179,6 +186,40 @@ func _spelling_shots() -> void:
 	_save("spelling_entry_done")
 	map.free()
 	get_tree().paused = false
+
+
+## The heart readout, blood and the death beat, through the real paths: a
+## failed syllable (syllable_failed, then the view closing) hurts both travelers.
+func _hearts_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	_save("hearts_full")
+	map.spelling.syllable_failed.emit("ma", 0, ["ㅁ", "ㅓ"])
+	map.spelling_hud.closed.emit()  # 10 -> 9 units each, with blood on both
+	await get_tree().create_timer(0.22).timeout  # real time: both bursts are in the air
+	_save("blood_burst")
+	await _frames(60)
+	_save("hearts_4_5")
+	GameState.heart_units["nestor"] = 3
+	GameState.heart_units["fernanda"] = 1
+	map.hearts_hud.refresh()
+	await _frames(5)
+	_save("hearts_low")
+	map.spelling.syllable_failed.emit("ma", 0, ["ㅁ", "ㅓ"])
+	map.spelling_hud.closed.emit()  # nestor 3 -> 2, fernanda 1 -> 0: the death beat
+	await _frames(20)
+	map.tick_beat(1.0)
+	await _frames(3)
+	_save("death_beat_dim")
+	map.free()
+	GameState.new_hike()
 
 
 ## A point 2.4 m from a plant of the kind with no other target kind within the

@@ -42,11 +42,14 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_spelling_data",
 	"test_spelling_logic",
 	"test_spelling_scene",
+	"test_damage_data",
+	"test_damage_logic",
+	"test_hearts_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 745
+const MIN_CHECKS := 830
 
 
 func check(condition: bool, label: String) -> void:
@@ -108,6 +111,10 @@ func _ready() -> void:
 	test_spelling_data()
 	test_spelling_logic()
 	await test_spelling_scene()
+	print("== Spelling failure damage, gore, hearts, death ==")
+	test_damage_data()
+	test_damage_logic()
+	await test_hearts_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -2373,11 +2380,13 @@ func test_spelling_scene() -> void:
 		await _drag(viewport, _tile_center(map, "ㅏ"), _slot_center(map, 0, 1))
 		check(failed_seen.size() == 1 and failed_seen[0][0] == "meoru" and failed_seen[0][1] == 0 and failed_seen[0][2] == ["ㅁ", "ㅏ"], "syllable_failed fired for the block (%s)" % str(failed_seen))
 		check(map.spelling_hud.is_open() and map.spelling_hud.is_flashing() and get_tree().paused, "the failed block flashes while the view is still up")
+		check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "no damage yet while the failure flash plays")
 		check(map.picking.basket.size() == count_before - 2, "both letters left the basket for good")
 		map.spelling_hud.tick(0.3)
 		check(map.spelling_hud.is_open(), "still flashing at 0.3 s")
 		map.spelling_hud.tick(0.4)
 		check(not map.spelling_hud.is_open() and not get_tree().paused and not map.spelling.is_open(), "after the flash the view closes and the map is unpaused")
+		check(GameState.heart_units["nestor"] == 9 and GameState.heart_units["fernanda"] == 9, "once the view has closed, a real failed drag costs both travelers half a heart")
 		check(not map.spelling.is_done("meoru") and map.spelling.solved("meoru").is_empty(), "a failure solves nothing")
 
 	# Esc closes the view; unjudged letters go back, judged blocks stay.
@@ -2413,3 +2422,310 @@ func test_spelling_scene() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_spelling_scene")
+
+
+# ---- Failure damage, placeholder gore, the heart readout and death ----
+
+const DamageScript := preload("res://scenes/foraging/damage.gd")
+
+
+func _colors_ok(block: Dictionary, key: String) -> bool:
+	var color = block.get(key)
+	var ok: bool = color is Array and color.size() == 3
+	if ok:
+		for channel in color:
+			ok = ok and channel is float and channel >= 0.0 and channel <= 1.0
+	return ok
+
+
+func test_damage_data() -> void:
+	var damage: Dictionary = _config().get("damage", {})
+	check(not damage.is_empty(), "hallasan.json has a damage block")
+	var units = damage.get("failure_damage_units")
+	check(units is float and units == floorf(units) and units > 0.0, "damage.failure_damage_units is a positive whole number")
+	check(units is float and int(units) == 1, "(Hallasan) a failure costs one half-unit, half a heart")
+	var gore: Dictionary = _config().get("gore_placeholder", {})
+	check(not gore.is_empty(), "hallasan.json has a gore_placeholder block")
+	for key in ["burst_duration", "stagger", "tint_duration", "death_beat", "death_dim_alpha"]:
+		check(gore.get(key) is float and float(gore[key]) > 0.0, "gore_placeholder.%s is a positive number" % key)
+	check(gore.get("death_dim_alpha") is float and float(gore["death_dim_alpha"]) <= 1.0, "gore_placeholder.death_dim_alpha is at most 1")
+	for key in ["blood_color", "tint_color"]:
+		check(_colors_ok(gore, key), "gore_placeholder.%s has three channels in 0..1" % key)
+	var hud: Dictionary = _config().get("hearts_hud", {})
+	check(not hud.is_empty(), "hallasan.json has a hearts_hud block")
+	for key in ["heart_size", "gap", "margin"]:
+		check(hud.get(key) is float and float(hud[key]) > 0.0, "hearts_hud.%s is a positive number" % key)
+	for key in ["fill_color", "outline_color"]:
+		check(_colors_ok(hud, key), "hearts_hud.%s has three channels in 0..1" % key)
+	_section_done("test_damage_data")
+
+
+func test_damage_logic() -> void:
+	var config: Dictionary = _config()["damage"]
+	var step := int(config["failure_damage_units"])
+	var damage = DamageScript.new(config)
+	var deaths := []
+	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
+	GameState.travelers_died.connect(on_death)
+	GameState.new_hike(0)
+	check(damage.settle() == {"failures": 0, "died": false} and GameState.heart_units["nestor"] == 10, "settling with nothing queued changes nothing")
+	damage.queue_failure()
+	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "queuing a failure costs nothing yet")
+	var result: Dictionary = damage.settle()
+	check(result == {"failures": 1, "died": false}, "settling applies one failure (%s)" % str(result))
+	check(GameState.heart_units["nestor"] == 10 - step and GameState.heart_units["fernanda"] == 10 - step and GameState.heart_units["nestor"] == 9, "a failure lowers BOTH travelers by failure_damage_units (10 -> 9)")
+	check(damage.settle()["failures"] == 0, "a failure is applied once")
+	# Ten in a row, settled one at a time: the tenth kills, once.
+	GameState.new_hike(0)
+	deaths.clear()
+	var died_at := []
+	for i in 10:
+		damage.queue_failure()
+		if damage.settle()["died"]:
+			died_at.append(i + 1)
+	check(died_at == [10], "ten failures kill on the tenth, and only then (%s)" % str(died_at))
+	check(deaths == [["nestor", "fernanda", "spelling"]], "the death was announced exactly once, with the injury 'spelling'")
+	check(GameState.heart_units["nestor"] == 0 and GameState.heart_units["fernanda"] == 1, "nestor reached 0 first; the survivor's units are left as they were when the rule fired")
+	damage.queue_failure()
+	check(damage.settle() == {"failures": 0, "died": false} and deaths.size() == 1, "failures after the death do nothing and announce nothing")
+	# Ten queued at once and twelve queued at once.
+	for count in [10, 12]:
+		GameState.new_hike(0)
+		deaths.clear()
+		for i in count:
+			damage.queue_failure()
+		result = damage.settle()
+		check(result["died"] and deaths.size() == 1 and damage.pending == 0, "%d queued at once: one death, nothing left over" % count)
+		check(result["failures"] == 10, "%d queued at once: only the 10 that happened are applied (%d)" % [count, result["failures"]])
+	# The old whole-heart call still works.
+	GameState.new_hike(0)
+	GameState.damage("nestor", "test")
+	check(GameState.heart_units["nestor"] == 8, "the old damage() still takes exactly one whole heart")
+	# Nothing in the foraging scripts heals.
+	var heals := 0
+	for path in ["foraging", "damage", "hearts_hud", "spelling", "spelling_hud", "traveler"]:
+		heals += FileAccess.get_file_as_string("res://scenes/foraging/%s.gd" % path).count("heal(")
+	check(heals == 0, "nothing in the foraging scripts calls heal()")
+	GameState.travelers_died.disconnect(on_death)
+	GameState.new_hike(0)
+	_section_done("test_damage_logic")
+
+
+func _new_hearts_map() -> Node3D:
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)  # the tests tick the death beat themselves
+	return map
+
+
+## Emits a failed syllable the way the Spelling does, then the view closing.
+func _fail_and_close(map: Node3D) -> void:
+	map.spelling.syllable_failed.emit("ma", 0, ["ㅁ", "ㅓ"])
+	map.spelling_hud.closed.emit()
+
+
+func test_hearts_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	GameState.new_hike()
+	var map := _new_hearts_map()
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var screen: Vector2 = map.get_viewport().get_visible_rect().size
+	var hud = map.hearts_hud
+	var gore: Dictionary = _config()["gore_placeholder"]
+	var tint := Color(gore["tint_color"][0], gore["tint_color"][1], gore["tint_color"][2])
+
+	# The readout at the start of the hike.
+	check(hud is CanvasLayer and hud.get_child_count() == 1, "the readout is a layer with a single panel")
+	check(hud.drawn_states("nestor") == [2, 2, 2, 2, 2] and hud.drawn_states("fernanda") == [2, 2, 2, 2, 2], "5 full hearts each at the start")
+	check(hud.states_for(9) == [2, 2, 2, 2, 1] and hud.states_for(0) == [0, 0, 0, 0, 0] and hud.states_for(3) == [2, 1, 0, 0, 0], "states_for: 4.5 hearts is 4 full + 1 half, 0 is all outlines, 1.5 is full + half")
+	var names: Array = hud.find_children("*", "Label", true, false).map(func(l): return l.text)
+	check(names == ["Nestor", "Fernanda"], "one row per traveler, named (%s)" % str(names))
+
+	# It follows GameState through hearts_changed.
+	GameState.damage_units("nestor", 1)
+	check(hud.drawn_states("nestor") == [2, 2, 2, 2, 1] and hud.drawn_states("fernanda") == [2, 2, 2, 2, 2], "9 units draws 4 full + 1 half, and only for that traveler")
+	GameState.damage_units("nestor", 9)
+	check(hud.drawn_states("nestor") == [0, 0, 0, 0, 0], "0 units draws all outlines")
+	GameState.new_hike()
+	hud.refresh()
+
+	# Layout at 1280x720 against the discovery list, the basket and the spelling view.
+	var by_kind := {}
+	for entry in _config()["plants"]["placed"]:
+		by_kind[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for id in _target_words():
+		map.discovery.update([by_kind[id]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	await _settle_layout()
+	var panel: Rect2 = hud.panel_rect()
+	var margin := float(_config()["hearts_hud"]["margin"])
+	var list_rect: Rect2 = map.discovery_hud.get_child(0).get_global_rect()
+	var bag_rect: Rect2 = map.basket_hud._panel.get_global_rect()
+	check(Rect2(Vector2.ZERO, screen).encloses(panel), "the readout is inside the viewport (%s)" % str(panel))
+	check(is_equal_approx(panel.end.x, screen.x - margin) and is_equal_approx(panel.position.y, margin), "it sits at the top right margin")
+	check(not panel.intersects(list_rect), "it does not overlap the full discovery list")
+	check(not panel.intersects(bag_rect), "it does not overlap the full basket")
+	check(map.open_spelling("ma"), "the spelling view opens")
+	await _settle_layout()
+	check(not panel.intersects(map.spelling_hud._panel.get_global_rect()), "it does not overlap the spelling view")
+	map.spelling_hud.close()
+	var contents_ok := true
+	for node in hud._panel.find_children("*", "Control", true, false):
+		contents_ok = contents_ok and hud._panel.get_global_rect().encloses(node.get_global_rect())
+	check(contents_ok, "every name and heart stays inside the panel")
+
+	# Mouse filters and a real click.
+	check(hud._panel.mouse_filter == Control.MOUSE_FILTER_STOP, "the readout panel stops mouse clicks")
+	var inner_ok := true
+	for node in hud._panel.find_children("*", "Control", true, false):
+		inner_ok = inner_ok and node.mouse_filter == Control.MOUSE_FILTER_IGNORE
+	check(inner_ok, "its rows, names and hearts let clicks fall through to the panel")
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var clickable := _visible_plant(map, func(p): return p.kind != "target" and not panel.has_point(map.camera.unproject_position(p.global_position + Vector3(0, 0.5, 0))))
+	check(not clickable.is_empty(), "a plant outside the readout is on screen")
+	if not clickable.is_empty():
+		var sp: Vector2 = clickable["screen"]
+		hud._panel.global_position = sp - hud._panel.size / 2.0
+		await _settle_layout()
+		hud._panel.global_position = sp - hud._panel.size / 2.0
+		map.get_viewport().push_input(_click_event(sp))
+		check(map.picking.walk_target == -1, "a click on a plant that is behind the readout starts no walk")
+		map.get_viewport().push_input(_release_event(sp))
+		map._unhandled_input(_click_event(sp))
+		check(map.picking.walk_target >= 0, "(control) the same click reaching the map would have started one")
+		map.picking.cancel_walk()
+	map.free()
+
+	# Damage after the view closes; gore on both travelers, staggered.
+	GameState.new_hike()
+	map = _new_hearts_map()
+	await get_tree().physics_frame
+	hud = map.hearts_hud
+	var beats := []
+	map.death_beat_started.connect(func(): beats.append(true))
+	map.spelling.syllable_failed.emit("ma", 0, ["ㅁ", "ㅓ"])
+	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "a failure alone costs nothing: the damage waits for the view to close")
+	var blood := func() -> Array: return map.get_children().filter(func(n): return n is CPUParticles3D)
+	check(blood.call().is_empty(), "and no blood is shed yet")
+	map.spelling_hud.closed.emit()
+	check(GameState.heart_units["nestor"] == 9 and GameState.heart_units["fernanda"] == 9, "when the view closes both travelers lose a half heart (10 -> 9)")
+	check(hud.drawn_states("nestor") == [2, 2, 2, 2, 1] and hud.drawn_states("fernanda") == [2, 2, 2, 2, 1], "the readout shows 4.5 hearts for both")
+	check(blood.call().size() == 1, "the first traveler's blood burst starts at once")
+	check(map.travelers["nestor"].body_color().is_equal_approx(tint), "that traveler's body flashes the tint colour")
+	var burst: CPUParticles3D = blood.call()[0]
+	check(burst.one_shot and burst.emitting and is_equal_approx(burst.lifetime, float(gore["burst_duration"])), "the burst is a one-shot of the data's duration")
+	check(burst.global_position.distance_to(map.travelers["nestor"].global_position) < 2.0, "and it is at the first traveler")
+	await get_tree().create_timer(float(gore["stagger"]) + 0.15).timeout
+	check(blood.call().size() == 2, "the second traveler's burst follows after the stagger")
+	var near := 0
+	for b in blood.call():
+		for id in GameState.TRAVELERS:
+			if b.global_position.distance_to(map.travelers[id].global_position) < 2.0:
+				near += 1
+	check(near >= 2, "the two bursts are at the two travelers")
+	check(beats.is_empty() and not map.restarting, "no death beat for a survivable failure")
+	map.spelling_hud.closed.emit()
+	check(GameState.heart_units["nestor"] == 9, "a view that closes without a failure costs nothing")
+
+	# Ten failures: the tenth kills, once, and starts one death beat.
+	GameState.new_hike()
+	map.free()
+	map = _new_hearts_map()
+	await get_tree().physics_frame
+	hud = map.hearts_hud
+	beats.clear()
+	map.death_beat_started.connect(func(): beats.append(true))
+	var deaths := []
+	var on_death := func(dead, _survivor, _injury): deaths.append(dead)
+	GameState.travelers_died.connect(on_death)
+	for i in 9:
+		_fail_and_close(map)
+	check(GameState.heart_units["nestor"] == 1 and GameState.is_alive("nestor") and beats.is_empty() and not map.restarting, "nine failures leave both on half a heart, no beat")
+	_fail_and_close(map)
+	check(GameState.heart_units["nestor"] == 0 and deaths == ["nestor"], "the tenth kills (one traveler at 0 first, the rule kills both), announced once")
+	check(beats.size() == 1 and map.restarting and map.is_death_beat_playing(), "and the death beat starts once")
+	check(hud.drawn_states("nestor") == [0, 0, 0, 0, 0], "the readout shows the traveler at 0 as outlines")
+	GameState.travelers_died.disconnect(on_death)
+
+	# During the beat: nothing can be picked, walked to or opened.
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	var letters_before: int = map.picking.letters_left()
+	check(not map.pick_nearest() and map.picking.letters_left() == letters_before, "Space picks nothing during the beat")
+	check(not map.click(Vector2(640.0, 360.0)) and map.picking.walk_target == -1, "a click starts no walk during the beat")
+	check(not map.open_spelling("ma") and not map.spelling.is_open() and not get_tree().paused, "the spelling view cannot open during the beat")
+	var dim: ColorRect = map._dim
+	check(dim.color.a == 0.0, "the screen has not dimmed at the first instant")
+	map.tick_beat(float(gore["death_beat"]) / 2.0)
+	check(is_equal_approx(dim.color.a, float(gore["death_dim_alpha"]) / 2.0) and map.is_death_beat_playing(), "halfway through the beat the screen is half dimmed")
+	map.free()
+	GameState.new_hike()
+
+	# The beat on a living pair isolates the restarting flag.
+	map = _new_hearts_map()
+	await get_tree().physics_frame
+	beats.clear()
+	map.death_beat_started.connect(func(): beats.append(true))
+	map.begin_death_beat()
+	map.begin_death_beat()
+	check(beats.size() == 1 and map.restarting, "begin_death_beat sets restarting, and only starts one beat")
+	check(not map.picks_allowed() and not map.pick_nearest() and not map.open_spelling("ma"), "restarting alone rejects picks and the spelling view")
+	map.free()
+	GameState.new_hike()
+
+	# Restart: hearts back to the scene-start snapshot, the scene fresh. The map
+	# becomes the current scene so the real reload path runs.
+	var original_scene := get_tree().current_scene
+	GameState.new_hike()
+	GameState.heart_units["nestor"] = 7  # an odd count carried into the scene
+	GameState.heart_units["fernanda"] = 9
+	var doomed := _new_hearts_map()
+	remove_child(doomed)
+	get_tree().root.add_child(doomed)
+	get_tree().current_scene = doomed
+	await get_tree().physics_frame
+	var started := []
+	doomed.restarted.connect(func(): started.append(true))
+	for plant in doomed.plants:
+		if plant.kind == "target":
+			doomed.pick_plant(plant)
+			break
+	doomed.discovery.update([by_kind["ma"]], 0.0)
+	check(doomed.picking.basket.size() == 1 and not doomed.discovery.entries.is_empty(), "(before the death the scene holds a letter and a list entry)")
+	for i in 7:
+		_fail_and_close(doomed)
+	check(not GameState.is_alive("nestor") and doomed.restarting, "seven half-heart failures kill the one at 3.5 hearts")
+	doomed.tick_beat(0.5)
+	check(started.is_empty(), "the scene has not restarted mid-beat")
+	doomed.tick_beat(float(gore["death_beat"]))
+	check(started.size() == 1, "the scene restarts when the beat ends")
+	check(GameState.heart_units["nestor"] == 7 and GameState.heart_units["fernanda"] == 9, "hearts are exactly the scene-start snapshot, odd units included")
+	for i in 4:
+		await get_tree().process_frame
+	var fresh: Node = get_tree().current_scene
+	check(fresh != doomed and not is_instance_valid(doomed), "the scene was reloaded")
+	if fresh != doomed and is_instance_valid(fresh) and fresh.has_method("picks_allowed"):
+		check(fresh.picking.basket.is_empty() and fresh.discovery.entries.is_empty() and fresh.spelling.solved("ma").is_empty() and not fresh.spelling_hud.is_open(), "the reloaded scene has an empty basket, list and spelling progress")
+		check(not fresh.restarting and fresh.picks_allowed(), "and play is allowed again")
+		check(fresh.hearts_hud.drawn_states("nestor") == [2, 2, 2, 1, 0] and fresh.hearts_hud.drawn_states("fernanda") == [2, 2, 2, 2, 1], "the readout shows the restored hearts (3.5 and 4.5)")
+		fresh.set_process(false)
+		fresh.free()
+	get_tree().current_scene = original_scene
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_hearts_scene")
