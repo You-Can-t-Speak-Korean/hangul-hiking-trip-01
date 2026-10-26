@@ -38,11 +38,14 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_reach_data",
 	"test_reach_logic",
 	"test_reach_scene",
+	"test_spelling_data",
+	"test_spelling_logic",
+	"test_spelling_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 590
+const MIN_CHECKS := 725
 
 
 func check(condition: bool, label: String) -> void:
@@ -99,6 +102,10 @@ func _ready() -> void:
 	test_reach_data()
 	test_reach_logic()
 	await test_reach_scene()
+	print("== Spelling view ==")
+	test_spelling_data()
+	test_spelling_logic()
+	await test_spelling_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -1430,6 +1437,12 @@ func _click_event(at: Vector2) -> InputEventMouseButton:
 	return event
 
 
+func _release_event(at: Vector2) -> InputEventMouseButton:
+	var event := _click_event(at)
+	event.pressed = false
+	return event
+
+
 ## Ticks the map until the walk ends (or 10 s pass). Returns the ticks used.
 func _walk_until_done(map: Node3D) -> int:
 	var ticks := 0
@@ -1699,6 +1712,10 @@ func test_hud_clicks_and_layout() -> void:
 	for point in [over_bag, over_list]:
 		map.get_viewport().push_input(_click_event(point))
 		check(map.picking.walk_target == walked_before and map.picking.walk_target == -1, "a click over a panel starts no walk (%s)" % str(point))
+		map.get_viewport().push_input(_release_event(point))  # a real click ends; the viewport holds a press until then
+	check(map.spelling_hud.is_open() and get_tree().paused, "(the click over the list entry opened the spelling view, which is meant)")
+	map.spelling_hud.close()
+	check(not get_tree().paused, "closing it unpauses")
 	check(map.picking.letters_left() == 36 - 28, "and takes no letter (the 28 picks above are the only ones)")
 	# Outside the panels everything works as before.
 	if not clickable.is_empty():
@@ -2012,3 +2029,320 @@ func test_reach_scene() -> void:
 		check(map._ring.visible and map._ring_plant == b2 and map.find_children("ReachRing", "MeshInstance3D", true, false).size() == 1, "with two in reach the ring marks only the nearest")
 	map.free()
 	_section_done("test_reach_scene")
+
+
+# ---- Spelling view ----
+
+const SpellingScript := preload("res://scenes/foraging/spelling.gd")
+
+
+func test_spelling_data() -> void:
+	var block: Dictionary = _config().get("spelling_view", {})
+	check(not block.is_empty(), "hallasan.json has a spelling_view block")
+	for key in ["panel_size", "block_size"]:
+		var pair = block.get(key)
+		check(pair is Array and pair.size() == 2 and pair[0] is float and pair[1] is float and pair[0] > 0.0 and pair[1] > 0.0, "spelling_view.%s is two positive numbers" % key)
+	for key in ["panel_top", "block_gap", "slot_gap", "failure_flash_time"]:
+		check(block.get(key) is float and float(block[key]) > 0.0, "spelling_view.%s is a positive number" % key)
+	for key in ["failure_flash_color", "correct_color", "done_color"]:
+		var color = block.get(key)
+		var ok: bool = color is Array and color.size() == 3
+		if ok:
+			for channel in color:
+				ok = ok and channel is float and channel >= 0.0 and channel <= 1.0
+		check(ok, "spelling_view.%s has three channels in 0..1" % key)
+	if block.get("panel_size") is Array and block.get("block_size") is Array:
+		var panel: Array = block["panel_size"]
+		var cell: Array = block["block_size"]
+		var most := 0
+		for kind in _config()["plants"]["kinds"]:
+			if kind["kind"] == "target":
+				most = maxi(most, Hangul.syllable_count(kind["name"]))
+		var margins := 32.0  # the panel's content margin on both sides
+		check(most * float(cell[0]) + (most - 1) * float(block["block_gap"]) + margins <= float(panel[0]), "the longest word (%d blocks) fits across the panel" % most)
+		check(float(cell[1]) + 100.0 <= float(panel[1]), "a block fits under the header")
+		check(float(cell[0]) - 3.0 * float(block["slot_gap"]) > 0.0, "a block has room for two slots")
+	_section_done("test_spelling_data")
+
+
+func _new_spelling(basket: Array[String]):
+	return SpellingScript.new(_config()["spelling_view"], _config()["plants"], basket)
+
+
+func _target_words() -> Dictionary:
+	var words := {}
+	for kind in _config()["plants"]["kinds"]:
+		if kind["kind"] == "target":
+			words[kind["id"]] = String(kind["name"])
+	return words
+
+
+## [initial, medial] of each syllable of a word.
+func _word_letters(word: String) -> Array:
+	var blocks := []
+	for ch in word:
+		var parts := Hangul.decompose(ch)
+		blocks.append([parts[0], parts[1]])
+	return blocks
+
+
+## The syllable_failed emissions of a Spelling, as [word, block, letters].
+func _watch_failures(spelling) -> Array:
+	var seen := []
+	spelling.syllable_failed.connect(func(word_id: String, block: int, letters: Array) -> void: seen.append([word_id, block, letters]))
+	return seen
+
+
+func test_spelling_logic() -> void:
+	var words := _target_words()
+	check(words.size() == 6, "six target words")
+	# Every word, spelled right, completes; the extra letters in the basket are untouched.
+	for id in words:
+		var basket: Array[String] = ["ㅍ", "ㅌ"]
+		var blocks := _word_letters(words[id])
+		for pair in blocks:
+			basket.append_array(pair)
+		var spelling = _new_spelling(basket)
+		var done_ids := []
+		spelling.word_completed.connect(func(w: String) -> void: done_ids.append(w))
+		check(spelling.open(id) and spelling.open_id == id and spelling.block_count(id) == blocks.size(), "%s opens with %d blocks" % [words[id], blocks.size()])
+		var results := []
+		for b in blocks.size():
+			for slot in 2:
+				results.append(spelling.place(blocks[b][slot], b, slot)["result"])
+		var expected := []
+		for b in blocks.size():
+			expected.append_array(["placed", "complete" if b == blocks.size() - 1 else "correct"])
+		check(results == expected, "%s: the right letters in order give %s" % [words[id], str(expected)])
+		check(spelling.is_done(id) and not spelling.is_open() and done_ids == [id], "%s is done, closed, and announced once" % words[id])
+		check("".join(spelling.solved(id)) == words[id], "%s: the judged syllables spell it" % words[id])
+		check(basket == ["ㅍ", "ㅌ"], "%s: its letters are consumed, the others stay" % words[id])
+		check(not spelling.open(id), "%s: a done word does not reopen" % words[id])
+
+	# Failures: a real syllable that is not the target's, two consonants, two vowels.
+	var wrong := {"a real wrong syllable (머 for 미)": ["ㅁ", "ㅓ"], "two consonants": ["ㅁ", "ㄴ"], "two vowels": ["ㅏ", "ㅣ"], "swapped order (ㅣㅁ)": ["ㅣ", "ㅁ"]}
+	for label in wrong:
+		var pair: Array = wrong[label]
+		var basket: Array[String] = ["ㅅ", "ㅗ"]
+		basket.append_array(pair)
+		var spelling = _new_spelling(basket)
+		var seen := _watch_failures(spelling)
+		spelling.open("minari")  # 미나리: the first block is 미
+		var first: String = spelling.place(pair[0], 0, 0)["result"]
+		var second: Dictionary = spelling.place(pair[1], 0, 1)
+		check(first == "placed" and second["result"] == "failed", "%s fails" % label)
+		check(basket == ["ㅅ", "ㅗ"], "%s: exactly its two letters leave the basket" % label)
+		check(seen == [["minari", 0, pair]], "%s: syllable_failed says word, block and letters (%s)" % [label, str(seen)])
+		check(not spelling.is_open() and spelling.solved("minari").is_empty() and not spelling.is_done("minari"), "%s: the view closes and nothing is solved" % label)
+		check(spelling.open("minari"), "%s: the word can be opened again" % label)
+	# Strict: the engine does compose 머, so it is a real syllable, and still wrong.
+	check(Hangul.compose("ㅁ", "ㅓ") == "머" and Hangul.compose("ㅁ", "ㅣ") == "미", "(control) 머 and 미 are both real syllables")
+	var judge_only = _new_spelling([])
+	check(judge_only.judge("minari", 0, ["ㅁ", "ㅣ"]) and not judge_only.judge("minari", 0, ["ㅁ", "ㅓ"]) and not judge_only.judge("minari", 1, ["ㅁ", "ㅣ"]), "judge accepts only the target syllable at that position")
+
+	# Out of order, a letter not in the basket, a filled slot.
+	var basket: Array[String] = ["ㅁ", "ㅓ", "ㄹ", "ㅜ", "ㅁ"]
+	var spelling = _new_spelling(basket)
+	spelling.open("meoru")  # 머루
+	check(spelling.place("ㄹ", 1, 0)["result"] == "rejected" and basket.size() == 5, "block 2 cannot be filled before block 1 is right")
+	check(spelling.place("ㅏ", 0, 0)["result"] == "rejected" and basket.size() == 5, "a letter that is not in the basket cannot be placed")
+	check(spelling.place("ㅁ", 0, 0)["result"] == "placed" and basket == ["ㅓ", "ㄹ", "ㅜ", "ㅁ"], "a placed letter leaves the basket (one copy)")
+	check(spelling.place("ㅁ", 0, 0)["result"] == "rejected" and basket.size() == 4, "a filled slot takes no second letter")
+	check(spelling.place("ㅁ", 0, 5)["result"] == "rejected" and spelling.place("ㅁ", 3, 0)["result"] == "rejected", "slots and blocks out of range are rejected")
+	# Taking back from an unjudged block.
+	check(spelling.take_back(0, 0) and basket == ["ㅓ", "ㄹ", "ㅜ", "ㅁ", "ㅁ"] and spelling.placed == ["", ""], "a letter in an unjudged block goes back to the basket")
+	check(not spelling.take_back(0, 0), "an empty slot gives nothing back")
+	spelling.place("ㅁ", 0, 0)
+	spelling.place("ㅓ", 0, 1)
+	check(spelling.solved("meoru") == ["머"] and spelling.current_block() == 1, "머 is right and locks; block 2 is current")
+	check(not spelling.take_back(0, 0) and not spelling.take_back(0, 1) and spelling.solved("meoru") == ["머"], "a judged block is locked")
+	check(spelling.place("ㅁ", 0, 0)["result"] == "rejected", "a judged block takes no more letters")
+	# Closing early.
+	spelling.place("ㄹ", 1, 0)
+	check(basket == ["ㅜ", "ㅁ"], "a letter sits in block 2 (basket %s)" % str(basket))
+	var returned: Array[String] = spelling.close()
+	check(returned == ["ㄹ"] and basket == ["ㅜ", "ㅁ", "ㄹ"] and not spelling.is_open(), "closing early returns the unjudged letter")
+	check(spelling.solved("meoru") == ["머"], "closing keeps the judged block")
+	check(spelling.open("meoru") and spelling.current_block() == 1 and spelling.placed == ["", ""], "reopening resumes at block 2")
+	check(spelling.place("ㄹ", 1, 0)["result"] == "placed" and spelling.place("ㅜ", 1, 1)["result"] == "complete", "finishing 머루 completes it")
+	check(basket == ["ㅁ"] and spelling.is_done("meoru") and not spelling.open("meoru"), "the word is done and cannot be reopened")
+	# Gating and unknown ids.
+	var gated = _new_spelling([])
+	check(not gated.open("ma", false) and not gated.is_open(), "opening is refused when not allowed")
+	check(not gated.open("no_such_word") and not gated.open("keuncheonnamseong"), "unknown ids and decoys cannot be opened")
+	check(gated.open("ma") and not gated.open("gobi"), "only one word is open at a time")
+	# Slot layout is a function of the syllable.
+	check(gated.slots_for("마") == ["initial", "medial"] and gated.slots_for("한") == ["initial", "medial", "final"], "slots_for: two slots, plus a final one for a 받침 syllable")
+	check(gated.close().is_empty() and not gated.is_open(), "closing an empty view returns nothing")
+	_section_done("test_spelling_logic")
+
+
+## Moves the mouse from `from` to `to` with the left button held, then releases.
+func _drag(viewport: Viewport, from: Vector2, to: Vector2) -> void:
+	var move := InputEventMouseMotion.new()
+	move.position = from
+	move.global_position = from
+	viewport.push_input(move)
+	viewport.push_input(_click_event(from))
+	await get_tree().process_frame
+	var steps := 6
+	var here := from
+	for i in steps:
+		var next := from.lerp(to, (i + 1.0) / steps)
+		var motion := InputEventMouseMotion.new()
+		motion.position = next
+		motion.global_position = next
+		motion.relative = next - here
+		motion.button_mask = MOUSE_BUTTON_MASK_LEFT
+		viewport.push_input(motion)
+		here = next
+		await get_tree().process_frame
+	viewport.push_input(_release_event(to))
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+
+func _tile_center(map: Node3D, letter: String) -> Vector2:
+	var index: int = map.basket_hud._letters.find(letter)
+	return map.basket_hud._tiles_box.get_child(index).get_global_rect().get_center()
+
+
+func _slot_center(map: Node3D, block: int, slot: int) -> Vector2:
+	return map.spelling_hud.find_child("Slot%d_%d" % [block, slot], true, false).get_global_rect().get_center()
+
+
+func test_spelling_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var viewport := map.get_viewport()
+	check(map.spelling_hud is CanvasLayer and not map.spelling_hud.is_open() and not get_tree().paused, "the map has a closed spelling view and is not paused")
+	# Everything discovered and every target letter picked, by the real paths.
+	var by_kind := {}
+	for entry in _config()["plants"]["placed"]:
+		by_kind[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for id in _target_words():
+		map.discovery.update([by_kind[id]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	await _settle_layout()
+	var basket_size: int = map.picking.basket.size()
+	check(basket_size == 28, "28 letters in the basket to spell with (%d)" % basket_size)
+
+	# Opening is refused while restarting or dead.
+	map.restarting = true
+	check(not map.open_spelling("ma") and not get_tree().paused and not map.spelling.is_open(), "opening is refused while restarting")
+	map.restarting = false
+	for i in 5:
+		GameState.damage("nestor", "test")
+	check(not GameState.is_alive("nestor") and not map.open_spelling("ma") and not get_tree().paused, "opening is refused when a traveler is dead")
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+
+	# A real click on the list entry opens it and pauses.
+	var row: Control = map.discovery_hud._rows["ma"]
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(map.spelling_hud.is_open() and map.spelling.open_id == "ma", "clicking the 마 entry opens the spelling view")
+	check(get_tree().paused and not map.can_process(), "opening pauses the map")
+	check(map.spelling_hud.can_process() and map.basket_hud.can_process() and map.discovery_hud.can_process(), "the view, basket and list keep running while paused")
+	await _settle_layout()
+	var title: Label = map.spelling_hud.find_child("Title", true, false)
+	check(title.text == "Korean yam", "the view shows the English name")
+	var blocks: Control = map.spelling_hud.find_child("Blocks", true, false)
+	check(blocks.get_child_count() == 1, "마 has one block")
+	var panel: Rect2 = map.spelling_hud._panel.get_global_rect()
+	check(is_equal_approx(panel.get_center().x, 640.0) and Rect2(Vector2.ZERO, Vector2(1280, 720)).encloses(panel), "the panel is centred and on screen (%s)" % str(panel))
+	check(not panel.intersects(map.basket_hud._panel.get_global_rect()) and not panel.intersects(map.discovery_hud.get_child(0).get_global_rect()), "the panel overlaps neither the full basket nor the full list")
+	check(map.spelling_hud.find_child("Slot0_0", true, false).get_global_rect().size.x >= 60.0, "a slot is big enough to drop into")
+	check(not map.open_spelling("meoru") and map.spelling.open_id == "ma", "a second entry cannot open over the first")
+
+	# Real drags. Letters outside a slot snap back; in a slot they stay.
+	var before: Array = map.picking.basket.duplicate()
+	await _drag(viewport, _tile_center(map, "ㅁ"), Vector2(100.0, 650.0))
+	check(map.picking.basket == before and map.spelling.placed == ["", ""], "a letter dropped outside any slot stays in the basket")
+	await _drag(viewport, _tile_center(map, "ㅁ"), _slot_center(map, 0, 0))
+	check(map.spelling.placed == ["ㅁ", ""] and map.picking.basket.size() == basket_size - 1, "dragging ㅁ into the consonant slot places it (%s)" % str(map.spelling.placed))
+	await _settle_layout()
+	await _drag(viewport, _slot_center(map, 0, 0), map.basket_hud._panel.get_global_rect().get_center())
+	check(map.spelling.placed == ["", ""] and map.picking.basket.size() == basket_size, "dragging it back to the basket takes it back")
+	await _settle_layout()
+	await _drag(viewport, _tile_center(map, "ㅁ"), _slot_center(map, 0, 0))
+	await _settle_layout()
+	await _drag(viewport, _tile_center(map, "ㅏ"), _slot_center(map, 0, 1))
+	check(map.spelling.is_done("ma") and not map.spelling.is_open(), "ㅁ then ㅏ spells 마 and completes it")
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "the view closed and the map is unpaused")
+	check(map.picking.basket.size() == basket_size - 2, "the two letters were consumed")
+	map.discovery_hud.refresh()
+	var done_row: Control = map.discovery_hud._rows["ma"]
+	check(done_row.find_child("Done", true, false) != null, "the 마 entry shows a done mark")
+	var filled: Array = done_row.find_children("*", "Label", true, false).map(func(l): return l.text)
+	check(filled.has("마"), "the 마 entry shows the Korean word (%s)" % str(filled))
+	viewport.push_input(_click_event(done_row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(done_row.get_global_rect().get_center()))
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "a done entry opens nothing")
+
+	# A wrong block by real drags: ㅁ+ㅏ is 마, but 머루 wants 머. Both letters are destroyed.
+	var count_before: int = map.picking.basket.size()
+	var failed_seen := _watch_failures(map.spelling)
+	check(map.open_spelling("meoru"), "머루 opens")
+	await _settle_layout()
+	var spare: bool = map.picking.basket.has("ㅁ") and map.picking.basket.has("ㅏ")
+	check(spare, "the basket still holds a ㅁ and a spare ㅏ")
+	if spare:
+		await _drag(viewport, _tile_center(map, "ㅁ"), _slot_center(map, 0, 0))
+		await _settle_layout()
+		await _drag(viewport, _tile_center(map, "ㅏ"), _slot_center(map, 0, 1))
+		check(failed_seen.size() == 1 and failed_seen[0][0] == "meoru" and failed_seen[0][1] == 0 and failed_seen[0][2] == ["ㅁ", "ㅏ"], "syllable_failed fired for the block (%s)" % str(failed_seen))
+		check(map.spelling_hud.is_open() and map.spelling_hud.is_flashing() and get_tree().paused, "the failed block flashes while the view is still up")
+		check(map.picking.basket.size() == count_before - 2, "both letters left the basket for good")
+		map.spelling_hud.tick(0.3)
+		check(map.spelling_hud.is_open(), "still flashing at 0.3 s")
+		map.spelling_hud.tick(0.4)
+		check(not map.spelling_hud.is_open() and not get_tree().paused and not map.spelling.is_open(), "after the flash the view closes and the map is unpaused")
+		check(not map.spelling.is_done("meoru") and map.spelling.solved("meoru").is_empty(), "a failure solves nothing")
+
+	# Esc closes the view; unjudged letters go back, judged blocks stay.
+	var space_count: int = map.picking.basket.size()
+	check(map.open_spelling("gobi"), "고비 opens")
+	await _settle_layout()
+	var gobi: Array = _word_letters("고비")
+	map.spelling_hud.apply(map.spelling.place(gobi[0][0], 0, 0))
+	map.spelling_hud.apply(map.spelling.place(gobi[0][1], 0, 1))
+	check(map.spelling.solved("gobi") == ["고"] and map.spelling.current_block() == 1, "고 is judged right")
+	map.spelling_hud.apply(map.spelling.place(gobi[1][0], 1, 0))
+	check(map.picking.basket.size() == space_count - 3, "one more letter sits in block 2")
+	viewport.push_input(_key_event(KEY_ESCAPE))
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "Esc closes the view and unpauses")
+	check(map.picking.basket.size() == space_count - 2 and map.spelling.solved("gobi") == ["고"], "the unjudged letter is back; the judged 고 stays")
+	check(map.open_spelling("gobi") and map.spelling.current_block() == 1, "reopened, 고비 resumes at block 2")
+	map.spelling_hud.find_child("Close", true, false).pressed.emit()
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "the close button closes it too")
+	map.discovery_hud.refresh()
+	check(map.discovery_hud._rows["gobi"].find_children("*", "Label", true, false).any(func(l): return l.text == "고"), "the entry shows the judged 고 as progress")
+	check(map.discovery_hud._rows["gobi"].find_child("Done", true, false) == null, "but is not marked done")
+
+	# Restart: a fresh map has no progress, no letters, no marks.
+	map.free()
+	check(not get_tree().paused, "freeing the map never leaves the tree paused")
+	var again: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(again)
+	again.set_physics_process(false)
+	check(not again.spelling.is_done("ma") and again.spelling.solved("ma").is_empty() and again.spelling.solved("gobi").is_empty(), "a restarted scene has no spelling progress")
+	check(again.picking.basket.is_empty() and again.discovery.entries.is_empty() and not again.spelling_hud.is_open(), "and an empty basket, list and view")
+	again.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_spelling_scene")

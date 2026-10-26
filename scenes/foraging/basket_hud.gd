@@ -27,16 +27,40 @@ var weave_color := Color.WHITE
 var rim_color := Color.WHITE
 var rope_color := Color.WHITE
 
+## While true (the spelling view is open) a tile can be dragged out of the bag.
+var drag_enabled := false
+## Called with the drag data of a letter dropped back onto the bag from a
+## spelling slot: {"letter", "from_slot": [block, slot]}.
+var take_back_handler := Callable()
+
 var _picking
 var _panel: Bag
 var _tiles_box: GridContainer
 var _ages: Array[float] = []
+var _letters: Array[String] = []  # the letter of each tile, in order
 
 
 ## The bag: a container that draws itself behind its content and stops clicks.
 class Bag extends MarginContainer:
 	var hud
 	var mouth: Control  # the tiles' grid, so the bag can draw its opening
+
+	## Drags the tile under the mouse (only while the spelling view is open).
+	func _get_drag_data(at_position: Vector2) -> Variant:
+		if not hud.drag_enabled:
+			return null
+		var letter: String = hud.letter_at(get_global_rect().position + at_position)
+		if letter == "":
+			return null
+		set_drag_preview(hud.drag_preview(letter))
+		return {"letter": letter}
+
+	## A letter dragged out of a spelling slot can be dropped back here.
+	func _can_drop_data(_at_position: Vector2, data: Variant) -> bool:
+		return hud.take_back_handler.is_valid() and data is Dictionary and data.has("from_slot")
+
+	func _drop_data(_at_position: Vector2, data: Variant) -> void:
+		hud.take_back_handler.call(data)
 
 	func _draw() -> void:
 		var body := Rect2(0.0, HANDLE_HEIGHT, size.x, size.y - HANDLE_HEIGHT)
@@ -85,6 +109,7 @@ class Bag extends MarginContainer:
 func setup(picking, config: Dictionary) -> void:
 	layer = 5
 	name = "BasketHud"
+	process_mode = Node.PROCESS_MODE_ALWAYS  # tiles can be dragged while the spelling view pauses the map
 	_picking = picking
 	max_columns = int(config["max_columns"])
 	tile_size = float(config["tile_size"])
@@ -146,12 +171,54 @@ static func _color(channels: Array) -> Color:
 ## Adds a tile for each new letter in the basket and advances the pop-ins.
 ## Call after each tick.
 func refresh(delta: float) -> void:
+	if not _matches_basket():  # a letter left the basket (spelling): redraw it whole
+		for tile in _tiles_box.get_children():
+			_tiles_box.remove_child(tile)
+			tile.queue_free()
+		_ages.clear()
+		_letters.clear()
+		for letter in _picking.basket:
+			_tiles_box.add_child(_make_tile(letter))
+			_letters.append(letter)
+			_ages.append(POP_TIME)
 	while _tiles_box.get_child_count() < _picking.basket.size():
-		_tiles_box.add_child(_make_tile(_picking.basket[_tiles_box.get_child_count()]))
+		var letter: String = _picking.basket[_tiles_box.get_child_count()]
+		_tiles_box.add_child(_make_tile(letter))
+		_letters.append(letter)
 		_ages.append(0.0)
 	for i in _ages.size():
 		_ages[i] += delta
 		_tiles_box.get_child(i).scale = Vector2.ONE * pop_scale(_ages[i])
+
+
+## True while the tiles shown are the start of the basket, in order.
+func _matches_basket() -> bool:
+	if _letters.size() > _picking.basket.size():
+		return false
+	for i in _letters.size():
+		if _letters[i] != _picking.basket[i]:
+			return false
+	return true
+
+
+## The letter of the tile under a screen point, or "".
+func letter_at(point: Vector2) -> String:
+	for i in _tiles_box.get_child_count():
+		var tile: Control = _tiles_box.get_child(i)
+		if (tile.get_global_transform() * Rect2(Vector2.ZERO, tile.size)).has_point(point):
+			return _letters[i]
+	return ""
+
+
+## What follows the mouse while a letter is dragged: a tile of the same look,
+## centred on the mouse.
+func drag_preview(letter: String) -> Control:
+	var holder := Control.new()
+	var tile := _make_tile(letter)
+	tile.scale = Vector2.ONE
+	tile.position = -Vector2(tile_size, tile_size) / 2.0
+	holder.add_child(tile)
+	return holder
 
 
 ## 0..1: how far a tile of this age has popped in.

@@ -11,6 +11,8 @@ const Discovery := preload("res://scenes/foraging/discovery.gd")
 const DiscoveryHud := preload("res://scenes/foraging/discovery_hud.gd")
 const Picking := preload("res://scenes/foraging/picking.gd")
 const BasketHud := preload("res://scenes/foraging/basket_hud.gd")
+const Spelling := preload("res://scenes/foraging/spelling.gd")
+const SpellingHud := preload("res://scenes/foraging/spelling_hud.gd")
 const SteamSound := preload("res://scenes/foraging/steam_sound.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
@@ -56,6 +58,10 @@ var discovery_hud: CanvasLayer
 ## Which letters are still on their plants and what is in the basket, and the basket's HUD.
 var picking
 var basket_hud: CanvasLayer
+## What has been spelled, and the spelling view. Opening the view pauses the
+## tree; the HUDs run while paused (process mode ALWAYS), the map does not.
+var spelling
+var spelling_hud: CanvasLayer
 ## Set while the scene is being restarted after a death; picks are ignored.
 var restarting := false
 var travelers: Dictionary = {}
@@ -121,12 +127,19 @@ func _ready() -> void:
 	discovery = Discovery.new(config["discovery"], config["plants"])
 	discovery_hud = DiscoveryHud.new()
 	add_child(discovery_hud)
-	discovery_hud.setup(discovery)
 	picking = Picking.new(config["picking"], config["plants"], config["reach_ring"])
+	spelling = Spelling.new(config["spelling_view"], config["plants"], picking.basket)
+	discovery_hud.setup(discovery, spelling)
+	discovery_hud.entry_pressed.connect(open_spelling)
 	_build_ring()
 	basket_hud = BasketHud.new()
 	add_child(basket_hud)
 	basket_hud.setup(picking, config["basket_hud"])
+	spelling_hud = SpellingHud.new()
+	add_child(spelling_hud)
+	spelling_hud.setup(spelling, basket_hud)
+	spelling_hud.changed.connect(_on_spelling_changed)
+	spelling_hud.closed.connect(_on_spelling_closed)
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
 		var traveler := Traveler.new()
@@ -145,6 +158,11 @@ func _ready() -> void:
 	for t in travelers.values():  # settle onto the ground before the first frame
 		for i in 10:
 			t.drive(Vector2.ZERO, 1.0 / 60.0)
+
+
+func _exit_tree() -> void:
+	if spelling_hud != null and spelling_hud.is_open():  # never leave the tree paused behind
+		get_tree().paused = false
 
 
 func _process(delta: float) -> void:
@@ -193,6 +211,31 @@ func picks_allowed() -> bool:
 		if not GameState.is_alive(id):
 			return false
 	return true
+
+
+## Opens the spelling view for a discovered word and pauses the map. False if
+## the word cannot be opened: restarting, a traveler is dead, the view is up
+## already (or showing a failure), the word is done or not a target.
+func open_spelling(id: String) -> bool:
+	if spelling_hud.is_open() or not spelling.open(id, picks_allowed()):
+		return false
+	picking.cancel_walk()
+	basket_hud.refresh(basket_hud.POP_TIME)  # tiles still popping in finish, as the map stops
+	_tip_plant = null  # a hover name would stay frozen on screen
+	_tooltip.visible = false
+	spelling_hud.show_word(id)
+	get_tree().paused = true
+	return true
+
+
+func _on_spelling_changed() -> void:
+	basket_hud.refresh(0.0)
+	discovery_hud.refresh()
+
+
+## The view went away (closed, finished, or the failure flash ended): play on.
+func _on_spelling_closed() -> void:
+	get_tree().paused = false
 
 
 ## A left click at a screen point. If it is on a plant that still has its

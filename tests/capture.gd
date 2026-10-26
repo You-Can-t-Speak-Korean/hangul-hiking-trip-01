@@ -8,7 +8,9 @@ extends Node
 ## letters_decoys_targets,spread_topdown}.png, and the picking shots
 ## {pick_walking,pick_target_basket,pick_decoy_steam}.png, the reach shots
 ## {reach_ring_target,reach_ring_decoy,walk_up_flash}.png, and the basket shots
-## {basket_empty,basket_1_tile,basket_28_tiles,hud_discovery_two_entries}.png.
+## {basket_empty,basket_1_tile,basket_28_tiles,hud_discovery_two_entries}.png, and the
+## spelling shots {spelling_open_3_blocks,spelling_block_locked,spelling_half_filled,
+## spelling_failure_flash,spelling_entry_done}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -126,7 +128,57 @@ func _ready() -> void:
 	await _picking_shots()
 	await _reach_shots()
 	await _basket_shots()
+	await _spelling_shots()
 	get_tree().quit()
+
+
+## The spelling view on a fresh map, through the real code paths: every target
+## discovered and picked, 미나리 opened by open_spelling, letters placed with the
+## same call a drop makes (spelling.place -> spelling_hud.apply).
+func _spelling_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	var spots := {}
+	for entry in Content.mountain("hallasan")["foraging"]["plants"]["placed"]:
+		spots[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for kind in Content.mountain("hallasan")["foraging"]["plants"]["kinds"]:
+		if kind["kind"] == "target":
+			map.discovery.update([spots[kind["id"]]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	map.open_spelling("minari")
+	await _frames(5)
+	_save("spelling_open_3_blocks")
+	var hud: CanvasLayer = map.spelling_hud
+	for letter in ["ㅁ", "ㅣ"]:  # 미: right
+		hud.apply(map.spelling.place(letter, 0, 0 if letter == "ㅁ" else 1))
+	await _frames(5)
+	_save("spelling_block_locked")
+	hud.apply(map.spelling.place("ㄴ", 1, 0))  # half of 나
+	await _frames(5)
+	_save("spelling_half_filled")
+	hud.apply(map.spelling.place("ㅓ", 1, 1))  # 너, not 나: fails
+	hud.tick(0.1)
+	await _frames(5)
+	_save("spelling_failure_flash")
+	hud.tick(1.0)
+	map.open_spelling("ma")
+	hud.apply(map.spelling.place("ㅁ", 0, 0))
+	hud.apply(map.spelling.place("ㅏ", 0, 1))
+	await _frames(5)
+	_save("spelling_entry_done")
+	map.free()
+	get_tree().paused = false
 
 
 ## A point 2.4 m from a plant of the kind with no other target kind within the
