@@ -116,7 +116,7 @@ func _ready() -> void:
 	picking = Picking.new(config["picking"], config["plants"])
 	basket_hud = BasketHud.new()
 	add_child(basket_hud)
-	basket_hud.setup(picking)
+	basket_hud.setup(picking, config["basket_hud"])
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
 		var traveler := Traveler.new()

@@ -35,7 +35,7 @@ func refresh() -> void:
 
 func _make_row(entry: Dictionary) -> PanelContainer:
 	var row := PanelContainer.new()
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.mouse_filter = Control.MOUSE_FILTER_STOP  # the panel swallows clicks; its children ignore them
 	var back := StyleBoxFlat.new()
 	back.bg_color = Color(0.05, 0.07, 0.06, 0.7)
 	back.set_corner_radius_all(6)

@@ -6,7 +6,8 @@ extends Node
 ## tooltip_0_7s_flicker_hidden,tooltip_1_2s_gone,letters_lower_forest,letters_alpine,
 ## fruits_meoru_butsunnamu,fruit_deulchuk,hud_empty,hud_ma_meoru,hud_all_six,
 ## letters_decoys_targets,spread_topdown}.png, and the picking shots
-## {pick_walking,pick_target_basket,pick_decoy_steam}.png.
+## {pick_walking,pick_target_basket,pick_decoy_steam}.png, and the basket shots
+## {basket_empty,basket_1_tile,basket_28_tiles,hud_discovery_two_entries}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -122,6 +123,7 @@ func _ready() -> void:
 		if child is CanvasLayer:
 			child.queue_free()
 	await _picking_shots()
+	await _basket_shots()
 	get_tree().quit()
 
 
@@ -301,3 +303,33 @@ func _on_screen(map: Node3D, want_target: bool, min_distance: float) -> Node3D:
 				and map.plant_at(screen) == plant:
 			best = plant
 	return best
+
+
+## The basket HUD on a fresh map, filled by the real pick path (pick_plant) for
+## every target plant, plus the discovery list with two entries.
+func _basket_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	_save("basket_empty")
+	var targets: Array[Node3D] = []
+	for plant in map.plants:
+		if plant.kind == "target":
+			targets.append(plant)
+	map.pick_plant(targets[0])
+	await _teleport(map, _clean_spot(map, "ma"))
+	_save("basket_1_tile")
+	await _teleport(map, _clean_spot(map, "meoru"))
+	_save("hud_discovery_two_entries")
+	for plant in targets:
+		map.pick_plant(plant)
+	for id in ["minari", "gosari", "gobi", "simiro"]:  # the full list, to show the basket clears it
+		await _teleport(map, _clean_spot(map, id))
+	await _frames(20)
+	_save("basket_28_tiles")
+	map.free()

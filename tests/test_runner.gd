@@ -33,11 +33,13 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_picking_logic",
 	"test_steam_sound",
 	"test_picking_scene",
+	"test_basket_hud_data",
+	"test_hud_clicks_and_layout",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 486
+const MIN_CHECKS := 530
 
 
 func check(condition: bool, label: String) -> void:
@@ -87,6 +89,9 @@ func _ready() -> void:
 	test_picking_logic()
 	test_steam_sound()
 	await test_picking_scene()
+	print("== HUD clicks and basket layout ==")
+	test_basket_hud_data()
+	await test_hud_clicks_and_layout()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -1574,3 +1579,145 @@ func test_picking_scene() -> void:
 	again.free()
 	GameState.new_hike()
 	_section_done("test_picking_scene")
+
+
+func test_basket_hud_data() -> void:
+	var block: Dictionary = _config().get("basket_hud", {})
+	check(not block.is_empty(), "hallasan.json has a basket_hud block")
+	check(block.get("max_columns") is float and float(block["max_columns"]) >= 1.0 and float(block["max_columns"]) == floorf(float(block["max_columns"])), "basket_hud.max_columns is a positive whole number")
+	for key in ["tile_size", "tile_gap", "margin"]:
+		check(block.get(key) is float and float(block[key]) > 0.0, "basket_hud.%s is a positive number" % key)
+	for key in ["bag_body_color", "bag_weave_color", "bag_rim_color", "rope_color"]:
+		var color = block.get(key)
+		var ok: bool = color is Array and color.size() == 3
+		if ok:
+			for channel in color:
+				ok = ok and channel is float and channel >= 0.0 and channel <= 1.0
+		check(ok, "basket_hud.%s is present with three channels in 0..1" % key)
+	_section_done("test_basket_hud_data")
+
+
+## Lets the container layout settle after the HUD changed.
+func _settle_layout() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+
+
+func test_hud_clicks_and_layout() -> void:
+	# The headless window is tiny; the layout is checked at the game's 1280x720.
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.partner.global_position = _ground_point(map, 60.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var screen: Vector2 = map.get_viewport().get_visible_rect().size
+	var viewport_rect := Rect2(Vector2.ZERO, screen)
+	var block: Dictionary = _config()["basket_hud"]
+	var max_columns := int(block["max_columns"])
+	var bag: Control = map.basket_hud._panel
+	var tiles_box: Control = map.basket_hud.find_child("Tiles", true, false)
+
+	# Discovery list with all six entries (the tallest it gets).
+	var by_kind := {}
+	for entry in _config()["plants"]["placed"]:
+		by_kind[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for kind in _config()["plants"]["kinds"]:
+		if kind["kind"] == "target":
+			map.discovery.update([by_kind[kind["id"]]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	await _settle_layout()
+	var list: Control = map.discovery_hud.get_child(0)
+	var list_rect := list.get_global_rect()
+	check(map.discovery.entries.size() == 6 and list.get_child_count() == 6, "the discovery list has its six entries")
+
+	# Layout with 0, 1, 10 and 28 tiles, filled by real picks.
+	var order: Array[int] = []
+	for i in map.plants.size():
+		if map.plants[i].kind == "target":
+			order.append(i)
+	var picked := 0
+	var layout_ok := true
+	for want in [0, 1, 10, 28]:
+		while picked < want:
+			map.pick_plant(map.plants[order[picked]])
+			picked += 1
+		map.basket_hud.refresh(1.0)
+		await _settle_layout()
+		var rect := bag.get_global_rect()
+		var inside := viewport_rect.encloses(rect)
+		var clear := not rect.intersects(list_rect)
+		var widths := {}
+		for tile in tiles_box.get_children():
+			widths[snappedf(tile.position.y, 0.5)] = int(widths.get(snappedf(tile.position.y, 0.5), 0)) + 1
+		var widest := 0
+		for count in widths.values():
+			widest = maxi(widest, count)
+		check(tiles_box.get_child_count() == want and map.picking.basket.size() == want, "%d tiles in the basket" % want)
+		check(inside, "%d tiles: the basket %s is inside the viewport" % [want, str(rect)])
+		check(clear, "%d tiles: the basket does not overlap the discovery list" % want)
+		check(widest <= max_columns, "%d tiles: rows are at most %d wide (%d)" % [want, max_columns, widest])
+		check(widths.size() == ceili(want / float(max_columns)), "%d tiles make %d rows" % [want, ceili(want / float(max_columns))])
+		layout_ok = layout_ok and rect.end.x <= screen.x and rect.end.y <= screen.y
+	check(layout_ok and bag.get_global_rect().end.is_equal_approx(screen - Vector2(float(block["margin"]), float(block["margin"]))), "the bag stays anchored at the bottom right margin as it grows")
+	check(bag.get_global_rect().size.y > 160.0, "a full bag has grown upward")
+
+	# Mouse filters: the panels stop clicks, the layer roots and inner nodes do not.
+	check(bag.mouse_filter == Control.MOUSE_FILTER_STOP, "the bag stops mouse clicks")
+	check(list.get_child(0).mouse_filter == Control.MOUSE_FILTER_STOP, "each discovery panel stops mouse clicks")
+	check(list.mouse_filter == Control.MOUSE_FILTER_IGNORE, "the discovery list's column box does not block")
+	check(tiles_box.mouse_filter == Control.MOUSE_FILTER_IGNORE and tiles_box.get_child(0).mouse_filter == Control.MOUSE_FILTER_IGNORE, "the tiles let clicks fall through to the bag")
+
+	# Synthetic clicks through the viewport's GUI, so panels get the chance to swallow them.
+	map.picking.cancel_walk()
+	var over_bag := bag.get_global_rect().get_center()
+	var over_list: Vector2 = list.get_child(0).get_global_rect().get_center()
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var clickable := _visible_plant(map, func(p): return p.kind != "target" and not bag.get_global_rect().has_point(map.camera.unproject_position(p.global_position + Vector3(0, 0.5, 0))) and not list_rect.has_point(map.camera.unproject_position(p.global_position + Vector3(0, 0.5, 0))))
+	check(not clickable.is_empty(), "a plant outside both panels is on screen")
+	var walked_before: int = map.picking.walk_target
+	for point in [over_bag, over_list]:
+		map.get_viewport().push_input(_click_event(point))
+		check(map.picking.walk_target == walked_before and map.picking.walk_target == -1, "a click over a panel starts no walk (%s)" % str(point))
+	check(map.picking.letters_left() == 36 - 28, "and takes no letter (the 28 picks above are the only ones)")
+	# Outside the panels everything works as before.
+	if not clickable.is_empty():
+		map.get_viewport().push_input(_click_event(clickable["screen"]))
+		check(map.picking.walk_target == map.plants.find(clickable["plant"]), "a click on a plant outside the panels still starts its walk")
+	map.picking.cancel_walk()
+	# A plant behind a panel: slide the bag over a visible plant and click there.
+	var behind := _visible_plant(map, func(p): return p.kind != "target" and p != clickable.get("plant"))
+	if not behind.is_empty():
+		var sp: Vector2 = behind["screen"]
+		bag.global_position = sp - bag.size / 2.0
+		await _settle_layout()
+		bag.global_position = sp - bag.size / 2.0
+		map.get_viewport().push_input(_click_event(sp))
+		check(map.picking.walk_target == -1, "a click on a plant that is behind the basket starts no walk")
+		var plain := _click_event(sp)
+		map._unhandled_input(plain)
+		check(map.picking.walk_target >= 0, "(control) the same click reaching the map would have started one")
+		map.picking.cancel_walk()
+		# The same for the discovery list: slide its first panel over the plant.
+		bag.global_position = Vector2(screen.x - 300.0, 0.0)
+		var row: Control = list.get_child(0)
+		list.global_position += sp - row.get_global_rect().get_center()
+		map.get_viewport().push_input(_click_event(sp))
+		check(map.picking.walk_target == -1, "a click on a plant that is behind a discovery panel starts no walk")
+	map.free()
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_hud_clicks_and_layout")
