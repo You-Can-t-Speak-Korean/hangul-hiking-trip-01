@@ -45,11 +45,15 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_damage_data",
 	"test_damage_logic",
 	"test_hearts_scene",
+	"test_spares_data",
+	"test_spares_logic",
+	"test_spares_scene",
+	"test_spares_real_events",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 830
+const MIN_CHECKS := 933
 
 
 func check(condition: bool, label: String) -> void:
@@ -115,6 +119,11 @@ func _ready() -> void:
 	test_damage_data()
 	test_damage_logic()
 	await test_hearts_scene()
+	print("== Spare plants ==")
+	test_spares_data()
+	test_spares_logic()
+	await test_spares_scene()
+	await test_spares_real_events()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -2729,3 +2738,393 @@ func test_hearts_scene() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_hearts_scene")
+
+
+# ---- Spare plants ----
+
+const SparesScript := preload("res://scenes/foraging/spares.gd")
+
+
+func _new_spares(cap := -1):
+	var block: Dictionary = _config()["spares"].duplicate()
+	if cap >= 0:
+		block["cap"] = float(cap)
+	return SparesScript.new(block, _config()["plants"])
+
+
+## Every letter the 28 target plants carry.
+func _target_letters() -> Array:
+	var kinds := {}
+	for kind in _hangul_plants():
+		kinds[kind["id"]] = kind["kind"]
+	var letters := []
+	for entry in _placed():
+		if kinds[entry["kind"]] == "target":
+			letters.append(entry["letter"])
+	return letters
+
+
+## `letters` without one copy of each of `gone`.
+func _without(letters: Array, gone: Array) -> Array:
+	var rest := letters.duplicate()
+	for letter in gone:
+		rest.erase(letter)
+	return rest
+
+
+## A progress map with these words fully judged.
+func _solved_words(ids: Array) -> Dictionary:
+	var solved := {}
+	for id in ids:
+		solved[id] = Hangul.syllable_count(_target_words()[id])
+	return solved
+
+
+func test_spares_data() -> void:
+	var block: Dictionary = _config().get("spares", {})
+	check(not block.is_empty(), "hallasan.json has a spares block")
+	var cap = block.get("cap")
+	check(cap is float and cap == floorf(cap) and cap > 0.0, "spares.cap is a positive whole number")
+	check(cap is float and int(cap) == 6, "(Hallasan) at most 6 spares")
+	check(block.get("grow_seconds") is float and float(block["grow_seconds"]) > 0.0, "spares.grow_seconds is positive")
+	var slots: Dictionary = block.get("slots", {})
+	var words := _target_words()
+	var ids_match := slots.size() == words.size()
+	for id in words:
+		ids_match = ids_match and slots.has(id)
+	check(ids_match, "one slot per target word (%d)" % slots.size())
+	var half_depth := float(_config()["stage"]["depth"]) / 2.0
+	var starts: Array[Vector2] = []
+	for id in _config()["start"]:
+		starts.append(Vector2(float(_config()["start"][id][0]), float(_config()["start"][id][1])))
+	var by_id := {}
+	for kind in _hangul_plants():
+		by_id[kind["id"]] = kind
+	var spacing_ok := true
+	var same_ok := true
+	var start_ok := true
+	var stage_ok := true
+	for id in words:
+		var pair = slots.get(id)
+		var well_formed: bool = pair is Array and pair.size() == 2 and pair[0] is float and pair[1] is float
+		check(well_formed, "%s's slot is [x, z]" % words[id])
+		if not well_formed:
+			continue
+		var spot := Vector2(float(pair[0]), float(pair[1]))
+		var zone_x := _zone_range(by_id[id]["zone"])
+		check(spot.x >= float(zone_x[0]) + 1.0 and spot.x <= float(zone_x[1]) - 1.0, "%s's slot is inside its own zone (1 m from the edges)" % words[id])
+		stage_ok = stage_ok and absf(spot.y) <= half_depth - 1.0
+		for start in starts:
+			start_ok = start_ok and spot.distance_to(start) >= 6.0
+		for entry in _placed():
+			var other := Vector2(float(entry["x"]), float(entry["z"]))
+			spacing_ok = spacing_ok and spot.distance_to(other) >= 2.0
+			same_ok = same_ok and (entry["kind"] != id or spot.distance_to(other) >= 4.0)
+		for other_id in words:
+			var other_pair = slots.get(other_id)
+			if other_id != id and other_pair is Array and other_pair.size() == 2:
+				spacing_ok = spacing_ok and spot.distance_to(Vector2(float(other_pair[0]), float(other_pair[1]))) >= 2.0
+	check(stage_ok, "every slot is on the stage")
+	check(spacing_ok, "every slot is at least 2 m from every plant and every other slot")
+	check(same_ok, "every slot is at least 4 m from the placed plants of its own kind")
+	check(start_ok, "no slot is within 6 m of a traveler's start")
+	_section_done("test_spares_data")
+
+
+func test_spares_logic() -> void:
+	var all := _target_letters()
+	var spares = _new_spares()
+	check(all.size() == 28 and spares.needed({}).size() == 28, "28 jamo are needed to spell all six words")
+	var sorted_needed: Array = spares.needed({})
+	sorted_needed.sort()
+	var sorted_all := all.duplicate()
+	sorted_all.sort()
+	check(sorted_needed == sorted_all, "the jamo needed are exactly the jamo on the target plants")
+	check(spares.needed(_solved_words(["ma", "meoru", "minari", "gosari", "simiro"])) == ["ㄱ", "ㅗ", "ㅂ", "ㅣ"], "a word's needs are all its jamo, repeats included")
+	var half_done := _solved_words(["ma", "meoru", "minari", "gosari", "simiro"])
+	half_done["gobi"] = 1
+	check(spares.needed(half_done) == ["ㅂ", "ㅣ"], "judged blocks need nothing more (고 judged, 비 left)")
+
+	# No deficit.
+	var choice: Dictionary = spares.choose({}, all)
+	check(choice["letter"] == "" and choice["deficit"] == 0 and choice["reason"] == "no deficit", "every jamo available: no deficit, nothing to spawn")
+	check(spares.choose({}, all + ["ㅍ", "ㅍ", "ㅏ"])["letter"] == "", "surplus jamo never make a deficit")
+	check(_new_spares().choose(_solved_words(["ma"]), _without(all, ["ㅁ", "ㅏ"]))["letter"] == "", "a finished word's jamo are not needed any more")
+	# One missing jamo.
+	choice = spares.choose({}, _without(all, ["ㅂ"]))
+	check(choice["letter"] == "ㅂ" and choice["deficit"] == 1 and choice["reason"] == "short of ㅂ by 1", "one missing jamo is the one chosen (%s)" % str(choice))
+	# The largest deficit wins, even over an earlier jamo.
+	choice = spares.choose({}, _without(all, ["ㅁ", "ㅣ", "ㅣ"]))
+	check(choice["letter"] == "ㅣ" and choice["deficit"] == 2, "the largest deficit wins (ㅣ short by 2 beats ㅁ short by 1): %s" % str(choice))
+	# A deficit counts repeats: two ㅣ needed by 미나리, one is left.
+	choice = spares.choose({}, _without(all, ["ㅣ"]))
+	check(choice["letter"] == "ㅣ" and choice["deficit"] == 1, "a repeated jamo is short by one when one copy is missing")
+	# Ties: the earliest unfinished word, then the first position in it.
+	choice = spares.choose({}, _without(all, ["ㅂ", "ㅁ"]))
+	check(choice["letter"] == "ㅁ", "a tie goes to the earliest word's jamo (ㅁ in 마, before ㅂ in 고비)")
+	var late := _solved_words(["ma", "meoru", "minari"])
+	var late_have := _without(spares.needed(late), ["ㅂ", "ㅁ"])
+	check(spares.choose(late, late_have)["letter"] == "ㅂ", "ma, meoru, minari done: 고비 comes before 시로미, so ㅂ beats ㅁ")
+	var only_gobi := _solved_words(["ma", "meoru", "minari", "gosari", "simiro"])
+	check(spares.choose(only_gobi, _without(spares.needed(only_gobi), ["ㅂ", "ㄱ"]))["letter"] == "ㄱ", "within one word, the jamo first in the word wins a tie (ㄱ before ㅂ in 고비)")
+	# Decoys never count: the caller passes only the basket and target letters, so
+	# a spare's own letter is what makes a deficit go away.
+	choice = spares.choose({}, _without(all, ["ㅂ"]))
+	check(spares.choose({}, _without(all, ["ㅂ"]) + [choice["letter"]])["letter"] == "", "a spare already on the map counts as available")
+
+	# settle: the queue, the pool, the cap.
+	var sp = _new_spares()
+	check(sp.queue("ma") and not sp.queue("ma") and not sp.queue("no_such_word") and sp.has_pending(), "a word queues once; unknown ids do not queue")
+	check(sp.queue("meoru"), "a second word queues")
+	var orders: Array[Dictionary] = sp.settle({}, _without(all, ["ㅂ"]))
+	check(orders.size() == 1 and orders[0]["word_id"] == "ma" and orders[0]["letter"] == "ㅂ" and orders[0]["spot"] == sp.slots["ma"], "two words, one shortage: only the first spawns, at its own slot")
+	check(sp.decisions.size() == 2 and sp.decisions[1]["reason"] == "no deficit" and not sp.decisions[1]["spawn"], "the first spare counts as available for the second word")
+	check(not sp.has_pending() and not sp.queue("ma") and sp.settle({}, []).is_empty(), "settling empties the queue; a settled word never queues again")
+	var capped = _new_spares(2)
+	for id in _target_words():
+		capped.queue(id)
+	orders = capped.settle({}, [])
+	check(orders.size() == 2 and capped.spawned.size() == 2, "with cap 2, two spares spawn out of six words")
+	var reasons: Array = capped.decisions.map(func(d): return d["reason"])
+	check(reasons.count("cap reached") == 4, "the other four are refused for the cap (%s)" % str(reasons))
+	var full = _new_spares()
+	for id in _target_words():
+		full.queue(id)
+	orders = full.settle({}, [])
+	var distinct := {}
+	for order in orders:
+		distinct[order["word_id"]] = true
+	check(orders.size() == 6 and full.spawned.size() <= full.cap and distinct.size() == 6, "six completed words, nothing available: six spares, one per word, within the cap")
+	for id in _target_words():
+		check(not full.queue(id), "%s cannot spawn a second time" % id)
+	_section_done("test_spares_logic")
+
+
+## A fresh map with every target discovered and every target letter in the basket.
+func _spares_map(pick_everything := true) -> Node3D:
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var by_kind := {}
+	for entry in _placed():
+		by_kind[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for id in _target_words():
+		map.discovery.update([by_kind[id]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	if pick_everything:
+		for plant in map.plants:
+			if plant.kind == "target":
+				map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	return map
+
+
+## Spells a word with the right letters through the HUD's own path. Returns the last result.
+func _spell(map: Node3D, id: String) -> Dictionary:
+	var result := {}
+	map.open_spelling(id)
+	var blocks := _word_letters(_target_words()[id])
+	for b in blocks.size():
+		for slot in 2:
+			result = map.spelling.place(blocks[b][slot], b, slot)
+			map.spelling_hud.apply(result)
+	return result
+
+
+func _normal_plant(map: Node3D, kind_id: String) -> Node3D:
+	for plant in map.plants:
+		if plant.kind_id == kind_id and not map.spare_plants.has(plant):
+			return plant
+	return null
+
+
+func test_spares_scene() -> void:
+	var map: Node3D = await _spares_map()
+	check(map.spares != null and map.spare_plants.is_empty() and map.plants.size() == 36, "a fresh map has 36 plants and no spares")
+	check(map.picking.basket.size() == 28, "28 letters picked")
+	var available: Array = map._available_letters()
+	var sorted_available := available.duplicate()
+	sorted_available.sort()
+	var sorted_all := _target_letters()
+	sorted_all.sort()
+	check(sorted_available == sorted_all, "available = the basket's 28 letters; the decoys' letters are not in it")
+
+	# Slots stay clear of props and trees on the real map.
+	var props_ok := true
+	var trees_ok := true
+	for id in _target_words():
+		var spot: Vector2 = map.spares.slots[id]
+		for group in ["Props", "Scenery"]:
+			for prop in map.get_node(group).get_children():
+				var b: AABB = prop.bounds
+				if Rect2(b.position.x, b.position.z, b.size.x, b.size.z).has_point(spot):
+					props_ok = false
+		for pos in _config()["scenery"]["gusangnamu"]["positions"]:
+			trees_ok = trees_ok and spot.distance_to(Vector2(float(pos[0]), float(pos[1]))) >= 2.5
+	check(props_ok, "no slot is inside a rock, tree or 구상나무")
+	check(trees_ok, "every slot is at least 2.5 m from the 구상나무")
+
+	# Scripted run, step 1: 마 completes with every letter picked; nothing is short.
+	var result := _spell(map, "ma")
+	check(result["result"] == "complete" and map.spelling.is_done("ma") and not get_tree().paused, "마 is spelled and the view has closed")
+	var decisions: Array = map.spares.decisions
+	print("  scripted run, step 1 (마 done, all 28 picked): %s" % str(decisions))
+	check(decisions.size() == 1 and decisions[0]["word_id"] == "ma" and not decisions[0]["spawn"] and decisions[0]["reason"] == "no deficit", "step 1: no deficit, so 마 earns no spare")
+	check(map.spare_plants.is_empty() and map.plants.size() == 36 and map.picking.plant_count() == 36, "step 1: nothing was spawned")
+
+	# Step 2: a failed block destroys ㄹ and ㅜ. A failure completes no word.
+	map.open_spelling("meoru")
+	map.spelling_hud.apply(map.spelling.place("ㄹ", 0, 0))
+	map.spelling_hud.apply(map.spelling.place("ㅜ", 0, 1))
+	map.spelling_hud.tick(1.0)
+	check(not map.spelling_hud.is_open() and map.spares.decisions.size() == 1 and map.spare_plants.is_empty(), "step 2: a failed block and a closed view spawn nothing")
+	var solved := {}
+	for id in map.spares.word_ids():
+		solved[id] = map.spelling.solved(id).size()
+	var expect: Dictionary = map.spares.choose(solved, map._available_letters())
+	print("  scripted run, step 2 (ㄹ and ㅜ destroyed): deficit logic would now say %s" % str(expect))
+	check(expect["letter"] == "ㄹ" and expect["deficit"] == 1, "step 2: ㄹ and ㅜ are each short by one; the tie goes to 머루's ㄹ (it comes before ㅜ)")
+
+	# Step 3: 고비 completes. The spawn waits for the view to close.
+	check(map.open_spelling("gobi"), "고비 opens")
+	var gobi_letters := _word_letters("고비")
+	var last := {}
+	for b in 2:
+		for slot in 2:
+			last = map.spelling.place(gobi_letters[b][slot], b, slot)
+	check(last["result"] == "complete" and map.spelling.is_done("gobi"), "고비 is judged complete")
+	check(map.spare_plants.is_empty() and map.spares.has_pending() and map.spelling_hud.is_open(), "the spare waits: the view is still open")
+	map.spelling_hud.apply(last)
+	check(not map.spelling_hud.is_open() and map.spare_plants.size() == 1 and not map.spares.has_pending(), "once the view has closed, the spare appears")
+	print("  scripted run, step 3 (고비 done): %s" % str(map.spares.decisions[1]))
+	var spare: Node3D = map.spare_plants[0]
+	solved["gobi"] = 2
+	var needed_now: Array = map.spares.needed(solved)
+	check(spare.letter == "ㄹ" and needed_now.has(spare.letter), "step 3: the spare carries ㄹ, which an unfinished word still needs")
+	check(map.spares.decisions[1]["spawn"] and map.spares.decisions[1]["reason"] == "short of ㄹ by 1", "step 3: the decision says why")
+	check(spare.kind_id == "gobi" and spare.hover_name == "royal fern" and spare.kind == "target", "the spare is a plant of the word just finished (고비, royal fern)")
+	check(Vector2(spare.position.x, spare.position.z) == map.spares.slots["gobi"] and is_equal_approx(spare.position.y, map.terrain.height_at(spare.position.x)), "it stands at the word's slot, on the ground")
+	check(map.plants.size() == 37 and map.picking.plant_count() == 37 and map.plants[36] == spare, "it is the 37th plant, in step with the picking state")
+	var after: Dictionary = map.spares.choose(solved, map._available_letters())
+	print("  scripted run, step 4 (with the spare on the map): deficit logic says %s" % str(after))
+	check(after["letter"] == "ㅜ", "with the spare on the map, ㅜ is what is still short (%s)" % str(after))
+
+	# Grow-in: not pickable until it ends.
+	var normal := _normal_plant(map, "gobi")
+	check(spare.scale.x < 0.05 and not map.picking.is_pickable(36) and map.picking.has_letter(36), "at spawn the spare is tiny, has its letter, and is locked")
+	_stand_near(map, spare)
+	map.update_camera(0.0, true)
+	map.step(Vector2.ZERO, 0.0)
+	var basket_before: int = map.picking.basket.size()
+	check(map._tip_plant == spare and map._tooltip_label.text == "royal fern", "walking up to the spare flashes its name, as for any plant")
+	check(map.picking.nearest_pickable(Vector2(map.player.global_position.x, map.player.global_position.z)) == -1 and not map.pick_nearest(), "Space does not pick a growing spare")
+	check(not map.picking.start_walk(36) and not map._ring.visible, "nor can it be walked to, and the ring is not on it")
+	map.step(Vector2.ZERO, 0.25)
+	check(spare.scale.x > 0.5 and spare.scale.x < 1.0 and not map.pick_nearest() and map.picking.basket.size() == basket_before, "halfway through the grow-in it is partly grown and still not pickable (scale %.2f)" % spare.scale.x)
+	map.step(Vector2.ZERO, 0.3)
+	check(spare.scale.is_equal_approx(Vector3.ONE) and map.picking.is_pickable(36), "after grow_seconds it is full size and pickable")
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	# Behaves exactly like a normal plant of its kind.
+	var body_parts := func(plant: Node3D) -> int:  # the letter's label is gone from a plant that was picked
+		return plant.get_children().filter(func(c): return not c is Label3D).size()
+	check(body_parts.call(spare) == body_parts.call(normal) and spare.letter_style == normal.letter_style and spare.tooltip_text() == normal.tooltip_text(), "same look (child count, letter style) and tooltip as a normal 고비 plant")
+	check(map._ring.visible and map._ring_plant == spare and map._ring.global_position.is_equal_approx(spare.global_position), "the reach ring is on the grown spare")
+	var spare_ring: Vector3 = map._ring.mesh.get_aabb().size
+	var normal_ring: Vector3 = map._ring_mesh(normal.global_position).get_aabb().size
+	check(is_equal_approx(spare_ring.x, normal_ring.x) and is_equal_approx(spare_ring.z, normal_ring.z), "the ring is the same size as a normal plant's")
+	var screen: Vector2 = map.camera.unproject_position(spare.global_position + Vector3(0, 0.5, 0))
+	check(map.plant_at(screen) == spare, "hovering the spare finds it")
+	check(map.click(screen) and map.picking.walk_target == 36, "clicking the spare starts a walk to it")
+	map.picking.cancel_walk()
+	var discovered_before: int = map.discovery.entries.size()
+	check(map.pick_nearest() and map.picking.basket.size() == basket_before + 1 and map.picking.basket.back() == "ㄹ" and spare.letter == "", "Space picks it: its ㄹ joins the basket")
+	check(not map.pick_nearest() and not map.picking.has_letter(36) and map.spares.spawned.size() == 1, "a picked spare stays letterless and does not respawn")
+	check(map.discovery.entries.size() == discovered_before, "the spare changed nothing in the discovery list")
+	map.free()
+
+	# The cap and one spare per word, on a map where every letter is gone.
+	map = await _spares_map(false)
+	for plant in map.plants:
+		if plant.kind == "target":
+			plant.take_letter()
+	var kinds_seen := []
+	for id in _target_words():
+		map.spelling.word_completed.emit(id)
+	map.spelling_hud.closed.emit()
+	check(map.spare_plants.size() == 6 and map.spares.spawned.size() == 6, "six words completed, nothing available: six spares")
+	for plant in map.spare_plants:
+		kinds_seen.append(plant.kind_id)
+		check(Vector2(plant.position.x, plant.position.z) == map.spares.slots[plant.kind_id], "%s's spare is at its slot" % plant.kind_id)
+	kinds_seen.sort()
+	var expected_kinds := _target_words().keys()
+	expected_kinds.sort()
+	check(kinds_seen == expected_kinds, "one spare per word, each of its own kind")
+	for id in _target_words():
+		map.spelling.word_completed.emit(id)
+	map.spelling_hud.closed.emit()
+	check(map.spare_plants.size() == 6 and map.plants.size() == 42, "a word cannot spawn twice: still six spares")
+	map.free()
+	map = await _spares_map(false)
+	for plant in map.plants:
+		if plant.kind == "target":
+			plant.take_letter()
+	map.spares.cap = 3
+	for id in _target_words():
+		map.spelling.word_completed.emit(id)
+	map.spelling_hud.closed.emit()
+	check(map.spare_plants.size() == 3, "the cap stops the spares (cap 3: %d spawned)" % map.spare_plants.size())
+	# Closing a view with no completed word spawns nothing.
+	map.spelling_hud.closed.emit()
+	check(map.spare_plants.size() == 3, "closing the view again spawns nothing more")
+	map.free()
+
+	# Restart: a rebuilt scene has none and the bookkeeping is clear.
+	var again: Node3D = await _spares_map(false)
+	check(again.spare_plants.is_empty() and again.spares.spawned.is_empty() and again.spares.decisions.is_empty() and not again.spares.has_pending(), "a rebuilt scene has no spares and no bookkeeping")
+	check(again.plants.size() == 36 and again.picking.plant_count() == 36 and again._growing.is_empty(), "and the 36 placed plants only")
+	for plant in again.plants:
+		if plant.kind == "target":
+			plant.take_letter()
+	again.spelling.word_completed.emit("ma")
+	again.spelling_hud.closed.emit()
+	check(again.spare_plants.size() == 1, "the same word can earn a spare again in the new scene")
+	again.free()
+	GameState.new_hike()
+	_section_done("test_spares_scene")
+
+
+func test_spares_real_events() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _spares_map()
+	var viewport := map.get_viewport()
+	# One ㅅ is lost (both 고사리 and 시로미 need one), so spelling 마 leaves a shortage.
+	map.picking.basket.erase("ㅅ")
+	map.basket_hud.refresh(1.0)
+	await _settle_layout()
+	var row: Control = map.discovery_hud._rows["ma"]
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(map.spelling_hud.is_open() and map.spelling.open_id == "ma", "a real click on the 마 entry opens the view")
+	await _settle_layout()
+	await _drag(viewport, _tile_center(map, "ㅁ"), _slot_center(map, 0, 0))
+	await _settle_layout()
+	check(map.spare_plants.is_empty(), "after one real drag nothing has spawned")
+	await _drag(viewport, _tile_center(map, "ㅏ"), _slot_center(map, 0, 1))
+	check(map.spelling.is_done("ma") and not map.spelling_hud.is_open() and not get_tree().paused, "two real drags spell 마 and the view closes")
+	check(map.spare_plants.size() == 1, "a spare appeared")
+	if map.spare_plants.size() == 1:
+		var spare: Node3D = map.spare_plants[0]
+		check(spare.kind_id == "ma" and spare.hover_name == "Korean yam" and spare.letter == "ㅅ", "it is a 마 plant carrying the missing ㅅ (%s, %s)" % [spare.kind_id, spare.letter])
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_spares_real_events")

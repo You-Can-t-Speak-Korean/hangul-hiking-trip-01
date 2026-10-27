@@ -15,6 +15,7 @@ const Spelling := preload("res://scenes/foraging/spelling.gd")
 const SpellingHud := preload("res://scenes/foraging/spelling_hud.gd")
 const SteamSound := preload("res://scenes/foraging/steam_sound.gd")
 const Damage := preload("res://scenes/foraging/damage.gd")
+const Spares := preload("res://scenes/foraging/spares.gd")
 const HeartsHud := preload("res://scenes/foraging/hearts_hud.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
@@ -34,6 +35,7 @@ const TOOLTIP_OFFSET := Vector2(16.0, 18.0)
 const WALK_UP_TIP_LIFT := 1.2   # metres above a plant where its walk-up name is anchored
 const RING_SEGMENTS := 48
 const RING_LIFT := 0.04         # metres above the ground, so the ring never z-fights
+const GROW_MIN_SCALE := 0.001   # a spare starts here, not at 0, which a transform cannot hold
 
 const NESTOR_COLOR := Color(0.36, 0.45, 0.65)    # slate blue
 const FERNANDA_COLOR := Color(0.95, 0.55, 0.70)  # pink
@@ -67,6 +69,10 @@ var spelling_hud: CanvasLayer
 ## What a failed syllable costs, applied when the spelling view has closed.
 var damage
 var hearts_hud: CanvasLayer
+## Spare plants: which words earned one, and the spares themselves (they are in
+## `plants` too, after the placed ones).
+var spares
+var spare_plants: Array[Node3D] = []
 ## Set from the moment both travelers die until the scene is restarted: picks,
 ## walks and opening the spelling view are ignored (begin_death_beat sets it).
 var restarting := false
@@ -103,6 +109,8 @@ var _ring_time := 0.0
 var _ring_plant: Node3D
 var _props_by_cell: Dictionary = {}  # int cell of x -> Array of Prop
 var _fading: Dictionary = {}         # Prop -> true, while its opacity is not 1.0
+var _kinds: Dictionary = {}          # plant kind id -> its data
+var _growing: Array[Dictionary] = [] # spares growing in: {"plant", "index", "left"}
 
 @onready var camera: Camera3D = $Camera3D
 
@@ -158,6 +166,8 @@ func _ready() -> void:
 	damage = Damage.new(config["damage"])
 	gore = config["gore_placeholder"]
 	spelling.syllable_failed.connect(_on_syllable_failed)
+	spares = Spares.new(config["spares"], config["plants"])
+	spelling.word_completed.connect(spares.queue)
 	hearts_hud = HeartsHud.new()
 	add_child(hearts_hud)
 	hearts_hud.setup(config["hearts_hud"])
@@ -217,6 +227,7 @@ func step(input: Vector2, delta: float) -> void:
 	partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
 	update_prop_fade(delta)
+	_grow_spares(delta)
 	_update_reach(delta)
 	var spots: Array[Vector2] = []
 	for traveler in travelers.values():
@@ -259,6 +270,7 @@ func _on_spelling_changed() -> void:
 ## The view went away (closed, finished, or the failure flash ended): play on.
 func _on_spelling_closed() -> void:
 	get_tree().paused = false
+	_spawn_spares()
 	var result: Dictionary = damage.settle()
 	if result["failures"] == 0:
 		return
@@ -638,18 +650,63 @@ func _build_ground() -> void:
 ## The plants: each entry of "placed" is one plant at a fixed position (height
 ## from the terrain). A target carries one letter of its name, a decoy none.
 func _build_plants(plants_data: Dictionary) -> void:
-	var kinds := {}
 	for kind in plants_data["kinds"]:
-		kinds[kind["id"]] = kind
+		_kinds[kind["id"]] = kind
 	for entry in plants_data["placed"]:
-		var plant := Plant.new()
-		plant.setup(kinds[entry["kind"]], String(entry.get("letter", "")))
 		var x := float(entry["x"])
 		var z := float(entry["z"])
-		plant.position = Vector3(x, terrain.height_at(x), z)
-		$Plants.add_child(plant)
-		plants.append(plant)
+		_add_plant(_kinds[entry["kind"]], String(entry.get("letter", "")), x, z)
 		keep_out.append(Vector2(x, z))
+
+
+## One plant of a kind at (x, z), on the ground; also used for the spares.
+func _add_plant(kind: Dictionary, letter: String, x: float, z: float) -> Node3D:
+	var plant := Plant.new()
+	plant.setup(kind, letter)
+	plant.position = Vector3(x, terrain.height_at(x), z)
+	$Plants.add_child(plant)
+	plants.append(plant)
+	return plant
+
+
+## Every jamo the player can still get: the basket and the letters still on
+## target plants (spares included, growing or not). Decoy letters vanish when
+## picked, so they never count.
+func _available_letters() -> Array:
+	var letters: Array = picking.basket.duplicate()
+	for plant in plants:
+		if plant.kind == "target" and plant.letter != "":
+			letters.append(plant.letter)
+	return letters
+
+
+## Settles the words completed since the last time the view closed: each earns
+## a spare of its kind at its slot, if some jamo is short (see Spares).
+func _spawn_spares() -> void:
+	if not spares.has_pending():
+		return
+	var solved := {}
+	for id in spares.word_ids():
+		solved[id] = spelling.solved(id).size()
+	for order in spares.settle(solved, _available_letters()):
+		var spot: Vector2 = order["spot"]
+		var plant := _add_plant(_kinds[order["word_id"]], order["letter"], spot.x, spot.y)
+		plant.scale = Vector3.ONE * GROW_MIN_SCALE
+		var index: int = picking.add_plant(order["letter"], false, spot, true)
+		spare_plants.append(plant)
+		_growing.append({"plant": plant, "index": index, "left": spares.grow_seconds})
+
+
+## Grows each new spare from nothing to full size, then lets it be picked.
+func _grow_spares(delta: float) -> void:
+	for grow in _growing.duplicate():
+		grow["left"] = float(grow["left"]) - delta
+		var t := clampf(1.0 - float(grow["left"]) / maxf(spares.grow_seconds, 0.001), 0.0, 1.0)
+		var plant: Node3D = grow["plant"]
+		plant.scale = Vector3.ONE * maxf(1.0 - (1.0 - t) * (1.0 - t), GROW_MIN_SCALE)
+		if t >= 1.0:
+			picking.unlock(int(grow["index"]))
+			_growing.erase(grow)
 
 
 ## 구상나무 (Korean fir): scenery only, no letters, nothing to forage.

@@ -25,7 +25,7 @@ var ring_pulse_depth := 0.4
 
 const PROGRESS := 0.02  # metres closer that count as moving toward the target
 
-var _slots: Array[Dictionary] = []  # per plant: {"letter", "decoy", "spot"}
+var _slots: Array[Dictionary] = []  # per plant: {"letter", "decoy", "spot", "locked"}
 var _best_distance := INF
 var _stalled := 0.0
 var _inside := {}  # plant index -> true, while the walker is within pick_radius
@@ -52,11 +52,28 @@ func _init(config: Dictionary, plants_data: Dictionary, ring: Dictionary = {}) -
 		decoy[kind["id"]] = kind["kind"] != "target"
 	for entry in plants_data["placed"]:
 		_slots.append({"letter": String(entry.get("letter", "")), "decoy": decoy[entry["kind"]],
-				"spot": Vector2(float(entry["x"]), float(entry["z"]))})
+				"spot": Vector2(float(entry["x"]), float(entry["z"])), "locked": false})
 
 
 func plant_count() -> int:
 	return _slots.size()
+
+
+## Adds a plant after the build (a spare) and returns its index. A locked plant
+## has its letter but cannot be picked, walked to or put in reach until unlock().
+func add_plant(letter: String, decoy: bool, spot: Vector2, locked: bool = false) -> int:
+	_slots.append({"letter": letter, "decoy": decoy, "spot": spot, "locked": locked})
+	return _slots.size() - 1
+
+
+func unlock(index: int) -> void:
+	if index >= 0 and index < _slots.size():
+		_slots[index]["locked"] = false
+
+
+## True if the plant has its letter and can be picked now.
+func is_pickable(index: int) -> bool:
+	return has_letter(index) and not _slots[index]["locked"]
 
 
 func has_letter(index: int) -> bool:
@@ -74,7 +91,7 @@ func letters_left() -> int:
 ## Takes the plant's letter. Returns {"result": "basket" | "steam" | "none", "letter"}:
 ## "none" if the letter is already gone or `allowed` is false (dead, restarting).
 func pick(index: int, allowed: bool = true) -> Dictionary:
-	if not allowed or not has_letter(index):
+	if not allowed or not is_pickable(index):
 		return {"result": "none", "letter": ""}
 	var slot: Dictionary = _slots[index]
 	var letter: String = slot["letter"]
@@ -85,9 +102,9 @@ func pick(index: int, allowed: bool = true) -> Dictionary:
 	return {"result": "basket", "letter": letter}
 
 
-## Starts (or changes) the walk to a plant. False if its letter is gone.
+## Starts (or changes) the walk to a plant. False if its letter is gone or it is locked.
 func start_walk(index: int) -> bool:
-	if not has_letter(index):
+	if not is_pickable(index):
 		return false
 	walk_target = index
 	_best_distance = INF
@@ -126,7 +143,7 @@ func nearest_pickable(spot: Vector2) -> int:
 	var best_distance := INF
 	for i in _slots.size():
 		var distance := spot.distance_to(_slots[i]["spot"])
-		if has_letter(i) and distance <= pick_radius and distance < best_distance:
+		if is_pickable(i) and distance <= pick_radius and distance < best_distance:
 			best = i
 			best_distance = distance
 	return best

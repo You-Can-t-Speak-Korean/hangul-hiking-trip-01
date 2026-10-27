@@ -32,6 +32,10 @@ func _ready() -> void:
 		await _hearts_shots()
 		get_tree().quit()
 		return
+	if "--spares-only" in OS.get_cmdline_user_args():
+		await _spare_shots()
+		get_tree().quit()
+		return
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
 	map.set_physics_process(false)  # this script drives the map
@@ -136,6 +140,7 @@ func _ready() -> void:
 	await _basket_shots()
 	await _spelling_shots()
 	await _hearts_shots()
+	await _spare_shots()
 	get_tree().quit()
 
 
@@ -218,6 +223,63 @@ func _hearts_shots() -> void:
 	map.tick_beat(1.0)
 	await _frames(3)
 	_save("death_beat_dim")
+	map.free()
+	GameState.new_hike()
+
+
+## Spare plants, through the real spawn path: every target letter is taken off
+## the map (so a deficit exists), the words complete (word_completed) and the
+## view closes. {spare_grow_in, spare_next_to_normal, spares_map}.png. The spare
+## is 머루's; the normal 머루 plant beside it still carries its letter.
+func _spare_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	map.partner.global_position = Vector3(40.0, map.terrain.height_at(40.0), 0.0)
+	var normal: Node3D = null
+	for plant in map.plants:
+		if plant.kind_id == "meoru" and plant.position.x > 19.0 and plant.position.x < 20.0:
+			normal = plant
+		elif plant.kind == "target" and plant.kind_id != "meoru":
+			plant.take_letter()
+	for plant in map.plants:
+		if plant.kind_id == "meoru" and plant != normal:
+			plant.take_letter()
+	map.spelling.word_completed.emit("meoru")
+	map.spelling_hud.closed.emit()
+	var spare: Node3D = map.spare_plants[0]
+	var slot: Vector2 = map.spares.slots["meoru"]
+	var at := Vector3(slot.x + 3.5, 0.0, slot.y + 2.5)
+	map.player.global_position = Vector3(at.x, map.terrain.height_at(at.x), at.z)
+	map.update_camera(0.0, true)
+	for i in 15:  # 0.25 s into the 0.5 s grow-in
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	await _frames(3)
+	print("spare scale %.2f" % spare.scale.x)
+	_save("spare_grow_in")
+	for i in 40:  # grown, and the props that cover the travelers have faded
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	print("spare scale %.2f" % spare.scale.x)
+	_save("spare_next_to_normal")
+	# Several spares at once: the other four lower-forest words complete too.
+	for id in ["ma", "gosari", "gobi", "minari"]:
+		map.spelling.word_completed.emit(id)
+	map.spelling_hud.closed.emit()
+	map.player.global_position = Vector3(17.0, map.terrain.height_at(17.0), 0.5)
+	map.update_camera(0.0, true)
+	for i in 70:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	print("%d spares" % map.spare_plants.size())
+	_save("spares_map")
 	map.free()
 	GameState.new_hike()
 
