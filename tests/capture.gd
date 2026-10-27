@@ -36,6 +36,10 @@ func _ready() -> void:
 		await _spare_shots()
 		get_tree().quit()
 		return
+	if "--credits-only" in OS.get_cmdline_user_args():
+		await _credit_shots()
+		get_tree().quit()
+		return
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
 	map.set_physics_process(false)  # this script drives the map
@@ -141,6 +145,7 @@ func _ready() -> void:
 	await _spelling_shots()
 	await _hearts_shots()
 	await _spare_shots()
+	await _credit_shots()
 	get_tree().quit()
 
 
@@ -280,6 +285,52 @@ func _spare_shots() -> void:
 		await get_tree().process_frame
 	print("%d spares" % map.spare_plants.size())
 	_save("spares_map")
+	map.free()
+	GameState.new_hike()
+
+
+## The playtest through the real paths: every target letter picked, five words
+## spelled cleanly (five credits banked, no spare), then 시로미's first block
+## fails with ㅣ and ㅅ. The view closes and the two oldest credits (마, 머루)
+## become spares. credits_after_failure.png.
+func _credit_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	map.partner.global_position = Vector3(40.0, map.terrain.height_at(40.0), 0.0)
+	var spots := {}
+	for plant in map.plants:
+		if plant.kind == "target":
+			spots[plant.kind_id] = Vector2(plant.position.x, plant.position.z)
+			map.pick_plant(plant)
+	for id in spots:
+		map.discovery.update([spots[id]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for id in ["ma", "meoru", "minari", "gosari", "gobi"]:
+		map.open_spelling(id)
+		for b in map.spelling.block_count(id):
+			var parts := Hangul.decompose(map.spelling.target_syllable(id, b))
+			for slot in 2:
+				map.spelling_hud.apply(map.spelling.place(parts[slot], b, slot))
+	print("credits banked: %s, spares: %d" % [str(map.spares.credits), map.spare_plants.size()])
+	map.open_spelling("simiro")
+	map.spelling_hud.apply(map.spelling.place("ㅣ", 0, 0))
+	map.spelling_hud.apply(map.spelling.place("ㅅ", 0, 1))
+	map.spelling_hud.tick(1.0)
+	print("after the failure: credits %s, spares %d" % [str(map.spares.credits), map.spare_plants.size()])
+	map.player.global_position = Vector3(15.0, map.terrain.height_at(15.0), -4.5)
+	map.update_camera(0.0, true)
+	for i in 70:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("credits_after_failure")
 	map.free()
 	GameState.new_hike()
 

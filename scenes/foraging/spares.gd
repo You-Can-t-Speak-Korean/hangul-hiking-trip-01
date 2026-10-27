@@ -1,9 +1,12 @@
 extends RefCounted
-## Spare plants, with no nodes. Completing a word queues one spare of that
-## word's kind; when the spelling view has closed the map settles the queue.
-## Each spare carries the jamo the unfinished words are most short of, or is not
-## spawned at all if no jamo is short. A word queues once, and at most `cap`
-## spares are spawned in all. A new Spares (a scene restart) has none.
+## Spare plants, with no nodes. Every completed word earns one credit, once.
+## A credit is spent on a spare of that word's kind at that word's slot, carrying
+## the jamo the unfinished words are most short of. A completion that finds a
+## shortage spends its own credit at once, otherwise the credit is banked; a
+## failed syllable spends the oldest banked credits while a shortage is left.
+## Credits banked plus spares spawned never pass `cap`. The map settles the
+## queued events when the spelling view has closed. A new Spares (a scene
+## restart) has nothing.
 
 ## Data: foraging.spares.
 var cap := 6
@@ -12,12 +15,16 @@ var grow_seconds := 0.5
 var slots: Dictionary = {}
 ## The spares spawned so far: {"word_id", "letter", "spot"}, in spawn order.
 var spawned: Array[Dictionary] = []
-## Every settled word, in order: {"word_id", "spawn", "letter", "reason", "deficit"}.
+## The banked credits (word ids), oldest first.
+var credits: Array[String] = []
+## Every decision, in order: {"event" ("completed" or "failed"), "word_id" ("" if
+## no credit was involved), "spawn", "letter", "reason" (why, from choose), "deficit",
+## "action" (what happened to the credit)}.
 var decisions: Array[Dictionary] = []
 
 var _words: Array[Dictionary] = []  # target kinds in data order: {"id", "name"}
-var _queued: Array[String] = []
-var _seen := {}  # word id -> true, once queued
+var _events: Array[Dictionary] = []  # {"type": "completed" or "failed", "word_id"}
+var _seen := {}  # word id -> true, once it has earned (or been refused) its credit
 
 
 ## `config` is foraging.spares, `plants_data` is foraging.plants.
@@ -31,17 +38,27 @@ func _init(config: Dictionary, plants_data: Dictionary) -> void:
 			_words.append({"id": String(kind["id"]), "name": String(kind["name"])})
 
 
-## Notes a completed word. False if it was queued before (or is not a word).
+## Notes a completed word. False if it was noted before (or is not a word).
 func queue(word_id: String) -> bool:
 	if _seen.has(word_id) or not slots.has(word_id):
 		return false
 	_seen[word_id] = true
-	_queued.append(word_id)
+	_events.append({"type": "completed", "word_id": word_id})
 	return true
 
 
+## Notes a failed syllable (its letters are already destroyed).
+func queue_failure() -> void:
+	_events.append({"type": "failed", "word_id": ""})
+
+
 func has_pending() -> bool:
-	return not _queued.is_empty()
+	return not _events.is_empty()
+
+
+## Credits banked plus spares spawned: what counts against the cap.
+func credit_total() -> int:
+	return credits.size() + spawned.size()
 
 
 ## The word ids in data order.
@@ -90,27 +107,74 @@ func choose(solved: Dictionary, available: Array) -> Dictionary:
 	return {"letter": letter, "deficit": deficit, "reason": "short of %s by %d" % [letter, deficit]}
 
 
-## Settles the queued words, in the order they completed. Returns what to
+## Settles the queued events, in the order they happened. Returns what to
 ## spawn: {"word_id", "letter", "spot"} per spare. Each spawn counts as
-## available for the words settled after it.
+## available for the decisions after it.
 func settle(solved: Dictionary, available: Array) -> Array[Dictionary]:
 	var orders: Array[Dictionary] = []
 	var pool := available.duplicate()
-	for word_id in _queued:
-		var decision := {"word_id": word_id, "spawn": false, "letter": "", "reason": "", "deficit": 0}
-		if spawned.size() >= cap:
-			decision["reason"] = "cap reached"
+	for event in _events:
+		if event["type"] == "completed":
+			_settle_completion(String(event["word_id"]), solved, pool, orders)
 		else:
-			var choice := choose(solved, pool)
-			decision["letter"] = choice["letter"]
-			decision["reason"] = choice["reason"]
-			decision["deficit"] = choice["deficit"]
-			if choice["letter"] != "":
-				decision["spawn"] = true
-				pool.append(choice["letter"])
-				var order := {"word_id": word_id, "letter": choice["letter"], "spot": slots[word_id]}
-				spawned.append(order)
-				orders.append(order)
-		decisions.append(decision)
-	_queued.clear()
+			_settle_failure(solved, pool, orders)
+	_events.clear()
 	return orders
+
+
+func _settle_completion(word_id: String, solved: Dictionary, pool: Array, orders: Array[Dictionary]) -> void:
+	var decision := _decision("completed", word_id)
+	if credit_total() >= cap:
+		decision["reason"] = "cap reached"
+		decision["action"] = "no credit (cap reached)"
+	else:
+		var choice := choose(solved, pool)
+		decision["letter"] = choice["letter"]
+		decision["reason"] = choice["reason"]
+		decision["deficit"] = choice["deficit"]
+		if choice["letter"] == "":
+			credits.append(word_id)
+			decision["action"] = "credit banked"
+		else:
+			_spawn(word_id, choice["letter"], pool, orders)
+			decision["spawn"] = true
+			decision["action"] = "credit spent on completion"
+	decisions.append(decision)
+
+
+## Spends the oldest banked credits while a shortage is left.
+func _settle_failure(solved: Dictionary, pool: Array, orders: Array[Dictionary]) -> void:
+	var first := true
+	while true:
+		var choice := choose(solved, pool)
+		var decision := _decision("failed", "")
+		decision["letter"] = choice["letter"]
+		decision["reason"] = choice["reason"]
+		decision["deficit"] = choice["deficit"]
+		if choice["letter"] == "":
+			if first:
+				decision["action"] = "no shortage, no credit spent"
+				decisions.append(decision)
+			return
+		first = false
+		if credits.is_empty():
+			decision["action"] = "shortage left uncovered"
+			decisions.append(decision)
+			return
+		var word_id: String = credits.pop_front()
+		decision["word_id"] = word_id
+		_spawn(word_id, choice["letter"], pool, orders)
+		decision["spawn"] = true
+		decision["action"] = "credit spent on failure"
+		decisions.append(decision)
+
+
+func _spawn(word_id: String, letter: String, pool: Array, orders: Array[Dictionary]) -> void:
+	var order := {"word_id": word_id, "letter": letter, "spot": slots[word_id]}
+	spawned.append(order)
+	orders.append(order)
+	pool.append(letter)
+
+
+func _decision(event: String, word_id: String) -> Dictionary:
+	return {"event": event, "word_id": word_id, "spawn": false, "letter": "", "reason": "", "deficit": 0, "action": ""}

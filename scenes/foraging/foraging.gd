@@ -282,6 +282,7 @@ func _on_spelling_closed() -> void:
 ## A syllable failed: the damage waits until the view has closed.
 func _on_syllable_failed(_word_id: String, _block_index: int, _letters: Array) -> void:
 	damage.queue_failure()
+	spares.queue_failure()
 
 
 ## Placeholder gore on both travelers: a blood burst and a red flash, the
@@ -680,8 +681,9 @@ func _available_letters() -> Array:
 	return letters
 
 
-## Settles the words completed since the last time the view closed: each earns
-## a spare of its kind at its slot, if some jamo is short (see Spares).
+## Settles the words completed and the syllables failed since the view last
+## closed: credits are banked or spent on spares of their words' kinds at their
+## slots (see Spares).
 func _spawn_spares() -> void:
 	if not spares.has_pending():
 		return

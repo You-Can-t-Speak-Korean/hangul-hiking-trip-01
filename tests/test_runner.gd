@@ -49,11 +49,14 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_spares_logic",
 	"test_spares_scene",
 	"test_spares_real_events",
+	"test_credits_logic",
+	"test_credits_scene",
+	"test_credits_real_events",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 933
+const MIN_CHECKS := 1003
 
 
 func check(condition: bool, label: String) -> void:
@@ -124,6 +127,10 @@ func _ready() -> void:
 	test_spares_logic()
 	await test_spares_scene()
 	await test_spares_real_events()
+	print("== Spare credits ==")
+	test_credits_logic()
+	await test_credits_scene()
+	await test_credits_real_events()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -2974,23 +2981,26 @@ func test_spares_scene() -> void:
 	check(result["result"] == "complete" and map.spelling.is_done("ma") and not get_tree().paused, "마 is spelled and the view has closed")
 	var decisions: Array = map.spares.decisions
 	print("  scripted run, step 1 (마 done, all 28 picked): %s" % str(decisions))
-	check(decisions.size() == 1 and decisions[0]["word_id"] == "ma" and not decisions[0]["spawn"] and decisions[0]["reason"] == "no deficit", "step 1: no deficit, so 마 earns no spare")
+	check(decisions.size() == 1 and decisions[0]["word_id"] == "ma" and not decisions[0]["spawn"] and decisions[0]["reason"] == "no deficit" and decisions[0]["action"] == "credit banked" and map.spares.credits == ["ma"], "step 1: no deficit, so 마 spawns nothing and banks its credit")
 	check(map.spare_plants.is_empty() and map.plants.size() == 36 and map.picking.plant_count() == 36, "step 1: nothing was spawned")
 
-	# Step 2: a failed block destroys ㄹ and ㅜ. A failure completes no word.
+	# Step 2: a failed block destroys ㄹ and ㅜ. 마's banked credit is spent on ㄹ.
 	map.open_spelling("meoru")
 	map.spelling_hud.apply(map.spelling.place("ㄹ", 0, 0))
 	map.spelling_hud.apply(map.spelling.place("ㅜ", 0, 1))
+	check(map.spare_plants.is_empty() and map.spelling_hud.is_open(), "step 2: the spare waits while the failure flash is up")
 	map.spelling_hud.tick(1.0)
-	check(not map.spelling_hud.is_open() and map.spares.decisions.size() == 1 and map.spare_plants.is_empty(), "step 2: a failed block and a closed view spawn nothing")
+	check(not map.spelling_hud.is_open() and map.spares.decisions.size() == 3 and map.spare_plants.size() == 1 and map.spares.credits.is_empty(), "step 2: the closed view spawns one spare from 마's credit, then logs ㅜ uncovered (no credit left)")
+	check(map.spares.decisions[2]["action"] == "shortage left uncovered" and map.spares.decisions[2]["letter"] == "ㅜ", "step 2: the uncovered shortage is logged")
+	print("  scripted run, step 2 (ㄹ and ㅜ destroyed): %s" % str(map.spares.decisions.slice(1)))
 	var solved := {}
 	for id in map.spares.word_ids():
 		solved[id] = map.spelling.solved(id).size()
+	check(map.spare_plants[0].kind_id == "ma" and map.spare_plants[0].letter == "ㄹ" and map.spares.decisions[1]["action"] == "credit spent on failure", "step 2: a 마 spare carrying ㄹ (the tie goes to 머루's ㄹ, before ㅜ)")
 	var expect: Dictionary = map.spares.choose(solved, map._available_letters())
-	print("  scripted run, step 2 (ㄹ and ㅜ destroyed): deficit logic would now say %s" % str(expect))
-	check(expect["letter"] == "ㄹ" and expect["deficit"] == 1, "step 2: ㄹ and ㅜ are each short by one; the tie goes to 머루's ㄹ (it comes before ㅜ)")
+	check(expect["letter"] == "ㅜ" and expect["deficit"] == 1, "step 2: ㅜ is still short (%s)" % str(expect))
 
-	# Step 3: 고비 completes. The spawn waits for the view to close.
+	# Step 3: 고비 completes with ㅜ short: its own credit is spent. The spawn waits for the view to close.
 	check(map.open_spelling("gobi"), "고비 opens")
 	var gobi_letters := _word_letters("고비")
 	var last := {}
@@ -2998,36 +3008,36 @@ func test_spares_scene() -> void:
 		for slot in 2:
 			last = map.spelling.place(gobi_letters[b][slot], b, slot)
 	check(last["result"] == "complete" and map.spelling.is_done("gobi"), "고비 is judged complete")
-	check(map.spare_plants.is_empty() and map.spares.has_pending() and map.spelling_hud.is_open(), "the spare waits: the view is still open")
+	check(map.spare_plants.size() == 1 and map.spares.has_pending() and map.spelling_hud.is_open(), "the spare waits: the view is still open")
 	map.spelling_hud.apply(last)
-	check(not map.spelling_hud.is_open() and map.spare_plants.size() == 1 and not map.spares.has_pending(), "once the view has closed, the spare appears")
-	print("  scripted run, step 3 (고비 done): %s" % str(map.spares.decisions[1]))
-	var spare: Node3D = map.spare_plants[0]
+	check(not map.spelling_hud.is_open() and map.spare_plants.size() == 2 and not map.spares.has_pending(), "once the view has closed, the spare appears")
+	print("  scripted run, step 3 (고비 done): %s" % str(map.spares.decisions[3]))
+	var spare: Node3D = map.spare_plants[1]
 	solved["gobi"] = 2
 	var needed_now: Array = map.spares.needed(solved)
-	check(spare.letter == "ㄹ" and needed_now.has(spare.letter), "step 3: the spare carries ㄹ, which an unfinished word still needs")
-	check(map.spares.decisions[1]["spawn"] and map.spares.decisions[1]["reason"] == "short of ㄹ by 1", "step 3: the decision says why")
+	check(spare.letter == "ㅜ" and needed_now.has(spare.letter), "step 3: the spare carries ㅜ, which an unfinished word still needs")
+	check(map.spares.decisions[3]["spawn"] and map.spares.decisions[3]["reason"] == "short of ㅜ by 1" and map.spares.decisions[3]["action"] == "credit spent on completion", "step 3: the decision says why")
 	check(spare.kind_id == "gobi" and spare.hover_name == "royal fern" and spare.kind == "target", "the spare is a plant of the word just finished (고비, royal fern)")
 	check(Vector2(spare.position.x, spare.position.z) == map.spares.slots["gobi"] and is_equal_approx(spare.position.y, map.terrain.height_at(spare.position.x)), "it stands at the word's slot, on the ground")
-	check(map.plants.size() == 37 and map.picking.plant_count() == 37 and map.plants[36] == spare, "it is the 37th plant, in step with the picking state")
+	check(map.plants.size() == 38 and map.picking.plant_count() == 38 and map.plants[37] == spare, "it is the 38th plant, in step with the picking state")
 	var after: Dictionary = map.spares.choose(solved, map._available_letters())
-	print("  scripted run, step 4 (with the spare on the map): deficit logic says %s" % str(after))
-	check(after["letter"] == "ㅜ", "with the spare on the map, ㅜ is what is still short (%s)" % str(after))
+	print("  scripted run, step 4 (with both spares on the map): deficit logic says %s" % str(after))
+	check(after["letter"] == "", "with both spares on the map nothing is short (%s)" % str(after))
 
 	# Grow-in: not pickable until it ends.
 	var normal := _normal_plant(map, "gobi")
-	check(spare.scale.x < 0.05 and not map.picking.is_pickable(36) and map.picking.has_letter(36), "at spawn the spare is tiny, has its letter, and is locked")
+	check(spare.scale.x < 0.05 and not map.picking.is_pickable(37) and map.picking.has_letter(37), "at spawn the spare is tiny, has its letter, and is locked")
 	_stand_near(map, spare)
 	map.update_camera(0.0, true)
 	map.step(Vector2.ZERO, 0.0)
 	var basket_before: int = map.picking.basket.size()
 	check(map._tip_plant == spare and map._tooltip_label.text == "royal fern", "walking up to the spare flashes its name, as for any plant")
 	check(map.picking.nearest_pickable(Vector2(map.player.global_position.x, map.player.global_position.z)) == -1 and not map.pick_nearest(), "Space does not pick a growing spare")
-	check(not map.picking.start_walk(36) and not map._ring.visible, "nor can it be walked to, and the ring is not on it")
+	check(not map.picking.start_walk(37) and not map._ring.visible, "nor can it be walked to, and the ring is not on it")
 	map.step(Vector2.ZERO, 0.25)
 	check(spare.scale.x > 0.5 and spare.scale.x < 1.0 and not map.pick_nearest() and map.picking.basket.size() == basket_before, "halfway through the grow-in it is partly grown and still not pickable (scale %.2f)" % spare.scale.x)
 	map.step(Vector2.ZERO, 0.3)
-	check(spare.scale.is_equal_approx(Vector3.ONE) and map.picking.is_pickable(36), "after grow_seconds it is full size and pickable")
+	check(spare.scale.is_equal_approx(Vector3.ONE) and map.picking.is_pickable(37), "after grow_seconds it is full size and pickable")
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	# Behaves exactly like a normal plant of its kind.
@@ -3040,11 +3050,11 @@ func test_spares_scene() -> void:
 	check(is_equal_approx(spare_ring.x, normal_ring.x) and is_equal_approx(spare_ring.z, normal_ring.z), "the ring is the same size as a normal plant's")
 	var screen: Vector2 = map.camera.unproject_position(spare.global_position + Vector3(0, 0.5, 0))
 	check(map.plant_at(screen) == spare, "hovering the spare finds it")
-	check(map.click(screen) and map.picking.walk_target == 36, "clicking the spare starts a walk to it")
+	check(map.click(screen) and map.picking.walk_target == 37, "clicking the spare starts a walk to it")
 	map.picking.cancel_walk()
 	var discovered_before: int = map.discovery.entries.size()
-	check(map.pick_nearest() and map.picking.basket.size() == basket_before + 1 and map.picking.basket.back() == "ㄹ" and spare.letter == "", "Space picks it: its ㄹ joins the basket")
-	check(not map.pick_nearest() and not map.picking.has_letter(36) and map.spares.spawned.size() == 1, "a picked spare stays letterless and does not respawn")
+	check(map.pick_nearest() and map.picking.basket.size() == basket_before + 1 and map.picking.basket.back() == "ㅜ" and spare.letter == "", "Space picks it: its ㅜ joins the basket")
+	check(not map.pick_nearest() and not map.picking.has_letter(37) and map.spares.spawned.size() == 2, "a picked spare stays letterless and does not respawn")
 	check(map.discovery.entries.size() == discovered_before, "the spare changed nothing in the discovery list")
 	map.free()
 
@@ -3128,3 +3138,217 @@ func test_spares_real_events() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_spares_real_events")
+
+
+## Every decision's action, for messages and checks.
+func _actions(sp) -> Array:
+	return sp.decisions.map(func(d): return d["action"])
+
+
+## A Spares with these words already completed cleanly (credits banked, nothing short).
+func _banked(ids: Array, cap := -1):
+	var sp = _new_spares(cap)
+	var solved := _solved_words(ids)
+	for id in ids:
+		sp.queue(id)
+	sp.settle(solved, sp.needed(solved))
+	return sp
+
+
+func test_credits_logic() -> void:
+	var all := _target_letters()
+	var four := ["ma", "meoru", "minari", "gosari"]
+	var left := _solved_words(four)  # 고비 and 시로미 are still to spell
+
+	# A clean completion banks a credit and spawns nothing.
+	var sp = _new_spares()
+	sp.queue("ma")
+	var orders: Array[Dictionary] = sp.settle(_solved_words(["ma"]), _without(all, ["ㅁ", "ㅏ"]))
+	check(orders.is_empty() and sp.credits == ["ma"] and sp.spawned.is_empty(), "마 completes with no shortage: nothing spawns, one credit is banked")
+	check(sp.decisions[0]["action"] == "credit banked" and sp.decisions[0]["reason"] == "no deficit" and sp.credit_total() == 1, "the decision says the credit was banked")
+
+	# Several credits banked, then a failure destroys two needed letters.
+	sp = _banked(four)
+	check(sp.credits == four and sp.spawned.is_empty(), "four clean words bank four credits, oldest first (%s)" % str(sp.credits))
+	sp.queue_failure()
+	orders = sp.settle(left, _without(sp.needed(left), ["ㅂ", "ㅁ"]))  # the failure destroyed ㅂ and ㅁ
+	check(orders.size() == 2 and orders[0]["word_id"] == "ma" and orders[1]["word_id"] == "meoru", "two letters destroyed: the two oldest credits (마, 머루) are spent")
+	check(orders[0]["letter"] == "ㅂ" and orders[1]["letter"] == "ㅁ", "each carries the largest remaining deficit (tie: 고비's ㅂ before 시로미's ㅁ)")
+	check(orders[0]["spot"] == sp.slots["ma"] and orders[1]["spot"] == sp.slots["meoru"], "each spawns at its own word's slot")
+	check(sp.credits == ["minari", "gosari"] and sp.credit_total() == 4, "the leftover credits stay banked (%s)" % str(sp.credits))
+	check(_actions(sp).slice(-2) == ["credit spent on failure", "credit spent on failure"], "both spends are logged as spent on failure")
+
+	# The deficit is recomputed after each spawn: ㅣ short by 2 first, then ㅂ, then ㅣ again.
+	sp = _banked(four)
+	sp.queue_failure()
+	orders = sp.settle(left, _without(sp.needed(left), ["ㅣ", "ㅣ", "ㅂ"]))
+	var letters: Array = orders.map(func(o): return o["letter"])
+	check(letters == ["ㅣ", "ㅂ", "ㅣ"], "largest deficit first, recomputed after each spawn (%s)" % str(letters))
+	check(sp.credits == ["gosari"] and sp.spawned.size() == 3, "the shortage is covered by three spares; one credit is left")
+
+	# No banked credit: the shortage stays uncovered and is logged.
+	sp = _new_spares()
+	sp.queue_failure()
+	orders = sp.settle({}, _without(all, ["ㅂ"]))
+	check(orders.is_empty() and sp.spawned.is_empty(), "a failure with no credits spawns nothing")
+	check(sp.decisions.size() == 1 and sp.decisions[0]["action"] == "shortage left uncovered" and sp.decisions[0]["reason"] == "short of ㅂ by 1", "and logs the uncovered shortage (%s)" % str(sp.decisions))
+	# Credits run out partway: the rest of the shortage is logged.
+	sp = _banked(["ma"])
+	var one := _solved_words(["ma"])
+	sp.queue_failure()
+	orders = sp.settle(one, _without(sp.needed(one), ["ㅂ", "ㅁ"]))
+	check(orders.size() == 1 and sp.credits.is_empty() and _actions(sp).slice(-2) == ["credit spent on failure", "shortage left uncovered"], "one credit covers one of two letters; the other is logged uncovered (%s)" % str(_actions(sp)))
+
+	# A failure with no shortage (extra copies exist) spends nothing.
+	sp = _banked(["ma"])
+	sp.queue_failure()
+	orders = sp.settle(one, sp.needed(one) + ["ㅂ", "ㅁ"])
+	check(orders.is_empty() and sp.credits == ["ma"] and sp.decisions[-1]["action"] == "no shortage, no credit spent", "extra copies exist: the failure spends no credit")
+
+	# Completion with a shortage spends its own credit at once, not an older one.
+	sp = _banked(["ma"])
+	sp.queue("gobi")
+	var two := _solved_words(["ma", "gobi"])
+	orders = sp.settle(two, _without(sp.needed(two), ["ㅁ"]))
+	check(orders.size() == 1 and orders[0]["word_id"] == "gobi" and orders[0]["letter"] == "ㅁ" and sp.credits == ["ma"], "completion with a shortage spends the word's own credit, leaving 마's banked")
+	check(sp.decisions[-1]["action"] == "credit spent on completion", "and logs it")
+
+	# The cap: banked + spawned never passes it.
+	var every := _target_words().keys()
+	sp = _banked(every)
+	check(sp.credits.size() == 6 and sp.credit_total() == 6, "six words completed: six credits")
+	var fresh := _solved_words([])
+	for i in 4:  # several failures, each short of a letter
+		sp.queue_failure()
+		sp.settle(fresh, _without(all, ["ㅂ", "ㅁ"]))
+		check(sp.credit_total() <= sp.cap, "after failure %d: %d banked + %d spawned within the cap" % [i + 1, sp.credits.size(), sp.spawned.size()])
+	var slots_used := {}
+	var twice := false
+	for order in sp.spawned:
+		twice = twice or slots_used.has(order["word_id"])
+		slots_used[order["word_id"]] = true
+	check(not twice and sp.spawned.size() == 6 and sp.credits.is_empty(), "failures spend the credits two at a time until none are left (6 spawned), and no slot was used twice")
+	for id in every:
+		check(not sp.queue(id), "%s cannot earn a second credit" % id)
+	var small = _new_spares(2)
+	var done := _solved_words(every)
+	for id in ["ma", "meoru", "minari", "gosari"]:
+		small.queue(id)
+	small.settle(done, [])
+	check(small.credits == ["ma", "meoru"] and _actions(small).count("no credit (cap reached)") == 2, "with cap 2, only the first two completions earn a credit")
+	small.queue_failure()
+	small.settle(fresh, _without(all, ["ㅂ", "ㅁ", "ㅏ"]))
+	check(small.credit_total() == 2 and small.spawned.size() == 2 and small.credits.is_empty(), "spending credits keeps banked + spawned at the cap")
+	_section_done("test_credits_logic")
+
+
+func test_credits_scene() -> void:
+	var map: Node3D = await _spares_map()
+	var hearts_seen := []
+	var on_hearts := func(_who: String, _units: int) -> void: hearts_seen.append(map.spare_plants.size())
+	GameState.hearts_changed.connect(on_hearts)
+	# The playtest: five words spelled cleanly, then the sixth fails.
+	var five := ["ma", "meoru", "minari", "gosari", "gobi"]
+	for n in five.size():
+		var result := _spell(map, five[n])
+		check(result["result"] == "complete" and map.spare_plants.is_empty(), "%s spelled cleanly: no spare" % five[n])
+		check(map.spares.credits.size() == n + 1, "after %s: %d credits banked" % [five[n], n + 1])
+	print("  scripted run, five clean words: credits %s, actions %s" % [str(map.spares.credits), str(_actions(map.spares))])
+	check(map.spares.credits == five and map.spares.spawned.is_empty() and map.plants.size() == 36, "five credits banked, nothing spawned, still 36 plants")
+	var hearts_before := GameState.hearts_for_display("nestor")
+	map.open_spelling("simiro")
+	map.spelling_hud.apply(map.spelling.place("ㅣ", 0, 0))
+	map.spelling_hud.apply(map.spelling.place("ㅅ", 0, 1))
+	check(map.spelling_hud.is_open() and map.spare_plants.is_empty() and map.spares.has_pending(), "the failure's spares wait for the view to close")
+	check(is_equal_approx(GameState.hearts_for_display("nestor"), hearts_before), "and so does the damage")
+	map.spelling_hud.tick(1.0)
+	check(not map.spelling_hud.is_open() and map.spare_plants.size() == 2, "the view closed: two spares appeared")
+	check(not hearts_seen.is_empty() and hearts_seen[0] == 2, "the spares were on the map before the damage was applied (%s)" % str(hearts_seen))
+	check(GameState.hearts_for_display("nestor") < hearts_before, "the damage was applied")
+	GameState.hearts_changed.disconnect(on_hearts)
+	print("  scripted run, sixth word fails (ㅣ, ㅅ destroyed): credits %s, decisions %s" % [str(map.spares.credits), str(map.spares.decisions.slice(5))])
+	check(map.spare_plants[0].kind_id == "ma" and map.spare_plants[0].letter == "ㅅ", "the oldest credit (마) became a spare carrying ㅅ")
+	check(map.spare_plants[1].kind_id == "meoru" and map.spare_plants[1].letter == "ㅣ", "the next (머루) became a spare carrying ㅣ")
+	check(map.spares.credits == ["minari", "gosari", "gobi"] and map.spares.credit_total() == 5, "three credits stay banked")
+	var solved := {}
+	for id in map.spares.word_ids():
+		solved[id] = map.spelling.solved(id).size()
+	check(map.spares.choose(solved, map._available_letters())["letter"] == "", "the shortage is covered")
+	for spare in map.spare_plants:
+		check(Vector2(spare.position.x, spare.position.z) == map.spares.slots[spare.kind_id], "%s's spare stands at its own slot" % spare.kind_id)
+	check(map.plants.size() == 38 and map.picking.plant_count() == 38 and map.plants[36] == map.spare_plants[0], "the spares are plants 37 and 38, in step with picking")
+	map.step(Vector2.ZERO, 0.6)
+	check(map.picking.is_pickable(36) and map.picking.is_pickable(37) and map.spare_plants[0].scale.is_equal_approx(Vector3.ONE), "after the grow-in both are full size and pickable")
+	map.free()
+
+	# A failure with no banked credit spawns nothing and logs it.
+	map = await _spares_map()
+	map.open_spelling("ma")
+	map.spelling_hud.apply(map.spelling.place("ㅏ", 0, 0))
+	map.spelling_hud.apply(map.spelling.place("ㅁ", 0, 1))
+	map.spelling_hud.tick(1.0)
+	check(map.spare_plants.is_empty() and map.spares.decisions.size() == 1 and map.spares.decisions[0]["action"] == "shortage left uncovered", "a failure with no credits: nothing spawns, the uncovered shortage is logged")
+	map.free()
+
+	# The cap with all six words completed and several failures.
+	map = await _spares_map(false)
+	for plant in map.plants:
+		if plant.kind == "target":
+			plant.take_letter()
+	for id in _target_words():
+		map.spelling.word_completed.emit(id)
+	map.spelling_hud.closed.emit()
+	check(map.spares.credit_total() == 6, "six completions with every letter gone: banked + spawned is the cap")
+	for i in 3:
+		map.spelling.syllable_failed.emit("ma", 0, ["ㅁ", "ㅏ"])
+		map.spelling_hud.closed.emit()
+		check(map.spares.credit_total() <= map.spares.cap and map.spare_plants.size() == map.spares.spawned.size(), "failure %d: still within the cap" % (i + 1))
+	var kinds: Array = map.spare_plants.map(func(p): return p.kind_id)
+	var once := true
+	for id in _target_words():
+		once = once and kinds.count(id) <= 1
+	check(once, "no word's slot was used twice")
+	map.free()
+
+	# Restart: credits and spares are gone.
+	var again: Node3D = await _spares_map(false)
+	check(again.spares.credits.is_empty() and again.spares.spawned.is_empty() and again.spares.decisions.is_empty() and again.spare_plants.is_empty(), "a rebuilt scene has no credits and no spares")
+	for plant in again.plants:
+		if plant.kind == "target":
+			plant.take_letter()
+	again.spelling.word_completed.emit("ma")
+	again.spelling_hud.closed.emit()
+	check(again.spare_plants.size() == 1, "the same word can earn again in the new scene")
+	again.free()
+	GameState.new_hike()
+	_section_done("test_credits_scene")
+
+
+func test_credits_real_events() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _spares_map()
+	var viewport := map.get_viewport()
+	for id in ["ma", "meoru", "minari", "gosari", "gobi"]:
+		_spell(map, id)
+	check(map.spares.credits.size() == 5 and map.spare_plants.is_empty(), "five words banked five credits")
+	await _settle_layout()
+	var row: Control = map.discovery_hud._rows["simiro"]
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(map.spelling_hud.is_open() and map.spelling.open_id == "simiro", "a real click on the 시로미 entry opens the view")
+	await _settle_layout()
+	await _drag(viewport, _tile_center(map, "ㅣ"), _slot_center(map, 0, 0))
+	await _settle_layout()
+	await _drag(viewport, _tile_center(map, "ㅅ"), _slot_center(map, 0, 1))
+	check(map.spelling.solved("simiro").is_empty() and map.spelling_hud.is_open() and map.spare_plants.is_empty(), "two real drags (ㅣ, ㅅ) fail the block; the failure flash is up and nothing has spawned yet")
+	map.spelling_hud.tick(1.0)  # the flash length is the HUD's own timer; ended by hand
+	check(not map.spelling_hud.is_open() and map.spare_plants.size() == 2, "after the flash the view closes and two spares appear")
+	if map.spare_plants.size() == 2:
+		check(map.spare_plants[0].kind_id == "ma" and map.spare_plants[0].letter == "ㅅ" and map.spare_plants[1].kind_id == "meoru" and map.spare_plants[1].letter == "ㅣ", "마's spare carries ㅅ and 머루's carries ㅣ")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_credits_real_events")
