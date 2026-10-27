@@ -11,6 +11,9 @@ const FLOOR_MAX_ANGLE := 35.0    # steeper than this is a wall, not floor
 var speed: float = 4.5
 ## Where the origin may stand, as a Rect2 over (x, z).
 var bounds := Rect2()
+## Optional: x -> the largest z the origin may have there (the view's bottom edge
+## moves with the slope). Applied on top of `bounds`.
+var near_limit := Callable()
 var on_floor := false
 var _floor_normal := Vector3.UP
 var _fall_speed := 0.0
@@ -106,6 +109,8 @@ func _move(motion: Vector3, delta: float) -> void:
 	var p := global_position
 	p.x = clampf(p.x, bounds.position.x, bounds.end.x)
 	p.z = clampf(p.z, bounds.position.y, bounds.end.y)
+	if near_limit.is_valid():
+		p.z = minf(p.z, float(near_limit.call(p.x)))
 	global_position = p
 	_settle(delta)
 

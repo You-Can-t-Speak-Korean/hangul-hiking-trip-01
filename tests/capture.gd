@@ -11,8 +11,9 @@ extends Node
 ## {basket_empty,basket_1_tile,basket_28_tiles,hud_discovery_two_entries}.png, and the
 ## spelling shots {spelling_open_3_blocks,spelling_block_locked,spelling_half_filled,
 ## spelling_failure_flash,spelling_entry_done}.png, and the hearts shots
-## {hearts_full,hearts_4_5,hearts_low,blood_burst,death_beat_dim}.png. Pass
-## `-- --hearts-only` to take only the hearts shots.
+## {hearts_full,hearts_4_5,hearts_low,blood_burst,death_beat_dim}.png, and the walk-limit
+## shots {walk_limit_x0,walk_limit_x32,walk_limit_x64,walk_limit_x32_before}.png. Pass
+## `-- --hearts-only` to take only the hearts shots, `-- --walk-limit-only` for the walk-limit shots.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -30,6 +31,10 @@ func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SHOT_DIR))
 	if "--hearts-only" in OS.get_cmdline_user_args():
 		await _hearts_shots()
+		get_tree().quit()
+		return
+	if "--walk-limit-only" in OS.get_cmdline_user_args():
+		await _walk_limit_shots()
 		get_tree().quit()
 		return
 	if "--spares-only" in OS.get_cmdline_user_args():
@@ -146,6 +151,7 @@ func _ready() -> void:
 	await _hearts_shots()
 	await _spare_shots()
 	await _credit_shots()
+	await _walk_limit_shots()
 	get_tree().quit()
 
 
@@ -332,6 +338,43 @@ func _credit_shots() -> void:
 		await get_tree().process_frame
 	_save("credits_after_failure")
 	map.free()
+	GameState.new_hike()
+
+
+## A traveler walked down (S) to the bottom limit at x = 0, 32 and 64, and once
+## more at x = 32 with the old stage-edge limit put back, to show where it used to stop.
+func _walk_limit_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	for entry in [0.0, 32.0, 64.0, -32.0]:
+		var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+		add_child(map)
+		map.set_physics_process(false)
+		map.set_process(false)
+		await _frames(5)
+		var old: bool = entry < 0.0
+		var lane: float = absf(entry)
+		var bounds: Rect2 = map.walk_bounds()
+		if old:  # the limit as it was: the stage edge, camera free to follow
+			for traveler in map.travelers.values():
+				traveler.near_limit = Callable()
+				traveler.bounds = Rect2(Vector2(map.TRAVELER_MARGIN, -map.stage_depth / 2.0 + map.TRAVELER_MARGIN),
+						Vector2(map.stage_width - 2.0 * map.TRAVELER_MARGIN, map.stage_depth - 2.0 * map.TRAVELER_MARGIN))
+		var column := clampf(lane, bounds.position.x, bounds.end.x)
+		map.partner.global_position = Vector3(clampf(column + 3.0, bounds.position.x, bounds.end.x - 1.0), map.terrain.height_at(column), 0.0)
+		map.player.global_position = Vector3(column, map.terrain.height_at(column), 0.0)
+		map.update_camera(0.0, true)
+		for i in 120:
+			for j in STEPS_PER_FRAME:
+				map.step(Vector2(0.0, 1.0), DELTA)
+			await get_tree().process_frame
+		await _frames(30)
+		var screen: Vector2 = map.camera.unproject_position(map.player.global_position)
+		print("x=%.1f%s: feet z %.2f, screen y %.1f of %.0f" % [column, " (old limit)" if old else "", map.player.global_position.z, screen.y, get_viewport().get_visible_rect().size.y])
+		_save("walk_limit_x%d%s" % [int(lane), "_before" if old else ""])
+		map.free()
 	GameState.new_hike()
 
 

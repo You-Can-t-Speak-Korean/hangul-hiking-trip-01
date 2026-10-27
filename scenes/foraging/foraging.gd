@@ -28,7 +28,8 @@ const FADE_REACH := 14.0        # how far toward the camera a prop can still cov
 const FADE_CELL := 4.0          # props are bucketed by x so only those near a traveler are checked
 const FADE_SAMPLE_HEIGHTS := [0.3, 0.85, 1.5]  # feet, waist and head of a traveler
 
-const GROUND_STEP := 1.0        # metres between ground mesh vertices along x
+const NEAR_SAMPLES := 8        # heights sampled across the view when finding how far the near edge must pull back
+const GROUND_STEP := 1.0       # metres between ground mesh vertices along x
 const KEEP_OUT := 1.8           # props are pushed this far from plants, trees and starts
 const NUDGE_PASSES := 12         # a pushed prop can land near another point, so repeat
 const TOOLTIP_OFFSET := Vector2(16.0, 18.0)
@@ -46,6 +47,7 @@ var stage_depth: float = 0.0
 ## behind it, as Rect2s over (x, z).
 var ground_rect := Rect2()
 var backdrop_rect := Rect2()
+var near_margin := 0.3    # feet stop this far (m, along z) above the bottom of the screen (data: walk_limit)
 ## Every backdrop piece as {"data", "base", "top", "aabb"}: base and top are
 ## world heights, aabb is the piece's world-space box.
 var backdrop_pieces: Array[Dictionary] = []
@@ -128,6 +130,7 @@ func _ready() -> void:
 	ground_rect = Rect2(
 		Vector2(-side, -stage_depth / 2.0 - far),
 		Vector2(stage_width + 2.0 * side, stage_depth + far + side))
+	near_margin = float(config["walk_limit"]["near_margin"])
 	var backdrop_depth := float(config["backdrop"]["depth"])
 	backdrop_rect = Rect2(
 		Vector2(ground_rect.position.x, ground_rect.position.y - backdrop_depth),
@@ -177,9 +180,8 @@ func _ready() -> void:
 		var traveler := Traveler.new()
 		$Travelers.add_child(traveler)
 		traveler.setup(id.capitalize(), colors[id])
-		traveler.bounds = Rect2(
-			Vector2(TRAVELER_MARGIN, -stage_depth / 2.0 + TRAVELER_MARGIN),
-			Vector2(stage_width - 2.0 * TRAVELER_MARGIN, stage_depth - 2.0 * TRAVELER_MARGIN))
+		traveler.bounds = walk_bounds()
+		traveler.near_limit = near_limit_at
 		var start: Array = config["start"][id]
 		traveler.global_position = Vector3(float(start[0]), terrain.height_at(float(start[0])), float(start[1]))
 		travelers[id] = traveler
@@ -543,6 +545,42 @@ func _play_tsss() -> void:
 	player_node.play()
 
 
+## The outer box a traveler's feet may stand in, over (x, z): the stage along x
+## and at the far end, and the whole near apron toward the camera. How far toward
+## the camera depends on x, see near_limit_at().
+func walk_bounds() -> Rect2:
+	var far := -stage_depth / 2.0 + TRAVELER_MARGIN
+	return Rect2(Vector2(TRAVELER_MARGIN, far), Vector2(stage_width - 2.0 * TRAVELER_MARGIN, ground_rect.end.y - far))
+
+
+## The z of the bottom edge of the screen at the player's column when the player
+## stands at x and the camera has settled: the ground's near edge, pulled back by
+## the camera's clamp (see _near_shift()).
+func near_edge_at(x: float) -> float:
+	var half_width := camera_half_width()
+	var aim_x := _clamp_axis(x, ground_rect.position.x + half_width, ground_rect.end.x - half_width)
+	return ground_rect.end.y - _near_shift(aim_x, terrain.height_at(x))
+
+
+## The farthest toward the camera a traveler's feet may stand at x: the bottom
+## edge of the screen less the data margin (walk_limit.near_margin).
+func near_limit_at(x: float) -> float:
+	return near_edge_at(x) - near_margin
+
+
+## How far the camera must stop short of the ground's near edge. The screen's
+## bottom row meets ground that is higher than the aim's further toward the camera
+## (by the rise over tan(pitch)), so on a slope the view's bottom corner would
+## otherwise run past the edge into the sky.
+func _near_shift(aim_x: float, aim_height: float) -> float:
+	var half_width := camera_half_width()
+	var rise := 0.0
+	for i in NEAR_SAMPLES + 1:
+		var x := aim_x - half_width + 2.0 * half_width * i / NEAR_SAMPLES
+		rise = maxf(rise, terrain.height_at(x) - aim_height)
+	return rise / tan(deg_to_rad(CAMERA_PITCH_DEG))
+
+
 ## Half the width, in metres, the orthographic camera shows.
 func camera_half_width() -> float:
 	var size := get_viewport().get_visible_rect().size
@@ -561,19 +599,19 @@ func update_camera(delta: float, snap: bool = false) -> void:
 	var aim := Vector2(camera.global_position.x, camera.global_position.z - CAMERA_DISTANCE * cos(pitch))
 	var target := Vector2(player.global_position.x, player.global_position.z - CAMERA_LEAD)
 	aim = target if snap else aim.lerp(target, 1.0 - exp(-CAMERA_FOLLOW_RATE * delta))
-	aim = clamp_aim(aim)
 	var height := player.global_position.y
 	_aim_height = height if snap else lerpf(_aim_height, height, 1.0 - exp(-CAMERA_FOLLOW_RATE * delta))
+	aim = clamp_aim(aim)
 	camera.global_position = Vector3(aim.x, _aim_height + CAMERA_DISTANCE * sin(pitch), aim.y + CAMERA_DISTANCE * cos(pitch))
 
 
 ## The view must not pass the ground's left, right and near edges. The far
-## end is open on purpose: the backdrop ridge stands against the sky there.
+## end is open on purpose: the backdrop ridge stands against the sky there. Uses
+## the camera's current aim height, so call it after updating that.
 func clamp_aim(aim: Vector2) -> Vector2:
 	var half := Vector2(camera_half_width(), camera_half_depth())
-	return Vector2(
-		_clamp_axis(aim.x, ground_rect.position.x + half.x, ground_rect.end.x - half.x),
-		_clamp_axis(aim.y, -INF, ground_rect.end.y - half.y))
+	var x := _clamp_axis(aim.x, ground_rect.position.x + half.x, ground_rect.end.x - half.x)
+	return Vector2(x, _clamp_axis(aim.y, -INF, ground_rect.end.y - half.y - _near_shift(x, _aim_height)))
 
 
 ## Clamps, or centres if the range is empty (the view is bigger than the ground).

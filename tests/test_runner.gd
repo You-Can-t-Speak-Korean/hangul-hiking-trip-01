@@ -52,11 +52,13 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_credits_logic",
 	"test_credits_scene",
 	"test_credits_real_events",
+	"test_walk_limit_data",
+	"test_walk_limit_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1003
+const MIN_CHECKS := 1065
 
 
 func check(condition: bool, label: String) -> void:
@@ -131,6 +133,9 @@ func _ready() -> void:
 	test_credits_logic()
 	await test_credits_scene()
 	await test_credits_real_events()
+	print("== Walk limit toward the camera ==")
+	test_walk_limit_data()
+	await test_walk_limit_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -396,9 +401,9 @@ func test_foraging() -> void:
 		for i in 400:
 			p.drive(dir, 0.1)
 		var q := p.global_position
-		if q.x < 0.0 or q.x > map.stage_width or absf(q.z) > map.stage_depth / 2.0:
+		if q.x < 0.0 or q.x > map.stage_width or q.z < -map.stage_depth / 2.0 or q.z > map.near_limit_at(q.x) + 0.0001:
 			bounds_ok = false
-	check(bounds_ok, "the player can't leave the stage in any direction")
+	check(bounds_ok, "the player can't leave the walkable area (stage, plus the near strip down to the screen edge) in any direction")
 
 	# Camera follows in depth as well as along the stage.
 	p.global_position = home
@@ -3352,3 +3357,256 @@ func test_credits_real_events() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_credits_real_events")
+
+
+## The first 36 plants as [x, z] in file order, and the six spare slots, as they
+## were before the walk limit: Prompt 5e must not move any of them.
+const FROZEN_PLANTS: Array[float] = [
+	2.0, -9.0, 25.0, 4.0, 2.0, 10.0, 11.0, -8.0, 19.5, 0.5, 25.5, -7.5,
+	5.0, 9.5, 11.0, 9.0, 13.0, -4.0, 18.5, 5.0, 23.0, -1.5, 26.0, 7.0,
+	5.0, -8.5, 8.0, 8.5, 14.5, 9.0, 19.0, -9.0, 22.0, 5.5, 26.0, -3.0,
+	1.5, 7.0, 8.0, -8.0, 17.0, -4.0, 25.0, 10.0, 13.0, 4.0, 20.0, -5.0,
+	15.0, 1.5, 21.5, 9.5, 36.5, 5.5, 34.5, -3.0, 47.0, 5.5, 50.5, -3.5,
+	52.5, 3.5, 55.0, -8.0, 59.5, -1.5, 62.0, 6.0, 46.0, 2.5, 49.5, -6.5,
+]
+const FROZEN_SLOTS := {
+	"ma": [15.0, -8.5], "meoru": [13.0, -1.0], "minari": [22.5, -10.0],
+	"gosari": [16.5, -1.0], "gobi": [12.0, 6.5], "simiro": [57.5, 10.0],
+}
+
+
+func test_walk_limit_data() -> void:
+	var config := _config()
+	var limit: Dictionary = config.get("walk_limit", {})
+	check(limit.get("near_margin") is float, "walk_limit.near_margin is in hallasan.json and is a number")
+	var margin := float(limit.get("near_margin", -1.0))
+	check(margin > 0.0 and margin <= 1.0, "the near margin is a small positive distance (%.2f m)" % margin)
+	var half_depth := float(config["stage"]["depth"]) / 2.0
+	var near_edge: float = half_depth + float(config["apron"]["sides"])  # the ground's near edge
+	check(margin < float(config["apron"]["sides"]), "the margin is smaller than the near apron")
+	check(near_edge - margin > half_depth, "the walk limit (before the slope pulls it back) lies beyond the stage's near edge, on the apron")
+	var placed := _placed()
+	check(placed.size() == 36 and FROZEN_PLANTS.size() == 72, "36 placed plants")
+	var same := placed.size() == 36
+	for i in mini(placed.size(), 36):
+		same = same and is_equal_approx(float(placed[i]["x"]), FROZEN_PLANTS[2 * i]) and is_equal_approx(float(placed[i]["z"]), FROZEN_PLANTS[2 * i + 1])
+	check(same, "the 36 placed plants are exactly where they were")
+	var slots: Dictionary = config["spares"]["slots"]
+	var slots_same := slots.size() == FROZEN_SLOTS.size()
+	for id in FROZEN_SLOTS:
+		slots_same = slots_same and slots.has(id) and is_equal_approx(float(slots[id][0]), FROZEN_SLOTS[id][0]) and is_equal_approx(float(slots[id][1]), FROZEN_SLOTS[id][1])
+	check(slots_same, "the six spare slots are exactly where they were")
+	check(is_equal_approx(float(config["stage"]["width"]), 64.0) and is_equal_approx(float(config["stage"]["depth"]), 24.0), "the stage, and with it the ground, props and backdrop, is unchanged")
+	check(config["start"]["nestor"] == [6.0, 1.5] and config["start"]["fernanda"] == [4.0, -1.5], "the starts are unchanged")
+	_section_done("test_walk_limit_data")
+
+
+## Metres of ground (along z) between a traveler's feet and the bottom edge of the
+## screen. Negative means the feet are below the screen.
+func _feet_gap(map: Node3D, traveler: Node3D) -> float:
+	var height: float = map.get_viewport().get_visible_rect().size.y
+	var screen: Vector2 = map.camera.unproject_position(traveler.global_position)
+	return (height - screen.y) * (map.camera.size / height) / sin(deg_to_rad(map.CAMERA_PITCH_DEG))
+
+
+func test_walk_limit_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)  # the game's own 16:9 view; headless starts square
+	await get_tree().process_frame
+	var config := _config()
+	var map: Node3D = await _fresh_reach_map()
+	check(is_equal_approx(map.get_viewport().get_visible_rect().size.aspect(), 16.0 / 9.0), "the test view is 16:9")
+	var bounds: Rect2 = map.walk_bounds()
+	var margin := float(config["walk_limit"]["near_margin"])
+	var half_depth: float = map.stage_depth / 2.0
+	var old_limit: float = half_depth - map.TRAVELER_MARGIN
+	check(is_equal_approx(map.near_limit_at(64.0), map.ground_rect.end.y - margin), "on the flat ground at the right end the limit is the ground's near edge minus the margin (%.2f)" % map.near_limit_at(64.0))
+	var limits_ok := true
+	var shortest := INF
+	for at_x in range(0, 65, 2):
+		var l: float = map.near_limit_at(clampf(at_x, bounds.position.x, bounds.end.x))
+		shortest = minf(shortest, l)
+		limits_ok = limits_ok and l > old_limit + 5.0 and l <= map.ground_rect.end.y - margin + 0.0001
+	check(limits_ok, "at every x the limit is well past the old stop and never past the ground (shortest %.2f)" % shortest)
+	print("  near limit z at x = 0: %.2f, 32: %.2f, 64: %.2f (old stop %.1f)" % [map.near_limit_at(0.4), map.near_limit_at(32.0), map.near_limit_at(63.6), old_limit])
+	check(is_equal_approx(bounds.position.y, -half_depth + map.TRAVELER_MARGIN), "the far limit is unchanged")
+	check(is_equal_approx(bounds.position.x, map.TRAVELER_MARGIN) and is_equal_approx(bounds.end.x, map.stage_width - map.TRAVELER_MARGIN), "the left and right limits are unchanged")
+	var same_bounds := true
+	for traveler in map.travelers.values():
+		same_bounds = same_bounds and traveler.bounds == bounds
+	check(same_bounds, "both travelers use the walk bounds")
+
+	# Walk down at x = 0, 32 and 64 (the travelers' own x margin applies at the ends).
+	var dt := 1.0 / 60.0
+	for x in [0.0, 32.0, 64.0]:
+		var lane := clampf(x, bounds.position.x, bounds.end.x)
+		var limit: float = map.near_limit_at(lane)
+		map.partner.global_position = _ground_point(map, clampf(lane + 3.0, bounds.position.x, bounds.end.x - 1.0), 0.0)
+		map.player.global_position = _ground_point(map, lane, 0.0)
+		map.update_camera(0.0, true)
+		var lowest := INF
+		var crossed_old := false
+		for i in 480:
+			map.step(Vector2(0.0, 1.0), dt)
+			lowest = minf(lowest, _feet_gap(map, map.player))
+			crossed_old = crossed_old or map.player.global_position.z > old_limit + 1.0
+		var z: float = map.player.global_position.z
+		check(crossed_old, "x = %.0f: S walks past the old stop (z %.1f)" % [x, old_limit])
+		limit = map.near_limit_at(map.player.global_position.x)  # the partner may have nudged the player a little along x
+		check(absf(z - limit) < 0.01, "x = %.0f: S stops at the new limit, not before (z %.3f, limit %.3f)" % [x, z, limit])
+		var gap := _feet_gap(map, map.player)
+		check(absf(gap - margin) < 0.02, "x = %.0f: the feet are the margin above the bottom edge of the screen (%.3f m, margin %.2f)" % [x, gap, margin])
+		check(lowest > 0.0, "x = %.0f: on the way down the feet never leave the screen (lowest gap %.3f m)" % [x, lowest])
+		var zs: Array[float] = []
+		var ys: Array[float] = []
+		for i in 30:
+			map.step(Vector2(0.0, 1.0), dt)
+			zs.append(map.player.global_position.z)
+			ys.append(map.player.global_position.y)
+		check(zs.max() - zs.min() < 0.0001 and ys.max() - ys.min() < 0.002, "x = %.0f: it stays put against the limit, no jitter or sliding" % x)
+		check(map.player.on_floor, "x = %.0f: and stands on the ground there" % x)
+		check(_view_over_land(map), "x = %.0f: the view at the limit is all ground or backdrop" % x)
+
+	# Along the bottom of the climb: the camera's height smoothing lags behind the
+	# slope, so walking along the limit must still keep the feet on screen.
+	map.partner.global_position = _ground_point(map, 30.0, 0.0)
+	map.player.global_position = _ground_point(map, bounds.position.x, map.near_limit_at(bounds.position.x))
+	map.update_camera(0.0, true)
+	var worst := INF
+	var worst_x := 0.0
+	var view_ok := true
+	for pass_index in 2:
+		var dir := Vector2(1.0, 1.0) if pass_index == 0 else Vector2(-1.0, 1.0)
+		for i in 900:
+			map.step(dir, dt)
+			var g := _feet_gap(map, map.player)
+			if g < worst:
+				worst = g
+				worst_x = map.player.global_position.x
+			if i % 30 == 0:
+				view_ok = view_ok and _view_over_land(map)
+	print("  lowest feet gap walking along the limit: %.3f m at x = %.1f (margin %.2f)" % [worst, worst_x, margin])
+	check(worst > 0.0, "walking along the limit, up and down the slope, the feet stay on screen (lowest %.3f m)" % worst)
+	check(view_ok, "and the view stays over ground the whole way")
+
+	# The far end is unchanged: W stops at the stage edge.
+	map.player.global_position = _ground_point(map, 32.0, 0.0)
+	for i in 480:
+		map.step(Vector2(0.0, -1.0), dt)
+	check(absf(map.player.global_position.z - bounds.position.y) < 0.01, "W still stops at the far limit (z %.2f)" % map.player.global_position.z)
+
+	# The partner follows without leaving the new bounds, however it is pulled.
+	var partner_limit: float = map.near_limit_at(20.0)
+	map.player.global_position = _ground_point(map, 20.0, partner_limit)
+	map.partner.global_position = _ground_point(map, 10.0, 0.0)
+	var inside := true
+	for i in 600:
+		map.step(Vector2.ZERO, dt)
+		var p: Vector3 = map.partner.global_position
+		inside = inside and bounds.grow(0.001).has_point(Vector2(p.x, p.z)) and p.z <= map.near_limit_at(p.x) + 0.001
+	var gap_vector: Vector3 = map.partner.global_position - map.player.global_position
+	gap_vector.y = 0.0
+	check(inside, "the partner never leaves the walk bounds")
+	check(gap_vector.length() <= map.PARTNER_STOP_DISTANCE + 0.1 and map.partner.global_position.z > old_limit - 1.0, "the partner followed the player down onto the near strip")
+	for i in 300:
+		map.partner.follow(Vector3(20.0, 0.0, partner_limit + 10.0), 0.1, dt)  # a target below the limit
+	check(absf(map.partner.global_position.z - map.near_limit_at(map.partner.global_position.x)) < 0.01, "a follow target below the limit leaves the partner at the limit")
+
+	# Click-to-walk: a plant whose position is below the limit is walked to as far
+	# as the limit, and the walk then ends instead of pushing for ever.
+	var target := _lone_plant(map, "target")
+	var index: int = map.plants.find(target)
+	var home: Vector3 = target.position
+	var column: float = clampf(home.x, 2.0, 60.0)
+	var column_limit: float = map.near_limit_at(column)
+	target.position = _ground_point(map, column, column_limit + 6.0)
+	map.partner.global_position = _ground_point(map, column + 3.0, column_limit - 8.0)
+	map.player.global_position = _ground_point(map, column, column_limit - 6.0)
+	map.update_camera(0.0, true)
+	check(map.picking.start_walk(index), "a walk to a plant below the limit starts")
+	var deepest := 0.0
+	var ticks := 0
+	while map.picking.walk_target >= 0 and ticks < 600:
+		map.step(Vector2.ZERO, dt)
+		deepest = maxf(deepest, map.player.global_position.z)
+		ticks += 1
+	check(map.picking.walk_target < 0 and ticks < 600, "the walk ends by itself (%d ticks)" % ticks)
+	check(deepest <= column_limit + 0.0001 and absf(map.player.global_position.z - column_limit) < 0.05, "the player went to the nearest valid point, the limit, and no further (z %.3f)" % map.player.global_position.z)
+	check(absf(map.player.global_position.x - column) < 0.1, "at the plant's own x")
+	check(target.letter != "", "and the unreachable plant keeps its letter")
+	target.position = home
+	map.free()
+
+	# A plant on the near strip, 0.8 m above the limit: reach, ring, hover, click and Space.
+	map = await _fresh_reach_map()
+	var kind: Dictionary = map._kinds["meoru"]
+	var spots := [Vector2(30.0, map.near_limit_at(30.0) - 0.8), Vector2(24.0, map.near_limit_at(24.0) - 0.8)]
+	var made: Array[Node3D] = []
+	for spot in spots:
+		var plant: Node3D = map._add_plant(kind, "ㅓ", spot.x, spot.y)
+		var slot: int = map.picking.add_plant("ㅓ", false, spot)
+		check(slot == map.plants.size() - 1, "the extra plant has the same index in the plants and in picking")
+		made.append(plant)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var first := made[0]
+	map.player.global_position = _ground_point(map, 30.0, map.near_limit_at(30.0) - 5.0)
+	map.step(Vector2.ZERO, dt)
+	check(map._tip_plant != first and not map._ring.visible, "away from it there is no name and no ring")
+	map.player.global_position = _ground_point(map, 30.4, map.near_limit_at(30.4))
+	map.update_camera(0.0, true)
+	map.step(Vector2.ZERO, dt)
+	check(map._tip_plant == first and map._tooltip.visible, "walking into reach at the limit flashes its name")
+	check(map._ring.visible and map._ring_plant == first and map._ring.global_position.is_equal_approx(first.global_position), "the reach ring is on it")
+	var screen: Vector2 = map.camera.unproject_position(first.global_position + Vector3(0, 0.5, 0))
+	check(get_viewport().get_visible_rect().has_point(screen), "it is on screen")
+	check(map.plant_at(screen) == first, "hovering it finds it")
+	map._tip_plant = null
+	map._hover_plant = null
+	map.update_hover(Vector2(-10.0, -10.0), 0.0)
+	map.update_hover(screen, 0.0)
+	check(map._tip_plant == first and map._tooltip.visible, "hover shows its name")
+	check(map.pick_nearest() and map.picking.basket == ["ㅓ"] and first.letter == "", "Space picks it at the limit")
+	var second := made[1]
+	map.player.global_position = _ground_point(map, 24.0, map.near_limit_at(24.0) - 4.0)
+	map.update_camera(0.0, true)
+	for i in 5:
+		await get_tree().physics_frame
+	var second_screen: Vector2 = map.camera.unproject_position(second.global_position + Vector3(0, 0.5, 0))
+	check(map.click(second_screen), "a click on it starts the walk")
+	ticks = 0
+	while map.picking.walk_target >= 0 and ticks < 600:
+		map.step(Vector2.ZERO, dt)
+		ticks += 1
+	check(map.picking.basket == ["ㅓ", "ㅓ"] and second.letter == "", "the walk ends in a pick")
+	map.free()
+
+	# Props between the camera and a traveler on the near strip still fade.
+	map = await _fresh_reach_map()
+	var tree: Node3D = null
+	for prop in map.get_node("Props").get_children():
+		if prop.get_child_count() == 2 and prop.position.x > 4.0 and prop.position.x < 60.0 and prop.position.z > old_limit + 2.0 and prop.position.z < map.near_limit_at(prop.position.x) - 2.5:
+			tree = prop
+			break
+	check(tree != null, "there is a tree on the near strip")
+	if tree != null:
+		map.player.global_position = _ground_point(map, tree.position.x, tree.position.z - 2.0)
+		map.update_camera(0.0, true)
+		map.update_prop_fade(0.3)
+		check(is_equal_approx(tree.alpha, map.fade_opacity), "a tree on the near strip fades over a traveler behind it (%.2f)" % tree.alpha)
+		map.player.global_position = _ground_point(map, tree.position.x + 8.0, tree.position.z - 2.0)
+		map.update_prop_fade(0.3)
+		check(is_equal_approx(tree.alpha, 1.0), "and comes back")
+	# No sky from any x at the limit, or in any corner of the walkable area.
+	var failures: Array[String] = []
+	for at_x in range(0, 65, 4):
+		for at_z in [bounds.position.y, 0.0, map.near_limit_at(clampf(at_x, bounds.position.x, bounds.end.x))]:
+			map.player.global_position = _ground_point(map, clampf(at_x, bounds.position.x, bounds.end.x), at_z)
+			map.update_camera(0.0, true)
+			if not _view_over_land(map):
+				failures.append("(%d, %.1f)" % [at_x, at_z])
+	check(failures.is_empty(), "no sky or void from any spot of the walkable area %s" % str(failures))
+	map.free()
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_walk_limit_scene")
