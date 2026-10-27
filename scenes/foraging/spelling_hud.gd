@@ -6,6 +6,9 @@ extends CanvasLayer
 ## blocks show their syllable and are locked; blocks after the current one are
 ## dimmed. All rules live in Spelling; this only draws its state and passes the
 ## drops on. It keeps working while the tree is paused (process mode ALWAYS).
+## The keyboard works here too: the active player's keys move a SpellingCursor
+## over the basket's tiles and put the highlighted letter into the next empty
+## slot, through the same drop() a mouse drag ends in.
 
 ## The view went away (closed, finished or failed). The map unpauses on this.
 signal closed
@@ -14,6 +17,7 @@ signal changed
 
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 const BasketHud := preload("res://scenes/foraging/basket_hud.gd")
+const SpellingCursor := preload("res://scenes/foraging/spelling_cursor.gd")
 const TITLE_FONT_SIZE := 28
 const BG := Color(0.05, 0.07, 0.06, 0.88)
 const SLOT_BG := Color(0.0, 0.0, 0.0, 0.35)
@@ -28,6 +32,9 @@ var slot_gap := 10.0
 var flash_color := Color(0.85, 0.15, 0.15)
 var flash_time := 0.6
 var correct_color := Color(0.3, 0.6, 0.35)
+
+## The keyboard cursor (its active_player has the setter); the basket HUD draws it.
+var cursor
 
 var _spelling
 var _basket_hud: CanvasLayer
@@ -56,17 +63,21 @@ class Slot extends Panel:
 		var letter: String = hud.slot_letter(block, index)
 		if letter == "" or hud.is_flashing():
 			return null
+		hud.mouse_used()
 		set_drag_preview(hud.drag_preview(letter))
 		return {"letter": letter, "from_slot": [block, index]}
 
 
-## `spelling` is the Spelling (its config is foraging.spelling_view).
-func setup(spelling, basket_hud: CanvasLayer) -> void:
+## `spelling` is the Spelling (its config is foraging.spelling_view);
+## `keyboard_config` is foraging.keyboard_select, the look of the highlight.
+func setup(spelling, basket_hud: CanvasLayer, keyboard_config: Dictionary) -> void:
 	layer = 6
 	name = "SpellingHud"
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_spelling = spelling
 	_basket_hud = basket_hud
+	cursor = SpellingCursor.new()
+	basket_hud.set_cursor(cursor, keyboard_config)
 	var config: Dictionary = spelling.config
 	panel_size = _vec(config["panel_size"])
 	panel_top = float(config["panel_top"])
@@ -136,11 +147,47 @@ func tick(delta: float) -> void:
 			_hide()
 
 
-## Esc closes the view.
+## Esc closes the view. While it is open every player key is taken here, so none
+## reaches the map's _unhandled_input (the map is paused as well); only the
+## active player's keys do anything.
 func _input(event: InputEvent) -> void:
-	if is_open() and event.is_action_pressed("ui_cancel"):
+	if not is_open():
+		return
+	if event.is_action_pressed("ui_cancel"):
 		close()
 		get_viewport().set_input_as_handled()
+	elif SpellingCursor.is_player_key(event):
+		get_viewport().set_input_as_handled()
+		press(cursor.action_for(event))
+
+
+## A key of the active player: "left", "right", "up", "down" or "place" ("" does
+## nothing). The first press only shows the cursor on the first tile.
+func press(action: String) -> void:
+	if not is_open() or is_flashing():
+		return
+	var count: int = _basket_hud.letters().size()
+	if cursor.press(action, count) == "place":
+		_place_highlighted()
+
+
+## Puts the highlighted basket letter into the next empty slot of the current
+## block, the way a drop does. Nothing if the block has no empty slot.
+func _place_highlighted() -> void:
+	var slot: int = _spelling.placed.find("")
+	if slot < 0:
+		return
+	var letter: String = _basket_hud.letters()[cursor.index]
+	drop(_spelling.current_block(), slot, {"letter": letter})
+
+
+## The mouse took over (a drag started): the keyboard highlight hides.
+func mouse_used() -> void:
+	cursor.hide_cursor()
+
+
+func _clamp_cursor() -> void:
+	cursor.clamp_to(_basket_hud.letters().size())
 
 
 func is_open() -> bool:
@@ -157,6 +204,7 @@ func show_word(id: String) -> void:
 	_flash_left = 0.0
 	_flash_block = -1
 	_title.text = _spelling.hover_name(id)
+	cursor.hide_cursor()  # back on the first key press
 	_panel.visible = true
 	_basket_hud.drag_enabled = true
 	_basket_hud.take_back_handler = _take_back
@@ -177,6 +225,7 @@ func _hide() -> void:
 	_panel.visible = false
 	_basket_hud.drag_enabled = false
 	_view_id = ""
+	_clamp_cursor()  # letters came back, or went for good
 	changed.emit()
 	closed.emit()
 
@@ -203,6 +252,8 @@ func drop(block: int, slot: int, data: Variant) -> void:
 
 ## Shows what Spelling.place returned.
 func apply(result: Dictionary) -> void:
+	if result["result"] != "rejected":
+		_clamp_cursor()  # the placed letters left the basket
 	match result["result"]:
 		"rejected":
 			return

@@ -163,7 +163,7 @@ func _ready() -> void:
 	basket_hud.setup(picking, config["basket_hud"])
 	spelling_hud = SpellingHud.new()
 	add_child(spelling_hud)
-	spelling_hud.setup(spelling, basket_hud)
+	spelling_hud.setup(spelling, basket_hud, config["keyboard_select"])
 	spelling_hud.changed.connect(_on_spelling_changed)
 	spelling_hud.closed.connect(_on_spelling_closed)
 	damage = Damage.new(config["damage"])

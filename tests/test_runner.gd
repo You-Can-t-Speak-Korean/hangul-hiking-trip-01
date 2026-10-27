@@ -54,11 +54,14 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_credits_real_events",
 	"test_walk_limit_data",
 	"test_walk_limit_scene",
+	"test_keyboard_data",
+	"test_cursor_logic",
+	"test_keyboard_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1065
+const MIN_CHECKS := 1193
 
 
 func check(condition: bool, label: String) -> void:
@@ -136,6 +139,10 @@ func _ready() -> void:
 	print("== Walk limit toward the camera ==")
 	test_walk_limit_data()
 	await test_walk_limit_scene()
+	print("== Keyboard control in the spelling view ==")
+	test_keyboard_data()
+	test_cursor_logic()
+	await test_keyboard_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -3610,3 +3617,342 @@ func test_walk_limit_scene() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_walk_limit_scene")
+
+
+# ---- Keyboard control in the spelling view ----
+
+const SpellingCursorScript := preload("res://scenes/foraging/spelling_cursor.gd")
+
+
+## Counts key presses that reach the unhandled stage, where the map listens.
+class KeyProbe extends Node:
+	var seen := 0
+
+	func _unhandled_input(event: InputEvent) -> void:
+		if event is InputEventKey and event.pressed:
+			seen += 1
+
+
+func test_keyboard_data() -> void:
+	var block: Dictionary = _config().get("keyboard_select", {})
+	check(not block.is_empty(), "hallasan.json has a keyboard_select block")
+	for key in ["outline_color", "halo_color"]:
+		var color = block.get(key)
+		var ok: bool = color is Array and color.size() == 4
+		if ok:
+			for channel in color:
+				ok = ok and channel is float and channel >= 0.0 and channel <= 1.0
+		check(ok, "keyboard_select.%s has four channels in 0..1" % key)
+	for key in ["outline_width", "halo_width", "pulse_speed", "pulse_depth"]:
+		check(block.get(key) is float and float(block[key]) > 0.0, "keyboard_select.%s is a positive number" % key)
+	check(block.get("pulse_depth") is float and float(block["pulse_depth"]) <= 1.0, "keyboard_select.pulse_depth is at most 1")
+	check(block.get("halo_width") is float and block.get("outline_width") is float and float(block["halo_width"]) > float(block["outline_width"]), "the halo is wider than the outline")
+	check(block.get("halo_color") is Array and block.get("outline_color") is Array and float(block["halo_color"][3]) < float(block["outline_color"][3]), "the halo is fainter than the outline")
+	_section_done("test_keyboard_data")
+
+
+func _new_cursor(columns := 7):
+	var cursor = SpellingCursorScript.new()
+	cursor.columns = columns
+	return cursor
+
+
+func test_cursor_logic() -> void:
+	# An empty basket has no cursor and the keys do nothing.
+	var cursor = _new_cursor()
+	for action in ["left", "right", "up", "down", "place"]:
+		check(cursor.press(action, 0) == "" and not cursor.shown and not cursor.is_visible_over(0), "0 tiles: %s does nothing" % action)
+	check(cursor.press("", 5) == "" and not cursor.shown, "no action does nothing")
+	# One tile.
+	cursor = _new_cursor()
+	check(not cursor.shown, "the cursor is hidden at the start")
+	check(cursor.press("right", 1) == "shown" and cursor.shown and cursor.index == 0, "1 tile: the first key press shows the cursor on tile 0")
+	for action in ["left", "right", "up", "down"]:
+		cursor.press(action, 1)
+		check(cursor.index == 0, "1 tile: %s stays on tile 0" % action)
+	check(cursor.press("place", 1) == "place", "1 tile: place is reported")
+	# The first press only shows it, whatever the key.
+	for action in ["left", "up", "down", "place"]:
+		cursor = _new_cursor()
+		check(cursor.press(action, 7) == "shown" and cursor.index == 0, "the first press (%s) only shows the cursor on tile 0" % action)
+	# Seven tiles: one full row. Left/right wrap; up/down have nowhere else to go.
+	cursor = _new_cursor()
+	check(cursor.stepped(0, "left", 7) == 6 and cursor.stepped(6, "right", 7) == 0 and cursor.stepped(3, "right", 7) == 4 and cursor.stepped(3, "left", 7) == 2, "7 tiles: left/right step one and wrap")
+	check(cursor.stepped(3, "up", 7) == 3 and cursor.stepped(3, "down", 7) == 3 and cursor.stepped(0, "up", 7) == 0, "7 tiles: one row, up/down stay put")
+	# Eight tiles: the second row has one tile.
+	check(cursor.stepped(7, "right", 8) == 0 and cursor.stepped(0, "left", 8) == 7, "8 tiles: left/right wrap across both rows")
+	check(cursor.stepped(0, "down", 8) == 7 and cursor.stepped(3, "down", 8) == 7, "8 tiles: down into the short row lands on its last tile")
+	check(cursor.stepped(7, "up", 8) == 0 and cursor.stepped(7, "down", 8) == 0, "8 tiles: from the lone tile, up and down wrap to column 0")
+	check(cursor.stepped(0, "up", 8) == 7 and cursor.stepped(5, "up", 8) == 7, "8 tiles: up from the first row wraps to the last row, clamped to its last tile")
+	# Twenty-eight tiles: four full rows.
+	check(cursor.stepped(3, "down", 28) == 10 and cursor.stepped(10, "up", 28) == 3, "28 tiles: down/up keep the column")
+	check(cursor.stepped(24, "down", 28) == 3 and cursor.stepped(3, "up", 28) == 24, "28 tiles: down from the last row wraps to the first, and back")
+	check(cursor.stepped(27, "right", 28) == 0 and cursor.stepped(0, "left", 28) == 27 and cursor.stepped(6, "right", 28) == 7, "28 tiles: right/left run through the rows and wrap")
+	# Narrower baskets use their own column count.
+	var narrow = _new_cursor(4)
+	check(narrow.stepped(5, "down", 10) == 9 and narrow.stepped(9, "down", 10) == 1 and narrow.stepped(1, "up", 10) == 9, "4 columns, 10 tiles: 3 rows, the last holds 2 (down from 5 -> 9, wrap -> 1)")
+	# A walk through press().
+	cursor = _new_cursor()
+	cursor.press("right", 28)
+	cursor.press("down", 28)
+	cursor.press("right", 28)
+	check(cursor.index == 8, "press: shown at 0, down to 7, right to 8 (%d)" % cursor.index)
+	# Clamping.
+	cursor.index = 27
+	cursor.clamp_to(20)
+	check(cursor.index == 19, "clamping to a smaller basket lands on its last tile")
+	cursor.clamp_to(0)
+	check(cursor.index == 0 and cursor.shown and not cursor.is_visible_over(0) and cursor.is_visible_over(3), "an empty basket clamps to 0 and draws nothing")
+	cursor.hide_cursor()
+	check(not cursor.shown and not cursor.is_visible_over(3), "hiding the cursor hides it")
+
+	# Only the active player's keys act.
+	cursor = _new_cursor()
+	check(cursor.active_player == 1, "player 1 is active by default")
+	var p1 := {KEY_A: "left", KEY_D: "right", KEY_W: "up", KEY_S: "down", KEY_SPACE: "place"}
+	var p2 := {KEY_LEFT: "left", KEY_RIGHT: "right", KEY_UP: "up", KEY_DOWN: "down", KEY_ENTER: "place"}
+	for key in p1:
+		check(cursor.action_for(_key_event(key)) == p1[key], "P1 active: %s is %s" % [OS.get_keycode_string(key), p1[key]])
+	for key in p2:
+		check(cursor.action_for(_key_event(key)) == "", "P1 active: %s does nothing" % OS.get_keycode_string(key))
+	cursor.set_active_player(2)
+	check(cursor.active_player == 2, "the setter switches to player 2")
+	for key in p2:
+		check(cursor.action_for(_key_event(key)) == p2[key], "P2 active: %s is %s" % [OS.get_keycode_string(key), p2[key]])
+	var keypad := _key_event(KEY_KP_ENTER)
+	keypad.location = KEY_LOCATION_RIGHT
+	check(cursor.action_for(keypad) == "place", "P2 active: keypad Enter places")
+	for key in p1:
+		check(cursor.action_for(_key_event(key)) == "", "P2 active: %s does nothing" % OS.get_keycode_string(key))
+	cursor.active_player = 3
+	check(cursor.active_player == 2, "only players 1 and 2 are accepted")
+	cursor.active_player = 1
+	check(cursor.active_player == 1, "assigning the variable goes through the setter")
+	check(cursor.action_for(_key_event(KEY_D, false)) == "", "a key release is nothing")
+	check(cursor.action_for(_key_event(KEY_D, true, true)) == "right", "a held movement key repeats")
+	check(cursor.action_for(_key_event(KEY_SPACE, true, true)) == "", "a held place key does not repeat")
+	check(cursor.action_for(_key_event(KEY_ESCAPE)) == "" and cursor.action_for(_key_event(KEY_Q)) == "", "other keys are nothing")
+	check(SpellingCursorScript.is_player_key(_key_event(KEY_ENTER)) and SpellingCursorScript.is_player_key(_key_event(KEY_A)) and not SpellingCursorScript.is_player_key(_key_event(KEY_Q)), "is_player_key sees both players' keys")
+	_section_done("test_cursor_logic")
+
+
+func _tap(viewport: Viewport, keycode: Key, location := KEY_LOCATION_UNSPECIFIED) -> void:
+	for pressed in [true, false]:
+		var event := _key_event(keycode, pressed)
+		event.location = location
+		viewport.push_input(event)
+
+
+## Taps `key` until the cursor sits on a tile holding `letter`. False after 40 taps.
+func _tap_to_letter(map: Node3D, viewport: Viewport, letter: String, key := KEY_D) -> bool:
+	var cursor = map.spelling_hud.cursor
+	for i in 40:
+		var letters: Array[String] = map.basket_hud.letters()
+		if cursor.shown and cursor.index < letters.size() and letters[cursor.index] == letter:
+			return true
+		_tap(viewport, key)
+	return false
+
+
+## Puts each letter in with the keyboard alone: move to it, then place.
+func _spell_by_keys(map: Node3D, viewport: Viewport, letters: Array) -> bool:
+	for letter in letters:
+		if not _tap_to_letter(map, viewport, letter):
+			return false
+		_tap(viewport, KEY_SPACE)
+	return true
+
+
+func test_keyboard_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var viewport := map.get_viewport()
+	var by_kind := {}
+	for entry in _config()["plants"]["placed"]:
+		by_kind[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for id in _target_words():
+		map.discovery.update([by_kind[id]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	await _settle_layout()
+	var hud = map.spelling_hud
+	var cursor = hud.cursor
+	var total: int = map.picking.basket.size()
+	check(total == 28 and cursor.columns == 7, "28 letters in the basket, 7 per row")
+
+	# While open, no key reaches the map's unhandled-input stage; closed, it does (the control).
+	var probe := KeyProbe.new()
+	probe.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(probe)
+	check(map.open_spelling("ma"), "마 opens")
+	await _settle_layout()
+	check(not cursor.shown, "the cursor is hidden when the view opens")
+	for key in [KEY_SPACE, KEY_ENTER, KEY_D, KEY_RIGHT, KEY_W, KEY_UP]:
+		_tap(viewport, key)
+	check(probe.seen == 0, "no player key reached the unhandled stage while the view was open (%d)" % probe.seen)
+	check(get_tree().paused and not map.can_process() and map.picking.basket.size() == total, "the map stayed paused and nothing was picked")
+	viewport.push_input(_key_event(KEY_ESCAPE))
+	check(not hud.is_open() and not get_tree().paused, "Esc closes 마")
+	cursor.hide_cursor()
+	_tap(viewport, KEY_SPACE)
+	check(probe.seen == 1 and not cursor.shown, "(control) with the view closed the same key reaches the map and the cursor ignores it (%d)" % probe.seen)
+	probe.queue_free()
+	total = map.picking.basket.size()  # the pick above may have taken a letter if one was in reach
+	await _settle_layout()
+
+	# The highlight stays inside the basket at 28 tiles, on 1280x720.
+	if total == 28:
+		check(map.open_spelling("ma"), "마 opens again")
+		await _settle_layout()
+		_tap(viewport, KEY_D)
+		check(cursor.shown and cursor.index == 0 and map.basket_hud.highlight_visible(), "the first key press shows the cursor on tile 0")
+		var bag: Rect2 = map.basket_hud._panel.get_global_rect()
+		var screen := Rect2(Vector2.ZERO, Vector2(1280, 720))
+		var inside := 0
+		var tiles_ok := 0
+		for i in 28:
+			cursor.index = i
+			var tile: Rect2 = map.basket_hud.cursor_tile_rect()
+			var extent: Rect2 = map.basket_hud.cursor_extent()
+			tiles_ok += 1 if tile.size.x > 40.0 and bag.encloses(tile) else 0
+			inside += 1 if bag.encloses(extent) and screen.encloses(extent) else 0
+		check(tiles_ok == 28, "all 28 tiles are inside the bag (%d)" % tiles_ok)
+		check(inside == 28, "the outline and halo stay inside the bag and the screen for all 28 tiles (%d)" % inside)
+		cursor.index = 0
+		viewport.push_input(_key_event(KEY_ESCAPE))
+
+	# A whole word with the keyboard alone: 미나리.
+	var before_basket: Array = map.picking.basket.duplicate()
+	check(map.open_spelling("minari") and not cursor.shown, "미나리 opens with the cursor hidden")
+	await _settle_layout()
+	_tap(viewport, KEY_D)
+	check(cursor.shown and cursor.index == 0, "the first key shows the cursor on tile 0")
+	_tap(viewport, KEY_SPACE)
+	check(map.spelling.placed == [before_basket[0], ""] and map.picking.basket.size() == before_basket.size() - 1, "Space puts the highlighted letter in the first empty slot (initial), leaving the second empty")
+	map.spelling.take_back(0, 0)  # start over cleanly, through the Spelling's own take-back
+	map.basket_hud.refresh(0.0)
+	check(map.spelling.placed == ["", ""], "(setup) the letter went back")
+	var flat := []
+	for pair in _word_letters("미나리"):
+		flat.append_array(pair)
+	var done_ids := []
+	map.spelling.word_completed.connect(func(w: String) -> void: done_ids.append(w))
+	var half: bool = _spell_by_keys(map, viewport, flat.slice(0, 2))
+	check(half and map.spelling.solved("minari") == ["미"] and map.spelling.current_block() == 1, "ㅁ then ㅣ by keys judge 미 right and lock it")
+	check(map.picking.basket.size() == before_basket.size() - 2, "exactly the two letters left the basket")
+	half = _spell_by_keys(map, viewport, [flat[2]])
+	check(half and map.spelling.placed == [flat[2], ""], "ㄴ goes in the initial slot of block 2 (%s)" % str(map.spelling.placed))
+	await _settle_layout()
+	check(cursor.shown and cursor.index < map.picking.basket.size() and map.basket_hud.highlight_visible(), "the cursor is still valid and shown after placements")
+	var rest: bool = _spell_by_keys(map, viewport, flat.slice(3))
+	check(rest and map.spelling.is_done("minari") and done_ids == ["minari"], "the whole word, by keys alone, completes 미나리")
+	check(not hud.is_open() and not get_tree().paused and map.picking.basket.size() == before_basket.size() - 6, "the view closed, the map is running, six letters were used")
+	map.discovery_hud.refresh()
+	check(map.discovery_hud._rows["minari"].find_child("Done", true, false) != null, "the entry is marked done")
+
+	# A wrong block by keys: ㅁ + ㅏ is 마, 머루 wants 머.
+	var failed_seen := _watch_failures(map.spelling)
+	var basket_before: Array = map.picking.basket.duplicate()
+	check(map.open_spelling("meoru"), "머루 opens")
+	await _settle_layout()
+	check(_spell_by_keys(map, viewport, ["ㅁ", "ㅏ"]), "the keys reached ㅁ and ㅏ")
+	check(failed_seen == [["meoru", 0, ["ㅁ", "ㅏ"]]], "syllable_failed fired for exactly the two letters (%s)" % str(failed_seen))
+	check(map.picking.basket.size() == basket_before.size() - 2 and map.picking.basket.count("ㅁ") == basket_before.count("ㅁ") - 1 and map.picking.basket.count("ㅏ") == basket_before.count("ㅏ") - 1, "exactly those two letters are gone from the basket")
+	check(hud.is_open() and hud.is_flashing() and get_tree().paused, "the block flashes while the view is up")
+	check(map.damage.pending == 1 and GameState.heart_units["nestor"] == 10, "damage is queued, not applied yet")
+	var cursor_before: int = cursor.index
+	_tap(viewport, KEY_D)
+	_tap(viewport, KEY_SPACE)
+	check(cursor.index == cursor_before and map.picking.basket.size() == basket_before.size() - 2, "keys during the flash do nothing")
+	hud.tick(1.0)
+	check(not hud.is_open() and not get_tree().paused and GameState.heart_units["nestor"] == 9 and GameState.heart_units["fernanda"] == 9, "after the flash it closes and costs both travelers half a heart, as a mouse failure does")
+	check(not map.spelling.is_done("meoru") and map.spelling.solved("meoru").is_empty(), "nothing is solved")
+
+	# Player 2 only: arrows and Enter act, WASD and Space do not (and the reverse for player 1).
+	check(map.open_spelling("gosari"), "고사리 opens")
+	await _settle_layout()
+	var open_basket: Array = map.picking.basket.duplicate()
+	for key in [KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_ENTER]:
+		_tap(viewport, key)
+	_tap(viewport, KEY_KP_ENTER, KEY_LOCATION_RIGHT)
+	check(not cursor.shown and map.picking.basket == open_basket and map.spelling.placed == ["", ""], "player 1 active: arrows and Enter do nothing")
+	cursor.set_active_player(2)
+	for key in [KEY_A, KEY_D, KEY_W, KEY_S, KEY_SPACE]:
+		_tap(viewport, key)
+	check(not cursor.shown and map.picking.basket == open_basket and map.spelling.placed == ["", ""], "player 2 active: WASD and Space do nothing")
+	_tap(viewport, KEY_RIGHT)
+	check(cursor.shown and cursor.index == 0, "player 2: an arrow shows the cursor on tile 0")
+	_tap(viewport, KEY_RIGHT)
+	check(cursor.index == 1, "player 2: Right moves one tile")
+	_tap(viewport, KEY_DOWN)
+	check(cursor.index == 8, "player 2: Down moves one row")
+	_tap(viewport, KEY_UP)
+	_tap(viewport, KEY_LEFT)
+	check(cursor.index == 0, "player 2: Up and Left move back")
+	_tap(viewport, KEY_LEFT)
+	var count: int = open_basket.size()
+	check(cursor.index == count - 1, "player 2: Left from the first tile wraps to the last")
+	var last: String = open_basket[count - 1]
+	_tap(viewport, KEY_ENTER)
+	check(map.spelling.placed == [last, ""] and map.picking.basket.size() == count - 1, "player 2: Enter places the highlighted letter")
+	check(cursor.index == count - 2, "the cursor clamps to the new last tile (%d)" % cursor.index)
+	_tap(viewport, KEY_SPACE)
+	_tap(viewport, KEY_D)
+	check(map.spelling.placed == [last, ""] and cursor.index == count - 2, "player 2 active: Space and D still do nothing")
+	# A full block takes no more.
+	map.spelling.placed[1] = last
+	var size_full: int = map.picking.basket.size()
+	_tap(viewport, KEY_ENTER)
+	check(map.picking.basket.size() == size_full and map.spelling.placed == [last, last], "Enter with every slot full does nothing")
+	map.spelling.placed[1] = ""
+	# Esc closes, the letter returns, the cursor stays on the basket.
+	viewport.push_input(_key_event(KEY_ESCAPE))
+	check(not hud.is_open() and not get_tree().paused and map.picking.basket.size() == count and cursor.index == count - 2, "Esc closes the view, the letter is back and the cursor is valid")
+	cursor.index = 99
+	check(map.open_spelling("gosari") and not cursor.shown, "reopening hides the cursor until the next key")
+	hud.close()
+	check(cursor.index == count - 1, "closing re-clamps the cursor to the basket (%d)" % cursor.index)
+	cursor.set_active_player(1)
+
+	# Mixing the mouse in: clicking a tile and dragging both hide the highlight.
+	check(map.open_spelling("gobi"), "고비 opens")
+	await _settle_layout()
+	_tap(viewport, KEY_D)
+	check(cursor.shown, "(setup) the cursor is shown")
+	var click_at := _tile_center(map, "ㄱ")
+	viewport.push_input(_click_event(click_at))
+	viewport.push_input(_release_event(click_at))
+	check(not cursor.shown and not map.basket_hud.highlight_visible(), "clicking a tile hides the highlight")
+	_tap(viewport, KEY_D)
+	check(cursor.shown, "(setup) shown again")
+	await _drag(viewport, _tile_center(map, "ㄱ"), _slot_center(map, 0, 0))
+	check(map.spelling.placed == ["ㄱ", ""] and not cursor.shown, "a mouse drag still places the letter, and hides the highlight")
+	await _settle_layout()
+	_tap(viewport, KEY_D)
+	check(cursor.shown and cursor.index == 0 and map.spelling.placed == ["ㄱ", ""], "after the mouse the next key shows the cursor on tile 0 and places nothing")
+	check(_spell_by_keys(map, viewport, ["ㅗ"]) and map.spelling.solved("gobi") == ["고"], "keys finish the block the mouse started: 고")
+	check(hud.is_open(), "고비 is still open for block 2")
+	viewport.push_input(_key_event(KEY_ESCAPE))
+	check(not hud.is_open(), "Esc closes it")
+
+	# Placement uses the mouse drop's own path.
+	var source := FileAccess.get_file_as_string("res://scenes/foraging/spelling_hud.gd")
+	check(source.contains("drop(_spelling.current_block(), slot, {\"letter\": letter})"), "the keyboard placement calls the same drop() a mouse drop ends in")
+	map.free()
+	check(not get_tree().paused, "freeing the map never leaves the tree paused")
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_keyboard_scene")

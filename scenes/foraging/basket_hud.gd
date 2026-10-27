@@ -33,6 +33,12 @@ var drag_enabled := false
 ## spelling slot: {"letter", "from_slot": [block, slot]}.
 var take_back_handler := Callable()
 
+## The spelling view's keyboard cursor (a SpellingCursor) and the look of its
+## highlight (foraging.keyboard_select); set by set_cursor.
+var cursor
+var _keyboard: Dictionary = {}
+var _highlight: Highlight
+
 var _picking
 var _panel: Bag
 var _tiles_box: GridContainer
@@ -52,8 +58,15 @@ class Bag extends MarginContainer:
 		var letter: String = hud.letter_at(get_global_rect().position + at_position)
 		if letter == "":
 			return null
+		hud.mouse_used()
 		set_drag_preview(hud.drag_preview(letter))
 		return {"letter": letter}
+
+	## A click on a tile is mouse use too (the keyboard highlight hides).
+	func _gui_input(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.pressed and hud.drag_enabled \
+				and hud.letter_at(get_global_rect().position + event.position) != "":
+			hud.mouse_used()
 
 	## A letter dragged out of a spelling slot can be dropped back here.
 	func _can_drop_data(_at_position: Vector2, data: Variant) -> bool:
@@ -103,6 +116,15 @@ class Bag extends MarginContainer:
 		rim.corner_radius_top_left = 6
 		rim.corner_radius_top_right = 6
 		draw_style_box(rim, Rect2(body.position, Vector2(size.x, RIM_HEIGHT)))
+
+
+## Draws the keyboard highlight over everything in the bag: a solid red outline
+## around the tile and a wider, fainter halo outside it that pulses slightly.
+class Highlight extends Control:
+	var hud
+
+	func _draw() -> void:
+		hud.draw_highlight(self)
 
 
 ## `config` is foraging.basket_hud.
@@ -162,6 +184,87 @@ func setup(picking, config: Dictionary) -> void:
 		node.resized.connect(_panel.queue_redraw)
 	_tiles_box.item_rect_changed.connect(_panel.queue_redraw)
 	add_child(_panel)
+	_highlight = Highlight.new()  # in screen coordinates, above the bag
+	_highlight.name = "Highlight"
+	_highlight.hud = self
+	_highlight.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_highlight.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(_highlight)
+
+
+## Gives the HUD the spelling view's keyboard cursor and `config`, which is
+## foraging.keyboard_select. The cursor reads the bag's columns.
+func set_cursor(keyboard_cursor, config: Dictionary) -> void:
+	cursor = keyboard_cursor
+	cursor.columns = max_columns
+	_keyboard = config
+
+
+func _process(_delta: float) -> void:
+	if _highlight != null:
+		_highlight.queue_redraw()
+
+
+## The basket's letters in display order (the Picking's own array).
+func letters() -> Array[String]:
+	return _picking.basket
+
+
+## The mouse took over: the keyboard highlight hides.
+func mouse_used() -> void:
+	if cursor != null:
+		cursor.hide_cursor()
+
+
+## True while the highlight is drawn: the spelling view is open, the cursor has
+## appeared and the tiles shown are the basket's.
+func highlight_visible() -> bool:
+	return cursor != null and drag_enabled and cursor.is_visible_over(_picking.basket.size()) \
+			and _tiles_box.get_child_count() == _picking.basket.size() and cursor.index < _tiles_box.get_child_count()
+
+
+## The highlighted tile in screen coordinates (the tile itself, no outline).
+func cursor_tile_rect() -> Rect2:
+	var tile: Control = _tiles_box.get_child(cursor.index)
+	var placed := tile.get_global_transform()
+	var corner := placed * Vector2.ZERO
+	return Rect2(corner, placed * tile.size - corner)
+
+
+## The highlighted tile with its outline and halo, the most the highlight covers.
+func cursor_extent() -> Rect2:
+	return cursor_tile_rect().grow(float(_keyboard["outline_width"]) + float(_keyboard["halo_width"]))
+
+
+## Draws the highlight on `canvas` (the overlay, whose origin is the screen's).
+func draw_highlight(canvas: Control) -> void:
+	if not highlight_visible():
+		return
+	var outline_width := float(_keyboard["outline_width"])
+	var halo_width := float(_keyboard["halo_width"])
+	var wave := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 1000.0 * float(_keyboard["pulse_speed"]) * TAU)
+	var pulse := 1.0 - float(_keyboard["pulse_depth"]) * (1.0 - wave)  # 1 at the peak, 1 - depth at the dip
+	var tile := cursor_tile_rect()
+	var halo := _rgba(_keyboard["halo_color"])
+	var rings := 6
+	for i in rings:  # the halo: rings that thin out and fade going outward
+		var outer := outline_width + halo_width * pulse * (i + 1.0) / rings  # this ring's outer edge
+		var ring := StyleBoxFlat.new()
+		ring.draw_center = false
+		ring.set_border_width_all(ceili(halo_width * pulse / rings) + 1)
+		ring.set_corner_radius_all(8 + int(outer))
+		ring.border_color = Color(halo.r, halo.g, halo.b, halo.a * pulse * pow(1.0 - float(i) / rings, 1.5))
+		canvas.draw_style_box(ring, tile.grow(outer))
+	var outline := StyleBoxFlat.new()
+	outline.draw_center = false
+	outline.set_border_width_all(ceili(outline_width))
+	outline.set_corner_radius_all(8 + int(outline_width))
+	outline.border_color = _rgba(_keyboard["outline_color"])
+	canvas.draw_style_box(outline, tile.grow(outline_width))
+
+
+static func _rgba(channels: Array) -> Color:
+	return Color(channels[0], channels[1], channels[2], channels[3])
 
 
 static func _color(channels: Array) -> Color:

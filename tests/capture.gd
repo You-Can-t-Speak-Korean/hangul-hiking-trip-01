@@ -41,6 +41,10 @@ func _ready() -> void:
 		await _spare_shots()
 		get_tree().quit()
 		return
+	if "--keyboard-only" in OS.get_cmdline_user_args():
+		await _keyboard_shots()
+		get_tree().quit()
+		return
 	if "--credits-only" in OS.get_cmdline_user_args():
 		await _credit_shots()
 		get_tree().quit()
@@ -152,7 +156,77 @@ func _ready() -> void:
 	await _spare_shots()
 	await _credit_shots()
 	await _walk_limit_shots()
+	await _keyboard_shots()
 	get_tree().quit()
+
+
+## The keyboard cursor in the spelling view, driven only by real key events
+## pushed into the viewport: {keyboard_cursor_first_tile,
+## keyboard_cursor_later_row_28_tiles, keyboard_highlight_consonant,
+## keyboard_highlight_vowel, keyboard_half_filled_word}.png. 미나리 is open with
+## all 28 target letters in the basket; the half-filled word is ㅁㅣ (locked) and
+## ㄴ in block 2, each placed with Space.
+func _keyboard_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	var spots := {}
+	for entry in Content.mountain("hallasan")["foraging"]["plants"]["placed"]:
+		spots[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for kind in Content.mountain("hallasan")["foraging"]["plants"]["kinds"]:
+		if kind["kind"] == "target":
+			map.discovery.update([spots[kind["id"]]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	map.open_spelling("minari")
+	await _frames(5)
+	var cursor = map.spelling_hud.cursor
+	_tap(KEY_D)  # the first press shows the cursor on tile 0
+	await _frames(5)
+	_save("keyboard_cursor_first_tile")
+	for i in 3:
+		_tap(KEY_S)
+	await _frames(5)
+	print("later-row cursor on tile %d of %d" % [cursor.index, map.basket_hud.letters().size()])
+	_save("keyboard_cursor_later_row_28_tiles")
+	for want_vowel in [false, true]:
+		for i in 40:
+			if Hangul.is_vowel(map.basket_hud.letters()[cursor.index]) == want_vowel:
+				break
+			_tap(KEY_D)
+		await _frames(5)
+		_save("keyboard_highlight_vowel" if want_vowel else "keyboard_highlight_consonant")
+	for letter in ["ㅁ", "ㅣ", "ㄴ"]:
+		for i in 40:
+			if map.basket_hud.letters()[cursor.index] == letter:
+				break
+			_tap(KEY_D)
+		_tap(KEY_SPACE)
+	await _frames(5)
+	_save("keyboard_half_filled_word")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+
+
+## A real key press and release, pushed through the viewport's input pipeline.
+func _tap(keycode: Key) -> void:
+	for pressed in [true, false]:
+		var event := InputEventKey.new()
+		event.keycode = keycode
+		event.physical_keycode = keycode
+		event.pressed = pressed
+		get_viewport().push_input(event)
 
 
 ## The spelling view on a fresh map, through the real code paths: every target
