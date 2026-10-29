@@ -22,6 +22,8 @@ var credits: Array[String] = []
 ## "action" (what happened to the credit)}.
 var decisions: Array[Dictionary] = []
 
+var _config: Dictionary
+var _plants_data: Dictionary
 var _words: Array[Dictionary] = []  # target kinds in data order: {"id", "name"}
 var _events: Array[Dictionary] = []  # {"type": "completed" or "failed", "word_id"}
 var _seen := {}  # word id -> true, once it has earned (or been refused) its credit
@@ -29,6 +31,8 @@ var _seen := {}  # word id -> true, once it has earned (or been refused) its cre
 
 ## `config` is foraging.spares, `plants_data` is foraging.plants.
 func _init(config: Dictionary, plants_data: Dictionary) -> void:
+	_config = config
+	_plants_data = plants_data
 	cap = int(config["cap"])
 	grow_seconds = float(config["grow_seconds"])
 	for id in config["slots"]:
@@ -36,6 +40,16 @@ func _init(config: Dictionary, plants_data: Dictionary) -> void:
 	for kind in plants_data["kinds"]:
 		if kind["kind"] == "target":
 			_words.append({"id": String(kind["id"]), "name": String(kind["name"])})
+
+
+## A copy with the same credits, spawns and history, to try moves on (Stuck).
+func fork() -> RefCounted:
+	var copy = get_script().new(_config, _plants_data)
+	copy.credits = credits.duplicate()
+	copy.spawned = spawned.duplicate()
+	copy._events = _events.duplicate()
+	copy._seen = _seen.duplicate()
+	return copy
 
 
 ## Notes a completed word. False if it was noted before (or is not a word).
@@ -75,12 +89,29 @@ func word_ids() -> Array[String]:
 func needed(solved: Dictionary) -> Array[String]:
 	var jamo: Array[String] = []
 	for word in _words:
-		var blocks := Hangul.syllable_count(word["name"])
-		for block in range(int(solved.get(word["id"], 0)), blocks):
+		jamo.append_array(jamo_left(word["id"], int(solved.get(word["id"], 0))))
+	return jamo
+
+
+## The jamo of one word's blocks from block `solved` on, left to right.
+func jamo_left(word_id: String, solved: int) -> Array[String]:
+	var jamo: Array[String] = []
+	for word in _words:
+		if word["id"] != word_id:
+			continue
+		for block in range(solved, Hangul.syllable_count(word["name"])):
 			for part in Hangul.decompose(word["name"][block]):
 				if part != "":
 					jamo.append(part)
 	return jamo
+
+
+## The block count of a word (0 for an unknown id).
+func block_count(word_id: String) -> int:
+	for word in _words:
+		if word["id"] == word_id:
+			return Hangul.syllable_count(word["name"])
+	return 0
 
 
 ## Which jamo to spawn. `available` is every jamo the player can still get:

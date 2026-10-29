@@ -17,6 +17,12 @@ const SteamSound := preload("res://scenes/foraging/steam_sound.gd")
 const Damage := preload("res://scenes/foraging/damage.gd")
 const Spares := preload("res://scenes/foraging/spares.gd")
 const HeartsHud := preload("res://scenes/foraging/hearts_hud.gd")
+const Stuck := preload("res://scenes/foraging/stuck.gd")
+const Countdown := preload("res://scenes/foraging/countdown.gd")
+const KillTimeline := preload("res://scenes/foraging/kill_timeline.gd")
+const StuckHud := preload("res://scenes/foraging/stuck_hud.gd")
+const StuckMusic := preload("res://scenes/foraging/stuck_music.gd")
+const Deer := preload("res://scenes/foraging/deer.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -75,9 +81,32 @@ var hearts_hud: CanvasLayer
 ## `plants` too, after the placed ones).
 var spares
 var spare_plants: Array[Node3D] = []
-## Set from the moment both travelers die until the scene is restarted: picks,
-## walks and opening the spelling view are ignored (begin_death_beat sets it).
+## Set from the moment both travelers die (begin_death_beat), or from the last
+## second of the stuck countdown (_tick_stuck), until the scene is restarted:
+## picks, walks, hover names and opening the spelling view are ignored.
 var restarting := false
+## Data: foraging.stuck_music.
+var music_config: Dictionary = {}
+## The stuck countdown (see Stuck, Countdown), its HUD and the verdict of the
+## latest evaluation: {"stuck", "reason", "plan"}. `stuck_log` keeps every
+## evaluation: {"event", "stuck", "reason"}.
+var countdown
+var stuck_hud: CanvasLayer
+var stuck_verdict: Dictionary = {"stuck": false, "reason": "not evaluated", "plan": []}
+var stuck_log: Array[Dictionary] = []
+## The monster (data: foraging.monster): its kill timeline once the countdown ran
+## out, the deer node, and the travelers in the order it hits them.
+var monster: Dictionary = {}
+var kill
+var deer: Node3D
+var kill_order: Array[String] = []
+## The placeholder countdown music: whether it is meant to be playing, how many
+## times it started and stopped, and how many calls reached the audio player
+## (always 0 headless, where nothing is played).
+var music_playing := false
+var music_starts := 0
+var music_stops := 0
+var audio_calls := 0
 ## Placeholder gore and the death beat (data: foraging.gore_placeholder).
 var gore: Dictionary = {}
 var travelers: Dictionary = {}
@@ -99,6 +128,10 @@ var _aim_height := 0.0
 var _beat_left := -1.0  # seconds of death beat left; -1 when none is playing
 var _dim: ColorRect
 var _steam_stream: AudioStreamWAV
+var _music_stream: AudioStreamWAV
+var _music_player: AudioStreamPlayer
+var _music_tween: Tween
+var _deer_start := Vector3.ZERO  # just off the left edge of the screen, where the deer leaps from
 var _tooltip: PanelContainer
 var _tooltip_label: Label
 var _hover_plant: Node3D   # the plant under the mouse
@@ -174,6 +207,12 @@ func _ready() -> void:
 	hearts_hud = HeartsHud.new()
 	add_child(hearts_hud)
 	hearts_hud.setup(config["hearts_hud"])
+	countdown = Countdown.new(config["stuck"])
+	stuck_hud = StuckHud.new()
+	add_child(stuck_hud)
+	stuck_hud.setup(config["stuck"])
+	monster = config["monster"]
+	music_config = config["stuck_music"]
 	GameState.begin_scene("foraging")  # a death restores the hearts held now
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
@@ -192,6 +231,7 @@ func _ready() -> void:
 	for t in travelers.values():  # settle onto the ground before the first frame
 		for i in 10:
 			t.drive(Vector2.ZERO, 1.0 / 60.0)
+	evaluate_stuck("scene start")
 
 
 func _exit_tree() -> void:
@@ -225,8 +265,9 @@ func step(input: Vector2, delta: float) -> void:
 		picking.cancel_walk()  # the keys take over
 	elif picking.walk_target >= 0:
 		walk = _walk_step(delta)
-	player.drive(walk, delta)
-	partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
+	if not restarting:  # the last second, the kill and the death beat: nobody walks
+		player.drive(walk, delta)
+		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
 	update_prop_fade(delta)
 	_grow_spares(delta)
@@ -237,6 +278,7 @@ func step(input: Vector2, delta: float) -> void:
 	discovery.update(spots, delta)
 	discovery_hud.refresh()
 	basket_hud.refresh(delta)
+	_tick_stuck(delta)
 
 
 ## False while restarting or once the travelers are dead (no one can pick).
@@ -260,6 +302,7 @@ func open_spelling(id: String) -> bool:
 	_tip_plant = null  # a hover name would stay frozen on screen
 	_tooltip.visible = false
 	spelling_hud.show_word(id)
+	stuck_hud.refresh(countdown, true)  # the view covers the number
 	get_tree().paused = true
 	return true
 
@@ -274,11 +317,11 @@ func _on_spelling_closed() -> void:
 	get_tree().paused = false
 	_spawn_spares()
 	var result: Dictionary = damage.settle()
-	if result["failures"] == 0:
-		return
-	_play_hits()
-	if result["died"]:
-		begin_death_beat()
+	if result["failures"] > 0:
+		_play_hits()
+		if result["died"]:
+			begin_death_beat()
+	evaluate_stuck("spelling closed")  # after the spares and the damage have settled
 
 
 ## A syllable failed: the damage waits until the view has closed.
@@ -299,10 +342,10 @@ func _play_hits() -> void:
 		delay += float(gore["stagger"])
 
 
-func _hit(id: String) -> void:
+func _hit(id: String, strength: float = 1.0, tint_time: float = -1.0) -> void:
 	var traveler: Node3D = travelers[id]
-	traveler.flash(_gore_color("tint_color"), float(gore["tint_duration"]))
-	_blood(traveler.global_position + Vector3(0.0, Traveler.HEIGHT * 0.65, 0.0))
+	traveler.flash(_gore_color("tint_color"), float(gore["tint_duration"]) if tint_time < 0.0 else tint_time)
+	_blood(traveler.global_position + Vector3(0.0, Traveler.HEIGHT * 0.65, 0.0), strength)
 
 
 func _gore_color(key: String) -> Color:
@@ -310,19 +353,20 @@ func _gore_color(key: String) -> Color:
 	return Color(c[0], c[1], c[2])
 
 
-## A short spray of dark red droplets at a world position.
-func _blood(at: Vector3) -> CPUParticles3D:
+## A short spray of dark red droplets at a world position; `strength` scales
+## how many there are and how hard they fly (1 is the placeholder gore of 6b).
+func _blood(at: Vector3, strength: float = 1.0) -> CPUParticles3D:
 	var spray := CPUParticles3D.new()
 	spray.name = "Blood"
 	spray.one_shot = true
 	spray.emitting = true
-	spray.amount = 40
+	spray.amount = roundi(40.0 * strength)
 	spray.lifetime = float(gore["burst_duration"])
 	spray.explosiveness = 0.9
 	spray.direction = Vector3.UP
 	spray.spread = 75.0
-	spray.initial_velocity_min = 2.0
-	spray.initial_velocity_max = 4.5
+	spray.initial_velocity_min = 2.0 * sqrt(strength)
+	spray.initial_velocity_max = 4.5 * sqrt(strength)
 	spray.gravity = Vector3(0.0, -9.0, 0.0)
 	var drop := SphereMesh.new()
 	drop.radius = 0.07
@@ -347,9 +391,10 @@ func _blood(at: Vector3) -> CPUParticles3D:
 ## opened, the screen dims, and when gore.death_beat seconds have passed the
 ## scene restarts. Does nothing if the beat is already playing.
 func begin_death_beat() -> void:
-	if restarting:
+	if _dim != null:  # the beat has begun (restarting may be set before, by the monster)
 		return
 	restarting = true
+	_abandon_stuck()
 	_beat_left = float(gore["death_beat"])
 	picking.cancel_walk()
 	var layer := CanvasLayer.new()
@@ -385,6 +430,7 @@ func tick_beat(delta: float) -> void:
 ## and the spelling progress. (A map that is not the current scene, as in the
 ## tests, only restores GameState and announces `restarted`.)
 func _restart() -> void:
+	_abandon_stuck()
 	GameState.restart_scene()
 	restarted.emit()
 	if get_tree().current_scene == self:
@@ -487,6 +533,7 @@ func pick_plant(plant: Node3D) -> void:
 	plant.take_letter()
 	if result["result"] == "basket":
 		basket_hud.refresh(0.0)
+		evaluate_stuck("pick")
 	else:
 		_puff(at)
 		_play_tsss()
@@ -797,6 +844,11 @@ func plant_at(screen_pos: Vector2) -> Node3D:
 ## a plant again; moving straight from one plant onto another starts the new
 ## tooltip at once. Only one is up at a time: the latest trigger wins.
 func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
+	if restarting:  # no names in the last second, the kill or the death beat
+		_hover_plant = null
+		_tip_plant = null
+		_tooltip.visible = false
+		return
 	var plant := plant_at(screen_pos)
 	if plant != _hover_plant:
 		_hover_plant = plant
@@ -993,3 +1045,171 @@ func _build_props(props: Dictionary) -> void:
 				prop.add_child(crown)
 		$Props.add_child(prop)
 		_register_prop(prop)
+
+
+## Asks Stuck whether the scene can still be finished and feeds the verdict to the
+## countdown. Called after a pick and after the spelling view has closed (when
+## the spares and the damage have settled); waits while the view is open or
+## spare events are unsettled. Logs the verdict and its reason. Returns the verdict.
+func evaluate_stuck(event: String) -> Dictionary:
+	if spelling_hud.is_open() or spares.has_pending():
+		_log_stuck(event, stuck_verdict, "deferred, the view is open or spares are unsettled")
+		return stuck_verdict
+	var solved := {}
+	for id in spares.word_ids():
+		solved[id] = spelling.solved(id).size()
+	stuck_verdict = Stuck.analyze(spares, solved, _available_letters())
+	_log_stuck(event, stuck_verdict, "")
+	match countdown.verdict(stuck_verdict["stuck"], picks_allowed()):
+		"started":
+			_start_music()
+		"cancelled":
+			_stop_music()
+	stuck_hud.refresh(countdown, spelling_hud.is_open())
+	return stuck_verdict
+
+
+func _log_stuck(event: String, verdict: Dictionary, note: String) -> void:
+	var reason: String = (note + ": " if note != "" else "") + String(verdict["reason"])
+	stuck_log.append({"event": event, "stuck": verdict["stuck"], "reason": reason})
+	if DisplayServer.get_name() != "headless":
+		print("stuck check (%s): %s, %s" % [event, "STUCK" if verdict["stuck"] else "not stuck", reason])
+
+
+## One tick of the countdown and the kill. The clock stands still while the
+## spelling view is open. In its last lockout seconds `restarting` is set (the
+## one place besides begin_death_beat), so picks, walks, hover names and the
+## spelling view are rejected through the checks that flag already has.
+func _tick_stuck(delta: float) -> void:
+	countdown.paused = spelling_hud.is_open()
+	if countdown.tick(delta):
+		_begin_monster()  # the kill's clock starts at the next tick, not with what is left of this one
+	else:
+		if countdown.is_locked() and not restarting:
+			restarting = true
+			picking.cancel_walk()
+		_tick_monster(delta)
+	stuck_hud.refresh(countdown, spelling_hud.is_open())
+
+
+## The countdown reached 0: stop the music, bring in the deer and start the kill.
+func _begin_monster() -> void:
+	if kill != null:
+		return
+	restarting = true
+	picking.cancel_walk()
+	_stop_music()
+	kill = KillTimeline.new(monster)
+	kill.start()
+	for id in GameState.TRAVELERS:
+		kill_order.append(id)
+	kill_order.sort_custom(func(a: String, b: String) -> bool: return travelers[a].global_position.x < travelers[b].global_position.x)
+	var first := _deer_landing(kill_order[0])
+	_deer_start = Vector3(camera.global_position.x - camera_half_width() - float(monster["enter_margin"]), 0.0, first.z)
+	_deer_start.y = terrain.height_at(_deer_start.x)
+	deer = Deer.new()
+	deer.setup(monster)
+	add_child(deer)
+	_place_deer()
+
+
+## The deer's spot beside a traveler: `standoff` metres toward the side it came from.
+func _deer_landing(id: String) -> Vector3:
+	var spot: Vector3 = travelers[id].global_position + Vector3(-float(monster["standoff"]), 0.0, 0.0)
+	spot.y = terrain.height_at(spot.x)
+	return spot
+
+
+## Puts the deer where the kill timeline says: a leap from just off the left edge
+## of the screen onto the first traveler, then a hop to the second.
+func _place_deer() -> void:
+	var first := _deer_landing(kill_order[0])
+	var arc := float(monster["arc_height"])
+	var from := _deer_start
+	var to := first
+	var progress: float = kill.leap_progress()
+	var lift := 4.0 * progress * (1.0 - progress) * arc
+	if kill.time >= kill.hit_time(0):
+		from = first
+		to = _deer_landing(kill_order[1])
+		progress = kill.gap_progress()
+		lift = 4.0 * progress * (1.0 - progress) * arc * 0.5
+	deer.global_position = from.lerp(to, progress) + Vector3(0.0, lift, 0.0)
+	var heading := to - from
+	deer.rotation.y = atan2(-heading.x, -heading.z)
+
+
+func _tick_monster(delta: float) -> void:
+	if kill == null:
+		return
+	for event in kill.tick(delta):
+		match event:
+			"hit_0":
+				_monster_hit(0)
+			"hit_1":
+				_monster_hit(1)
+			"done":
+				begin_death_beat()
+	_place_deer()
+
+
+## The deer hits one traveler: a big blood burst, a red flash, the traveler thrown
+## away and tipped over, and every heart gone (the first hit already kills both,
+## by the both-die rule; the second traveler is brought down with it, in order).
+func _monster_hit(index: int) -> void:
+	var id := kill_order[index]
+	var traveler: Node3D = travelers[id]
+	var away: Vector3 = traveler.global_position - deer.global_position
+	away.y = 0.0
+	away = away.normalized() if away.length() > 0.001 else Vector3.RIGHT
+	_hit(id, float(monster["burst_strength"]), float(monster["tint_seconds"]))
+	var toss: Vector3 = away * float(monster["knock_distance"])
+	# It lands on the ground where it stops, lying on its side (a body's radius up).
+	toss.y = terrain.height_at(traveler.global_position.x + toss.x) + Traveler.RADIUS - traveler.global_position.y
+	traveler.knock_down(toss, float(monster["knock_seconds"]), float(monster["knock_tilt_degrees"]))
+	GameState.damage_units(id, GameState.max_units(), "monster")
+
+
+## The scene is dying or restarting: no countdown, no vignette, no music.
+func _abandon_stuck() -> void:
+	countdown.abandon()
+	_stop_music()
+	stuck_hud.refresh(countdown, spelling_hud.is_open())
+
+
+## Starts the placeholder music: at stuck_music.volume_db, faded in over
+## fade_seconds. The stream (a looping AudioStreamWAV) is built on first use. The
+## calls to the audio player are skipped headless; the counters still count.
+func _start_music() -> void:
+	if music_playing:
+		return
+	music_playing = true
+	music_starts += 1
+	if DisplayServer.get_name() == "headless":
+		return
+	if _music_stream == null:
+		_music_stream = StuckMusic.make(music_config)
+	_music_player = AudioStreamPlayer.new()
+	_music_player.stream = _music_stream
+	_music_player.volume_db = -80.0
+	_music_player.process_mode = Node.PROCESS_MODE_ALWAYS  # it plays under the spelling view
+	add_child(_music_player)
+	_music_player.play()
+	_music_tween = create_tween().set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
+	_music_tween.tween_property(_music_player, "volume_db", float(music_config["volume_db"]), float(music_config["fade_seconds"]))
+	audio_calls += 1
+
+
+func _stop_music() -> void:
+	if not music_playing:
+		return
+	music_playing = false
+	music_stops += 1
+	if _music_player == null:
+		return
+	if _music_tween != null and _music_tween.is_valid():
+		_music_tween.kill()
+	_music_player.stop()
+	_music_player.queue_free()
+	_music_player = null
+	audio_calls += 1

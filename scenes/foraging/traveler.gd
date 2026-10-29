@@ -68,6 +68,15 @@ func flash(tint: Color, time: float) -> void:
 	_flash.tween_property(_body_material, "albedo_color", _body_color, time)
 
 
+## Placeholder kill: the traveler is thrown `away` (a world offset) and falls on
+## its side over `time` seconds. It stays down; nothing drives it afterwards.
+func knock_down(away: Vector3, time: float, tilt_degrees: float = 90.0) -> void:
+	var side := -1.0 if away.x >= 0.0 else 1.0  # falls away from where it is thrown
+	var tween := create_tween().set_parallel(true).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
+	tween.tween_property(self, "global_position", global_position + away, time)
+	tween.tween_property(self, "rotation:z", side * deg_to_rad(tilt_degrees), time)
+
+
 ## The body's current colour, so tests can see the flash.
 func body_color() -> Color:
 	return _body_material.albedo_color

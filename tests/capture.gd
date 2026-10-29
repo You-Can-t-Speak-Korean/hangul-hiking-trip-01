@@ -13,7 +13,8 @@ extends Node
 ## spelling_failure_flash,spelling_entry_done}.png, and the hearts shots
 ## {hearts_full,hearts_4_5,hearts_low,blood_burst,death_beat_dim}.png, and the walk-limit
 ## shots {walk_limit_x0,walk_limit_x32,walk_limit_x64,walk_limit_x32_before}.png. Pass
-## `-- --hearts-only` to take only the hearts shots, `-- --walk-limit-only` for the walk-limit shots.
+## `-- --hearts-only` to take only the hearts shots, `-- --walk-limit-only` for the walk-limit shots,
+## `-- --stuck-only` for the stuck-countdown and monster shots (they play the placeholder music).
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -43,6 +44,10 @@ func _ready() -> void:
 		return
 	if "--keyboard-only" in OS.get_cmdline_user_args():
 		await _keyboard_shots()
+		get_tree().quit()
+		return
+	if "--stuck-only" in OS.get_cmdline_user_args():
+		await _stuck_shots()
 		get_tree().quit()
 		return
 	if "--credits-only" in OS.get_cmdline_user_args():
@@ -707,3 +712,82 @@ func _basket_shots() -> void:
 	await _frames(20)
 	_save("basket_28_tiles")
 	map.free()
+
+
+## The stuck countdown and the monster, through the real paths: every target
+## letter is picked, then syllables are failed through the Spelling and the view
+## until the scene is stuck. The countdown is set to 10 s and 3 s by hand (not
+## waited for), then run out and the deer's kill stepped through.
+## {stuck_40s,stuck_10s,stuck_3s,monster_leap,monster_first_hit,monster_both_down}.png.
+## This plays the placeholder music through the speakers.
+func _stuck_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.discovery.update([Vector2(plant.global_position.x, plant.global_position.z)], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	var failures := 0
+	while not map.stuck_verdict["stuck"] and failures < 8:
+		failures += 1
+		_fail_block(map)
+	print("stuck after %d failures: %s" % [failures, map.stuck_verdict["reason"]])
+	await get_tree().create_timer(1.5).timeout  # the failures' blood settles
+	map.step(Vector2.ZERO, DELTA)
+	await _frames(3)
+	_save("stuck_40s")
+	map.countdown.left = 10.0
+	map.step(Vector2.ZERO, DELTA)
+	await _frames(3)
+	_save("stuck_10s")
+	map.countdown.left = 3.0
+	map.step(Vector2.ZERO, DELTA)
+	await _frames(3)
+	_save("stuck_3s")
+	while map.kill == null:
+		map.step(Vector2.ZERO, 0.05)
+	await _frames(1)
+	while map.kill.time < float(map.monster["leap_seconds"]) * 0.5:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("monster_leap")
+	while map.kill.time < float(map.monster["leap_seconds"]) + 0.12:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("monster_first_hit")
+	while map.kill.time < map.kill.hit_time(1) + 0.3:
+		map.step(Vector2.ZERO, DELTA)
+		await get_tree().process_frame
+	_save("monster_both_down")
+	map.free()
+	GameState.new_hike()
+
+
+## Fails the first unfinished word's block with two basket letters that cannot make it.
+func _fail_block(map: Node3D) -> void:
+	for id in map.spares.word_ids():
+		if map.spelling.is_done(id) or not map.open_spelling(id):
+			continue
+		var basket: Array = map.picking.basket
+		var block: int = map.spelling.current_block()
+		for i in basket.size():
+			for j in basket.size():
+				if i != j and not map.spelling.judge(id, block, [basket[i], basket[j]]):
+					var pair := [basket[i], basket[j]]
+					map.spelling_hud.apply(map.spelling.place(pair[0], block, 0))
+					map.spelling_hud.apply(map.spelling.place(pair[1], block, 1))
+					map.spelling_hud.tick(1.0)
+					return
+		return

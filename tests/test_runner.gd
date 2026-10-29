@@ -57,11 +57,21 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_keyboard_data",
 	"test_cursor_logic",
 	"test_keyboard_scene",
+	"test_stuck_data",
+	"test_stuck_logic",
+	"test_stuck_brute_force",
+	"test_countdown_logic",
+	"test_kill_timeline",
+	"test_stuck_music",
+	"test_stuck_playtest",
+	"test_stuck_scene",
+	"test_stuck_monster",
+	"test_stuck_real_events",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1193
+const MIN_CHECKS := 1388
 
 
 func check(condition: bool, label: String) -> void:
@@ -143,6 +153,17 @@ func _ready() -> void:
 	test_keyboard_data()
 	test_cursor_logic()
 	await test_keyboard_scene()
+	print("== Stuck check, countdown, music and monster ==")
+	test_stuck_data()
+	test_stuck_logic()
+	test_stuck_brute_force()
+	test_countdown_logic()
+	test_kill_timeline()
+	test_stuck_music()
+	await test_stuck_playtest()
+	await test_stuck_scene()
+	await test_stuck_monster()
+	await test_stuck_real_events()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -3956,3 +3977,658 @@ func test_keyboard_scene() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_keyboard_scene")
+
+
+# ---- Stuck countdown, music and monster ----
+
+const StuckScript := preload("res://scenes/foraging/stuck.gd")
+const CountdownScript := preload("res://scenes/foraging/countdown.gd")
+const KillTimelineScript := preload("res://scenes/foraging/kill_timeline.gd")
+const StuckMusicScript := preload("res://scenes/foraging/stuck_music.gd")
+
+
+func _is_color(value) -> bool:
+	if not (value is Array) or value.size() != 3:
+		return false
+	for part in value:
+		if not (part is float or part is int) or float(part) < 0.0 or float(part) > 1.0:
+			return false
+	return true
+
+
+func test_stuck_data() -> void:
+	var stuck: Dictionary = _config()["stuck"]
+	check(float(stuck["countdown_seconds"]) == 40.0, "the countdown is 40 seconds")
+	for key in ["countdown_seconds", "lockout_seconds", "number_alpha", "number_margin", "vignette_strength", "vignette_growth"]:
+		check(stuck.has(key) and float(stuck[key]) > 0.0, "stuck.%s is a positive number" % key)
+	check(float(stuck["lockout_seconds"]) <= 2.0 and float(stuck["number_alpha"]) <= 1.0 and float(stuck["vignette_strength"]) <= 1.0, "the lockout is short, the alpha and vignette strength are at most 1")
+	var music: Dictionary = _config()["stuck_music"]
+	check(float(music["volume_db"]) < 0.0 and float(music["volume_db"]) >= -60.0, "the music volume is a quiet negative dB (%s)" % str(music["volume_db"]))
+	for key in ["fade_seconds", "loop_seconds", "drone_level", "hit_hz", "hit_volume", "hit_interval_min", "hit_interval_max"]:
+		check(music.has(key) and float(music[key]) > 0.0, "stuck_music.%s is a positive number" % key)
+	check(music["drone_hz"] is Array and music["drone_hz"].size() == 2 and float(music["drone_hz"][0]) > 0.0 and float(music["drone_hz"][1]) > 0.0 and music["drone_hz"][0] != music["drone_hz"][1], "two different positive drone frequencies")
+	check(float(music["hit_interval_min"]) < float(music["hit_interval_max"]) and float(music["hit_interval_max"]) < float(music["loop_seconds"]), "the hit gap range is ordered and fits in the loop")
+	var monster: Dictionary = _config()["monster"]
+	check(monster["id"] is String and monster["id"] != "" and monster["name"] is String and monster["name"] != "", "the monster has an id and a name")
+	for key in ["body_color", "antler_color", "eye_color"]:
+		check(_is_color(monster.get(key)), "monster.%s is an r, g, b colour" % key)
+	for key in ["scale", "enter_margin", "arc_height", "standoff", "leap_seconds", "hit_gap_seconds", "aftermath_seconds", "burst_strength", "tint_seconds", "knock_distance", "knock_seconds", "knock_tilt_degrees"]:
+		check(monster.has(key) and float(monster[key]) > 0.0, "monster.%s is a positive number" % key)
+	check(float(monster["leap_seconds"]) <= 0.5 and float(monster["hit_gap_seconds"]) >= 0.2 and float(monster["hit_gap_seconds"]) <= 0.5, "it leaps in within about 0.3 s and hits again about 0.35 s later")
+	check(float(monster["burst_strength"]) > 1.0, "its blood burst is bigger than the placeholder gore's")
+	_section_done("test_stuck_data")
+
+
+func test_stuck_logic() -> void:
+	var sp = _new_spares()
+	var all := _target_letters()
+	var verdict: Dictionary = StuckScript.analyze(sp, {}, all)
+	check(not verdict["stuck"] and verdict["plan"].size() == 6, "a fresh scene is not stuck (%s)" % verdict["reason"])
+	var solved := _solved_words(["ma", "meoru"])
+	verdict = StuckScript.analyze(sp, solved, sp.needed(solved))
+	check(not verdict["stuck"], "with every letter the rest needs, a half-done scene is not stuck")
+	verdict = StuckScript.analyze(sp, {}, _without(all, ["ㅂ"]))
+	check(not verdict["stuck"] and verdict["plan"].size() == 6 and verdict["plan"].find("gobi") > 0, "one jamo gone from a fresh scene is not stuck: another word's credit spawns it (%s)" % verdict["reason"])
+	var five := _solved_words(["ma", "meoru", "minari", "gosari", "simiro"])
+	var only_gobi: Array = _without(sp.needed(five), ["ㅂ"])
+	verdict = StuckScript.analyze(sp, five, only_gobi)
+	check(verdict["stuck"] and verdict["reason"].contains("ㅂ"), "one needed jamo gone with nothing left to cover it is stuck, and the reason names it (%s)" % verdict["reason"])
+	# Two jamo gone, but only one other word left to complete: its single credit covers one.
+	var four := _solved_words(["ma", "meoru", "minari", "simiro"])
+	verdict = StuckScript.analyze(sp, four, _without(sp.needed(four), ["ㅂ", "ㄱ"]))
+	check(verdict["stuck"], "two jamo gone with one word left to earn a spare is stuck (%s)" % verdict["reason"])
+	# A banked credit. One credit cannot pay for a failure's own two lost letters...
+	var one = _banked(["ma"])
+	verdict = StuckScript.analyze(one, five, only_gobi)
+	check(verdict["stuck"], "one banked credit does not rescue it: a failure destroys two needed letters and the credit replaces one")
+	# ...three can: fail ㄱ+ㅗ, and the three credits cover ㄱ, ㅗ and ㅂ.
+	var three = _banked(["ma", "meoru", "minari"])
+	verdict = StuckScript.analyze(three, five, only_gobi)
+	check(not verdict["stuck"] and str(verdict["plan"]).contains("fail"), "three banked credits do (a deliberate failure is part of the plan: %s)" % verdict["reason"])
+	check(StuckScript.analyze(three, five, only_gobi, "none")["stuck"], "but not by completions alone")
+	# Two surplus letters in the pool let one banked credit pay for a failure.
+	verdict = StuckScript.analyze(one, five, only_gobi + ["ㅏ", "ㅏ"])
+	check(not verdict["stuck"] and str(verdict["plan"]).contains("fail ㅏ+ㅏ"), "one banked credit and two surplus letters is not stuck: fail the surplus, spawn ㅂ (%s)" % verdict["reason"])
+	# The cap: with no credit allowed, a completion cannot cover a gap.
+	verdict = StuckScript.analyze(_new_spares(0), {}, _without(all, ["ㅂ"]))
+	check(verdict["stuck"], "with the cap reached no completion earns a credit, so one jamo gone is stuck")
+	# Every word finished, or none unfinished.
+	var done := _solved_words(_target_words().keys())
+	for pool in [[], ["ㅂ"], all]:
+		verdict = StuckScript.analyze(sp, done, pool)
+		check(not verdict["stuck"] and verdict["reason"] == "no unfinished word", "a scene with every word finished is never stuck (pool %d letters)" % pool.size())
+	# A partly judged word counts only its unjudged blocks.
+	var half := _solved_words(["ma", "minari", "gosari", "gobi", "simiro"])
+	half["meoru"] = 1
+	verdict = StuckScript.analyze(sp, half, ["ㄹ", "ㅜ"])
+	check(not verdict["stuck"], "a half-judged word needs only its remaining blocks' letters")
+	verdict = StuckScript.analyze(sp, half, ["ㄹ"])
+	check(verdict["stuck"], "and is stuck without them")
+	# The search leaves the live Spares alone.
+	var before := [sp.credits.size(), sp.spawned.size(), sp.decisions.size()]
+	StuckScript.analyze(sp, {}, _without(all, ["ㅂ", "ㄱ"]))
+	check([sp.credits.size(), sp.spawned.size(), sp.decisions.size()] == before, "analysing changes nothing in the live Spares")
+	_section_done("test_stuck_logic")
+
+
+## Every state reachable by completing words and failing syllables, from a fresh
+## scene of these words, with the invariants and the verdicts compared.
+func _explore_states(words: Array, cap: int) -> Dictionary:
+	var kinds := []
+	var slots := {}
+	for word in words:
+		kinds.append({"id": word[0], "name": word[1], "kind": "target"})
+		slots[word[0]] = [0.0, 0.0]
+	var sp0 = SparesScript.new({"cap": cap, "grow_seconds": 0.5, "slots": slots}, {"kinds": kinds})
+	var pool0: Array = sp0.needed({})
+	var frontier := [{"spares": sp0, "solved": {}, "pool": pool0}]
+	var seen := {StuckScript.state_key(sp0, {}, pool0): true}
+	var report := {"states": 0, "stuck": 0, "mismatches": [], "invariant_breaks": 0, "inconclusive": 0}
+	while not frontier.is_empty():
+		var state: Dictionary = frontier.pop_back()
+		report["states"] += 1
+		var sp = state["spares"]
+		var pool: Array = state["pool"]
+		# The invariants: no jamo in the pool beyond what is needed; a credit means no shortage.
+		var counts := {}
+		for jamo in sp.needed(state["solved"]):
+			counts[jamo] = int(counts.get(jamo, 0)) + 1
+		for jamo in pool:
+			counts[jamo] = int(counts.get(jamo, 0)) - 1
+		for jamo in counts:
+			if int(counts[jamo]) < 0:
+				report["invariant_breaks"] += 1
+		if not sp.credits.is_empty() and sp.choose(state["solved"], pool)["letter"] != "":
+			report["invariant_breaks"] += 1
+		var verdicts := {}
+		for mode in ["none", "useful", "all"]:
+			verdicts[mode] = StuckScript.analyze(sp, state["solved"], pool, mode)
+			if str(verdicts[mode]["reason"]).begins_with("search budget"):
+				report["inconclusive"] += 1
+		if verdicts["none"]["stuck"] != verdicts["useful"]["stuck"] or verdicts["none"]["stuck"] != verdicts["all"]["stuck"]:
+			report["mismatches"].append(str(pool))
+		if verdicts["none"]["stuck"]:
+			report["stuck"] += 1
+		for move in StuckScript.moves(sp, state["solved"], pool, "all"):
+			var key := StuckScript.state_key(move["spares"], move["solved"], move["pool"])
+			if not seen.has(key):
+				seen[key] = true
+				frontier.append(move)
+	return report
+
+
+func test_stuck_brute_force() -> void:
+	var cases := [
+		[[["a", "마"], ["b", "머"]], 6],
+		[[["a", "마"], ["b", "머"]], 1],
+		[[["a", "마"], ["b", "미"], ["c", "머"]], 6],
+		[[["a", "마"], ["b", "미"], ["c", "머"]], 2],
+		[[["a", "마"], ["b", "미나"]], 6],
+	]
+	var total := 0
+	var total_stuck := 0
+	for case in cases:
+		var report := _explore_states(case[0], case[1])
+		total += report["states"]
+		total_stuck += report["stuck"]
+		check(report["mismatches"].is_empty(), "failing on purpose never changes the verdict in a reachable state (words %s, cap %d: %d states, %d stuck, first mismatch %s)" % [str(case[0].map(func(w): return w[1])), case[1], report["states"], report["stuck"], str(report["mismatches"].slice(0, 1))])
+		check(report["invariant_breaks"] == 0, "no reachable state holds a surplus jamo or a credit beside a shortage (%d breaks)" % report["invariant_breaks"])
+		check(report["inconclusive"] == 0, "no search ran out of budget")
+	print("  brute force: %d reachable states over %d cases, %d stuck, no verdict changed by failing on purpose" % [total, cases.size(), total_stuck])
+	check(total > 100 and total_stuck > 0, "the brute force covered %d states, %d of them stuck" % [total, total_stuck])
+	# The assumption is false outside the reachable states: three credits, one jamo short.
+	var sp = _banked(["ma", "meoru", "minari"])
+	var five := _solved_words(["ma", "meoru", "minari", "gosari", "simiro"])
+	var pool: Array = _without(sp.needed(five), ["ㅂ"])
+	check(StuckScript.analyze(sp, five, pool, "none")["stuck"] and not StuckScript.analyze(sp, five, pool, "useful")["stuck"], "counterexample: a failure helps with three banked credits and one jamo short")
+	check(not sp.credits.is_empty() and sp.choose(five, pool)["letter"] != "", "and that state has a credit beside a shortage, which the game never reaches")
+	_section_done("test_stuck_brute_force")
+
+
+func test_countdown_logic() -> void:
+	var config: Dictionary = _config()["stuck"]
+	var clock = CountdownScript.new(config)
+	check(not clock.running and clock.shown_seconds() == 0 and clock.fraction() == 0.0, "a new clock is not running")
+	check(clock.verdict(false) == "" and not clock.running, "a verdict that is not stuck starts nothing")
+	check(clock.verdict(true, false) == "" and not clock.running and clock.starts == 0, "a stuck verdict while the scene is dying starts nothing")
+	check(clock.verdict(true) == "started" and clock.running and clock.left == 40.0 and clock.starts == 1 and clock.shown_seconds() == 40, "the first stuck verdict starts 40 s")
+	check(clock.verdict(true) == "" and clock.verdict(true) == "" and clock.starts == 1 and clock.left == 40.0, "more stuck verdicts in the same episode start nothing")
+	check(not clock.tick(10.0) and clock.left == 30.0 and clock.shown_seconds() == 30, "ticking counts down")
+	clock.paused = true
+	clock.tick(5.0)
+	check(clock.left == 30.0, "a paused clock stands still")
+	clock.paused = false
+	clock.tick(0.4)
+	check(clock.shown_seconds() == 30 and is_equal_approx(clock.fraction(), 1.0 - 29.6 / 40.0), "the number shows whole seconds, rounded up")
+	check(clock.verdict(false) == "cancelled" and not clock.running and clock.shown_seconds() == 0, "a verdict that is not stuck cancels it")
+	check(clock.verdict(true) == "started" and clock.starts == 2 and clock.left == 40.0, "the next episode starts a new run")
+	clock.tick(38.5)
+	check(is_equal_approx(clock.left, 1.5) and not clock.is_locked(), "1.5 s left is not locked")
+	clock.tick(0.5)
+	check(clock.is_locked() and clock.verdict(false) == "" and clock.running, "in the last second a verdict that is not stuck can no longer cancel")
+	check(clock.tick(1.0) and clock.expired and not clock.running, "it expires at 0, and says so")
+	check(not clock.tick(1.0) and clock.verdict(true) == "" and clock.starts == 2, "once only: later ticks and verdicts start nothing")
+	var other = CountdownScript.new(config)
+	other.verdict(true)
+	other.abandon()
+	check(not other.running and other.verdict(true) == "" and other.starts == 1, "an abandoned run stays abandoned for the episode")
+	var a: float = CountdownScript.vignette_alpha(0.0, 0.8, 1.5)
+	var b: float = CountdownScript.vignette_alpha(0.5, 0.8, 1.5)
+	var c: float = CountdownScript.vignette_alpha(1.0, 0.8, 1.5)
+	check(a == 0.0 and b > a and c > b and is_equal_approx(c, 0.8) and b < 0.4, "the vignette starts clear, grows slowly and reaches its strength at 0")
+	_section_done("test_countdown_logic")
+
+
+func test_kill_timeline() -> void:
+	var config: Dictionary = _config()["monster"]
+	var line = KillTimelineScript.new(config)
+	check(line.tick(1.0).is_empty() and not line.started, "nothing happens before it starts")
+	check(line.start() and not line.start(), "it starts once")
+	var events: Array = []
+	var leap := float(config["leap_seconds"])
+	var gap := float(config["hit_gap_seconds"])
+	events.append_array(line.tick(leap - 0.01))
+	check(events.is_empty() and line.leap_progress() < 1.0, "no hit before the leap has landed")
+	events.append_array(line.tick(0.02))
+	check(events == ["hit_0"] and is_equal_approx(line.leap_progress(), 1.0), "the first hit lands with the leap")
+	events.append_array(line.tick(gap - 0.03))
+	check(events == ["hit_0"] and line.gap_progress() < 1.0, "the second hit waits for the gap")
+	events.append_array(line.tick(0.02))
+	check(events == ["hit_0", "hit_1"], "the second hit follows, in order")
+	events.append_array(line.tick(float(config["aftermath_seconds"]) + 0.1))
+	check(events == ["hit_0", "hit_1", "done"] and line.is_done(), "then it is done")
+	check(line.tick(5.0).is_empty(), "and nothing fires twice")
+	var fast = KillTimelineScript.new(config)
+	fast.start()
+	check(fast.tick(10.0) == ["hit_0", "hit_1", "done"], "one long tick still fires every event once, in order")
+	_section_done("test_kill_timeline")
+
+
+func test_stuck_music() -> void:
+	var config: Dictionary = _config()["stuck_music"]
+	var stream: AudioStreamWAV = StuckMusicScript.make(config)
+	var count: int = StuckMusicScript.sample_count(config)
+	check(count == roundi(float(config["loop_seconds"]) * StuckMusicScript.MIX_RATE), "the loop has loop_seconds of samples (%d)" % count)
+	check(stream.format == AudioStreamWAV.FORMAT_16_BITS and not stream.stereo and stream.mix_rate == StuckMusicScript.MIX_RATE and stream.data.size() == count * 2, "16-bit mono at the mix rate, one loop long")
+	check(stream.loop_mode == AudioStreamWAV.LOOP_FORWARD and stream.loop_begin == 0 and stream.loop_end == count, "it loops forward over the whole length")
+	var peak := 0
+	for i in count:
+		peak = maxi(peak, absi(stream.data.decode_s16(i * 2)))
+	check(peak > 3000 and peak <= 32767 * 0.81, "it is not silent and does not clip (peak %d)" % peak)
+	var seam := absi(stream.data.decode_s16(0) - stream.data.decode_s16((count - 1) * 2))
+	check(seam < 1500, "the loop's end meets its start without a jump (%d of 32767)" % seam)
+	var loop := float(config["loop_seconds"])
+	for hz in config["drone_hz"]:
+		var snapped: float = StuckMusicScript.snapped_hz(float(hz), loop)
+		check(is_equal_approx(snapped * loop, roundf(snapped * loop)) and absf(snapped - float(hz)) < 1.0 / loop, "drone %.1f Hz is snapped to %.4f, a whole number of cycles per loop" % [float(hz), snapped])
+	var times: Array[float] = StuckMusicScript.hit_times(config)
+	var gaps_ok := true
+	for i in range(1, times.size()):
+		gaps_ok = gaps_ok and times[i] - times[i - 1] >= float(config["hit_interval_min"]) - 0.001 and times[i] - times[i - 1] <= float(config["hit_interval_max"]) + 0.001
+	check(times.size() >= 2 and times.size() <= 8 and gaps_ok and times[times.size() - 1] < loop, "a few sparse hits (%d) with gaps inside the data's range" % times.size())
+	var distinct := {}
+	for i in range(1, times.size()):
+		distinct[snappedf(times[i] - times[i - 1], 0.01)] = true
+	check(distinct.size() >= 2 and times == StuckMusicScript.hit_times(config), "the gaps are irregular, and the same every run")
+	check(StuckMusicScript.make(config).data == stream.data, "the stream is the same every time")
+	_section_done("test_stuck_music")
+
+
+## A scene with all six words found and, unless `pick_all` is false, every target
+## letter in the basket. `units` sets the hearts the scene starts with.
+func _stuck_map(units := {}, pick_all := true) -> Node3D:
+	GameState.new_hike()
+	for id in units:
+		GameState.heart_units[id] = units[id]
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)  # the tests tick the clock, the kill and the beat themselves
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var by_kind := {}
+	for entry in _placed():
+		by_kind[entry["kind"]] = Vector2(float(entry["x"]), float(entry["z"]))
+	for id in _target_words():
+		map.discovery.update([by_kind[id]], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	if pick_all:
+		for plant in map.plants:
+			if plant.kind == "target":
+				map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	return map
+
+
+## Fails one syllable of the first unfinished word through the real Spelling and
+## view, with the first two basket letters that cannot make the block. Returns
+## the two letters destroyed, or [] if nothing could be done.
+func _fail_block(map: Node3D) -> Array:
+	var id := ""
+	for word_id in map.spares.word_ids():
+		if not map.spelling.is_done(word_id):
+			id = word_id
+			break
+	if id == "" or not map.open_spelling(id):
+		return []
+	var basket: Array = map.picking.basket
+	var block: int = map.spelling.current_block()
+	for i in basket.size():
+		for j in basket.size():
+			if i != j and not map.spelling.judge(id, block, [basket[i], basket[j]]):
+				var pair := [basket[i], basket[j]]
+				map.spelling_hud.apply(map.spelling.place(pair[0], block, 0))
+				map.spelling_hud.apply(map.spelling.place(pair[1], block, 1))
+				map.spelling_hud.tick(1.0)  # the failure flash ends and the view closes
+				return pair
+	map.spelling_hud.close()
+	return []
+
+
+## Fails syllables until the scene is stuck (at most `limit` times). Returns how many it took, or -1.
+func _fail_until_stuck(map: Node3D, limit := 8) -> int:
+	for n in range(1, limit + 1):
+		if _fail_block(map).is_empty():
+			return -1
+		if map.stuck_verdict["stuck"]:
+			return n
+	return -1
+
+
+func _run(map: Node3D, seconds: float, delta := 1.0 / 60.0) -> void:
+	var ticks := roundi(seconds / delta)
+	for i in ticks:
+		map.step(Vector2.ZERO, delta)
+
+
+func test_stuck_playtest() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map()
+	print("  scripted playtest: run out of letters")
+	print("    start: not stuck? ", map.stuck_log[map.stuck_log.size() - 1])
+	check(not map.stuck_verdict["stuck"] and not map.countdown.running, "after picking everything the scene is not stuck")
+	var steps := 0
+	var stuck_at := -1
+	while steps < 8 and stuck_at < 0:
+		steps += 1
+		var gone := _fail_block(map)
+		var last: Dictionary = map.stuck_log[map.stuck_log.size() - 1]
+		print("    failure %d destroys %s: %s, %s | hearts %d/%d, basket %d letters, credits %d, countdown %s" % [steps, str(gone), "STUCK" if last["stuck"] else "not stuck", last["reason"], GameState.heart_units["nestor"], GameState.heart_units["fernanda"], map.picking.basket.size(), map.spares.credits.size(), "running" if map.countdown.running else "off"])
+		check(not gone.is_empty() and last["event"] == "spelling closed", "failure %d ends with a verdict logged after the view closed" % steps)
+		if last["stuck"]:
+			stuck_at = steps
+	check(stuck_at > 0, "running out of letters ends stuck (after %d failures)" % stuck_at)
+	check(GameState.is_alive("nestor") and GameState.is_alive("fernanda") and not map.restarting, "and both travelers are still alive")
+	check(map.countdown.running and map.countdown.left == 40.0 and map.countdown.starts == 1, "the countdown started at 40 s, once")
+	check(map.music_playing and map.music_starts == 1, "and the music with it")
+	check(map.stuck_log.all(func(e): return e.has("event") and e.has("stuck") and e.has("reason") and e["reason"] != ""), "every evaluation was logged with its event, verdict and reason")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_stuck_playtest")
+
+
+func test_stuck_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map({}, false)
+	var screen: Vector2 = map.get_viewport().get_visible_rect().size
+	var hud = map.stuck_hud
+	# A fresh scene: nothing running; a pick is a logged event.
+	check(map.stuck_log.size() == 1 and map.stuck_log[0]["event"] == "scene start" and not map.stuck_log[0]["stuck"], "the scene start is evaluated and logged: not stuck")
+	check(not map.countdown.running and not map.music_playing and map.countdown.starts == 0, "a fresh scene has no countdown and no music")
+	check(not hud._number.visible and not hud._vignette.visible, "and no number or vignette")
+	var target_plant: Node3D = null
+	for plant in map.plants:
+		if plant.kind == "target":
+			target_plant = plant
+			break
+	map.pick_plant(target_plant)
+	check(map.stuck_log[map.stuck_log.size() - 1]["event"] == "pick" and not map.stuck_verdict["stuck"], "a pick is evaluated and logged: not stuck")
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	# Decoy letters never count.
+	var decoy_letters := 0
+	for plant in map.plants:
+		if plant.kind != "target" and plant.letter != "":
+			decoy_letters += 1
+	check(decoy_letters > 0 and map._available_letters().size() == 28 and map._available_letters().size() == map.picking.basket.size(), "decoy letters are on the map (%d) but never in the pool: 28 target letters" % decoy_letters)
+
+	# Fail syllables until stuck: the countdown starts at 40 s, once.
+	var failures := _fail_until_stuck(map)
+	check(failures > 0 and map.stuck_verdict["stuck"], "failing syllables ends stuck (after %d)" % failures)
+	check(map.countdown.running and map.countdown.left == 40.0 and map.countdown.starts == 1 and not map.restarting, "the countdown starts at 40 s, once, and the scene is not restarting")
+	check(map.music_playing and map.music_starts == 1 and map.music_stops == 0, "the music starts with it")
+	check(map.audio_calls == 0 and map._music_player == null and map._music_stream == null, "headless: no call reaches the audio player and no stream is built")
+	await _settle_layout()
+	check(hud._number.visible and hud._number.text == "40" and hud._vignette.visible and hud._vignette.modulate.a == 0.0, "the number reads 40 and the vignette is still clear")
+	map.evaluate_stuck("again")
+	map.evaluate_stuck("and again")
+	check(map.countdown.starts == 1 and map.music_starts == 1 and map.countdown.left == 40.0, "more stuck verdicts in the same episode start nothing new")
+
+	# It counts down in step(), and the vignette grows.
+	var stuck_cfg: Dictionary = _config()["stuck"]
+	_run(map, 10.0)
+	check(absf(map.countdown.left - 30.0) < 0.05 and hud._number.text == "30", "10 s later it reads 30 (%s)" % hud._number.text)
+	var expected: float = CountdownScript.vignette_alpha(0.25, float(stuck_cfg["vignette_strength"]), float(stuck_cfg["vignette_growth"]))
+	check(absf(hud._vignette.modulate.a - expected) < 0.01 and hud._vignette.modulate.a > 0.0, "the vignette has grown to %.3f" % hud._vignette.modulate.a)
+	_run(map, 20.0, 0.05)
+	var darker: float = hud._vignette.modulate.a
+	check(absf(map.countdown.left - 10.0) < 0.1 and darker > expected, "at 10 s it is darker (%.3f)" % darker)
+
+	# HUD layout at 1280x720.
+	var number: Rect2 = hud.number_rect()
+	check(Rect2(Vector2.ZERO, screen).encloses(number), "the number is inside the viewport (%s)" % str(number))
+	check(absf(number.get_center().x - screen.x / 2.0) < 2.0 and number.position.y < 40.0, "it sits at the top centre")
+	check(number.size.y >= 24.0 and hud._number.get_theme_font_size("font_size") >= 28 and hud._number.get_theme_color("font_color").a < 0.5, "it is large enough to read and faint")
+	map.discovery_hud.refresh()
+	await _settle_layout()
+	var rivals := {
+		"the heart readout": map.hearts_hud.panel_rect(),
+		"the discovery list": map.discovery_hud.get_child(0).get_global_rect(),
+		"the basket": map.basket_hud._panel.get_global_rect(),
+	}
+	for label in rivals:
+		check(not number.intersects(rivals[label]), "the number does not overlap %s" % label)
+	check(hud.vignette_rect() == Rect2(Vector2.ZERO, screen), "the vignette covers exactly the viewport")
+	check(map.open_spelling("ma"), "the spelling view opens while the countdown runs")
+	await _settle_layout()
+	check(map.spelling_hud._panel.get_global_rect().intersects(number), "(the spelling view does cover the number's spot)")
+	check(map.countdown.running and not hud._number.visible and hud._vignette.visible, "so the number hides while the view is open, and the vignette stays")
+	# It stands still while the view is open, and the verdict is re-evaluated on close.
+	var left_open: float = map.countdown.left
+	var log_size: int = map.stuck_log.size()
+	map.step(Vector2.ZERO, 1.0)
+	map.step(Vector2.ZERO, 1.0)
+	check(map.countdown.paused and map.countdown.left == left_open, "the clock stands still while the spelling view is open")
+	map.spelling_hud.close()
+	check(hud._number.visible, "the number is back once the view closes")
+	check(map.stuck_log.size() == log_size + 1 and map.stuck_log[map.stuck_log.size() - 1]["event"] == "spelling closed", "closing the view re-evaluates the verdict")
+	map.step(Vector2.ZERO, 1.0)
+	check(not map.countdown.paused and is_equal_approx(map.countdown.left, left_open - 1.0), "and the clock runs again")
+
+	# Mouse filters, and a real click through the vignette.
+	check(hud._vignette.mouse_filter == Control.MOUSE_FILTER_IGNORE and hud._number.mouse_filter == Control.MOUSE_FILTER_IGNORE, "neither the number nor the vignette takes the mouse")
+	check(hud is CanvasLayer and hud.layer < map.hearts_hud.layer and hud.layer < map.basket_hud.layer and hud.layer < map.spelling_hud.layer, "the layer sits under the other HUDs")
+	map.picking.basket.clear()  # (the clicked plant must be a plant with a letter: decoys qualify)
+	var decoy: Node3D = null
+	for plant in map.plants:
+		if plant.kind != "target" and plant.letter != "":
+			decoy = plant
+			break
+	map.player.global_position = _ground_point(map, decoy.global_position.x, decoy.global_position.z + 2.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var middle := Rect2(300.0, 150.0, 680.0, 400.0)
+	var clickable := _visible_plant(map, func(p): return p.kind != "target" and middle.has_point(map.camera.unproject_position(p.global_position + Vector3(0, 0.5, 0))))
+	check(not clickable.is_empty(), "a plant is on screen under the vignette")
+	if not clickable.is_empty():
+		var sp: Vector2 = clickable["screen"]
+		map.get_viewport().push_input(_click_event(sp))
+		check(map.picking.walk_target >= 0, "a real click on it reaches the map and starts a walk")
+		map.get_viewport().push_input(_release_event(sp))
+		map.picking.cancel_walk()
+
+	# A verdict that is not stuck cancels it, and the next stuck verdict starts a new run.
+	var kept: Array = map.picking.basket.duplicate()
+	var solved := {}
+	for id in map.spares.word_ids():
+		solved[id] = map.spelling.solved(id).size()
+	map.picking.basket.append_array(map.spares.needed(solved))
+	map.evaluate_stuck("letters found")
+	check(not map.stuck_verdict["stuck"] and not map.countdown.running and not map.music_playing and map.music_stops == 1, "letters back: the countdown is cancelled and the music stops")
+	check(not hud._number.visible and not hud._vignette.visible, "the number and vignette go")
+	map.picking.basket.clear()
+	map.picking.basket.append_array(kept)
+	map.evaluate_stuck("letters lost again")
+	check(map.countdown.running and map.countdown.left == 40.0 and map.countdown.starts == 2 and map.music_starts == 2, "stuck again: a new episode, a new run at 40 s")
+
+	# Nothing starts while a traveler is dead.
+	map.free()
+	get_tree().paused = false
+	map = await _stuck_map()
+	GameState.damage_units("nestor", 99, "test")
+	map.picking.basket.clear()
+	var verdict: Dictionary = map.evaluate_stuck("test")
+	check(verdict["stuck"] and not map.countdown.running and map.countdown.starts == 0 and not map.music_playing, "stuck with a traveler dead: no countdown, no music")
+	map.free()
+	# Nothing starts while the scene is restarting, and a run is abandoned when the beat begins.
+	map = await _stuck_map()
+	map.begin_death_beat()
+	map.picking.basket.clear()
+	map.evaluate_stuck("test")
+	check(map.stuck_verdict["stuck"] and not map.countdown.running and map.countdown.starts == 0, "stuck while restarting: no countdown")
+	map.free()
+	map = await _stuck_map()
+	check(_fail_until_stuck(map) > 0 and map.countdown.running and map.music_playing, "(a second scene is stuck with a countdown running)")
+	map.begin_death_beat()
+	check(not map.countdown.running and not map.music_playing and map.music_stops == 1 and not map.stuck_hud._number.visible and not map.stuck_hud._vignette.visible, "a death beat abandons the countdown, the music, the number and the vignette")
+	_run(map, 3.0)
+	check(map.kill == null and map.deer == null, "and no monster comes")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_stuck_scene")
+
+
+func test_stuck_monster() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var original_scene := get_tree().current_scene
+	var deaths: Array = []
+	var on_death := func(dead: String, survivor: String, injury: String) -> void: deaths.append([dead, survivor, injury])
+	var gore: Dictionary = _config()["gore_placeholder"]
+	var monster: Dictionary = _config()["monster"]
+	var map: Node3D = await _stuck_map({"nestor": 9, "fernanda": 7})
+	remove_child(map)  # the real reload path runs for the current scene
+	get_tree().root.add_child(map)
+	get_tree().current_scene = map
+	await get_tree().physics_frame
+	var beats := []
+	var restarts := []
+	map.death_beat_started.connect(func(): beats.append(true))
+	map.restarted.connect(func(): restarts.append(true))
+	check(_fail_until_stuck(map) > 0 and map.countdown.running, "the scene is stuck with the countdown running")
+	var snapshot_n := 9
+	var snapshot_f := 7
+	GameState.travelers_died.connect(on_death)
+	# Count down to the last seconds in steps.
+	_run(map, 30.0, 0.05)
+	check(absf(map.countdown.left - 10.0) < 0.1 and not map.restarting, "at 10 s left the scene still plays")
+	_run(map, 8.5, 0.05)
+	check(absf(map.countdown.left - 1.5) < 0.1 and not map.restarting and not map.countdown.is_locked(), "at 1.5 s left it is not locked yet")
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	var hover_probe := Vector2(640.0, 360.0)
+	var before_x: float = map.player.global_position.x
+	var partner_x: float = map.partner.global_position.x
+	_run(map, 0.55, 0.05)
+	check(map.countdown.is_locked() and map.restarting and map.music_playing and map.kill == null, "inside the last second: locked, restarting set, music still on, no monster yet (%.2f s left)" % map.countdown.left)
+	# Inputs are rejected in the last second.
+	check(not map.picks_allowed() and not map.pick_nearest() and not map.click(hover_probe) and not map.open_spelling("ma") and not map.spelling.is_open(), "Space, a click and the spelling view are rejected")
+	map.step(Vector2(1.0, 0.0), 0.2)
+	check(is_equal_approx(map.player.global_position.x, before_x) and is_equal_approx(map.partner.global_position.x, partner_x), "walking is rejected: neither traveler moves")
+	map.update_hover(hover_probe, 0.0)
+	check(not map._tooltip.visible and map._tip_plant == null, "hover shows no name")
+	var basket_before: int = map.picking.basket.size()
+	map.picking.basket.append("ㅂ")
+	map.evaluate_stuck("late letters")
+	map.picking.basket.erase("ㅂ")
+	check(map.countdown.running or map.kill != null, "a verdict that is not stuck cannot cancel it any more")
+	check(map.picking.basket.size() == basket_before, "(the probe letter is removed again)")
+
+	# The countdown reaches 0: the deer, the hits, the death beat, once each.
+	var tinted := Color(gore["tint_color"][0], gore["tint_color"][1], gore["tint_color"][2])
+	var left: float = map.countdown.left
+	map.step(Vector2.ZERO, left + 0.001)
+	check(map.kill != null and map.kill.started and map.deer is Node3D and map.countdown.expired and not map.countdown.running, "at 0 the monster sequence starts")
+	check(not map.music_playing and map.music_stops == map.music_starts, "the music stops at the monster's arrival")
+	check(not map.stuck_hud._number.visible and not map.stuck_hud._vignette.visible, "the number and vignette go")
+	var order: Array[String] = map.kill_order
+	check(order.size() == 2 and map.travelers[order[0]].global_position.x <= map.travelers[order[1]].global_position.x, "the deer takes the leftmost traveler first (%s, then %s)" % [order[0], order[1]])
+	var edge: float = map.camera.global_position.x - map.camera_half_width()
+	check(map.deer.global_position.x < edge, "it starts just off the left edge of the screen (%.1f < %.1f)" % [map.deer.global_position.x, edge])
+	check(GameState.is_alive(order[0]) and GameState.is_alive(order[1]) and deaths.is_empty(), "nobody is hit yet")
+	var first_before: Vector3 = map.travelers[order[0]].global_position
+	# Step to just before and just after the first hit.
+	_run(map, float(monster["leap_seconds"]) / 2.0, 0.01)
+	var mid: float = map.deer.global_position.y
+	check(map.deer.global_position.x > edge - 3.5 and mid > map.terrain.height_at(map.deer.global_position.x) + 0.1, "mid-leap the deer is in the air and coming in")
+	_run(map, float(monster["leap_seconds"]) / 2.0 + 0.02, 0.01)
+	check(not GameState.is_alive(order[0]) and GameState.is_alive(order[1]) and deaths.size() == 1 and deaths[0][0] == order[0] and deaths[0][2] == "monster", "the first hit kills the first traveler")
+	check(map.deer.global_position.distance_to(first_before) <= float(monster["standoff"]) + 0.5, "the deer stands beside it")
+	var big := roundi(40.0 * float(monster["burst_strength"]))
+	var blood: Array = map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big)
+	check(blood.size() == 1 and big > 40, "with a blood burst bigger than the placeholder's (%d droplets instead of 40)" % big)
+	check(map.travelers[order[0]].body_color().is_equal_approx(tinted) or map.travelers[order[0]].body_color().r > 0.5, "and a red tint flash")
+	_run(map, float(monster["hit_gap_seconds"]), 0.01)
+	check(not GameState.is_alive(order[1]) and deaths.size() == 2 and deaths[1][0] == order[1], "about 0.35 s later the second traveler is down, in order")
+	blood = map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big)
+	check(blood.size() == 2, "with a second burst")
+	check(beats.is_empty() and not map.is_death_beat_playing(), "the death beat has not begun while the deer is still there")
+	await get_tree().create_timer(0.6).timeout
+	check(absf(map.travelers[order[0]].rotation.z) > 1.0 and map.travelers[order[0]].global_position.distance_to(first_before) > 2.0, "the first traveler was thrown away and knocked flat")
+	var lying: Vector3 = map.travelers[order[0]].global_position
+	check(absf(lying.y - (map.terrain.height_at(lying.x) + 0.35)) < 0.02, "and it lies on the ground, not in it (feet %.2f, ground %.2f)" % [lying.y, map.terrain.height_at(lying.x)])
+	_run(map, float(monster["aftermath_seconds"]) + 0.3, 0.01)
+	check(beats.size() == 1 and map.is_death_beat_playing() and map.restarting, "then the existing death beat starts, once")
+	_run(map, 3.0, 0.05)
+	check(beats.size() == 1 and deaths.size() == 2 and map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big).size() <= 2, "and nothing repeats")
+	check(map.music_starts == 1 and map.music_stops == 1 and map.audio_calls == 0, "the music started once and stopped once, with no audio call headless")
+	check(map.deer.get_child_count() >= 12, "the deer is built from parts (%d)" % map.deer.get_child_count())
+	var dim: ColorRect = map._dim
+	check(dim != null and dim.mouse_filter == Control.MOUSE_FILTER_IGNORE, "the dim layer is the existing one")
+	# The restart: hearts back to the snapshot, the scene fresh.
+	map.tick_beat(float(gore["death_beat"]) / 2.0)
+	check(restarts.is_empty(), "the scene has not restarted mid-beat")
+	map.tick_beat(float(gore["death_beat"]))
+	check(restarts.size() == 1 and not map.countdown.running and not map.music_playing, "the scene restarts when the beat ends, with the countdown and music off")
+	check(GameState.heart_units["nestor"] == snapshot_n and GameState.heart_units["fernanda"] == snapshot_f and GameState.is_alive("nestor"), "hearts are exactly the scene-start snapshot")
+	GameState.travelers_died.disconnect(on_death)
+	for i in 4:
+		await get_tree().process_frame
+	var fresh: Node = get_tree().current_scene
+	check(fresh != map and not is_instance_valid(map), "the scene was reloaded")
+	if fresh != map and is_instance_valid(fresh) and fresh.has_method("picks_allowed"):
+		check(fresh.picking.basket.is_empty() and fresh.discovery.entries.is_empty() and fresh.spelling.solved("ma").is_empty() and fresh.spares.credits.is_empty() and fresh.spare_plants.is_empty(), "the new scene has an empty basket, list, spelling progress, credits and spares")
+		check(not fresh.countdown.running and fresh.countdown.starts == 0 and not fresh.countdown.expired and fresh.kill == null and fresh.deer == null and not fresh.music_playing and not fresh.stuck_hud._number.visible and not fresh.stuck_hud._vignette.visible, "and no countdown, monster, music, number or vignette")
+		check(not fresh.restarting and fresh.picks_allowed() and not fresh.stuck_verdict["stuck"], "play is allowed again, and it is not stuck")
+		fresh.set_process(false)
+		fresh.free()
+	get_tree().current_scene = original_scene
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_stuck_monster")
+
+
+func test_stuck_real_events() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map()
+	var viewport := map.get_viewport()
+	await _settle_layout()
+	var failures := 0
+	while failures < 8 and not map.stuck_verdict["stuck"]:
+		var id := ""
+		for word_id in map.spares.word_ids():
+			if not map.spelling.is_done(word_id):
+				id = word_id
+				break
+		var row: Control = map.discovery_hud._rows[id]
+		viewport.push_input(_click_event(row.get_global_rect().get_center()))
+		viewport.push_input(_release_event(row.get_global_rect().get_center()))
+		check(map.spelling_hud.is_open() and map.spelling.open_id == id, "failure %d: a real click on the %s entry opens the view" % [failures + 1, id])
+		await _settle_layout()
+		var basket: Array = map.picking.basket
+		var block: int = map.spelling.current_block()
+		var pair := []
+		for i in basket.size():
+			for j in basket.size():
+				if pair.is_empty() and i != j and not map.spelling.judge(id, block, [basket[i], basket[j]]):
+					pair = [basket[i], basket[j]]
+		await _drag(viewport, _tile_center(map, pair[0]), _slot_center(map, block, 0))
+		await _settle_layout()
+		await _drag(viewport, _tile_center(map, pair[1]), _slot_center(map, block, 1))
+		map.spelling_hud.tick(1.0)
+		failures += 1
+		var last: Dictionary = map.stuck_log[map.stuck_log.size() - 1]
+		print("    real mouse failure %d (%s + %s): %s, %s" % [failures, pair[0], pair[1], "STUCK" if last["stuck"] else "not stuck", last["reason"]])
+	check(map.stuck_verdict["stuck"] and map.countdown.running and map.countdown.starts == 1 and map.music_playing, "real clicks and drags failed %d syllables until the scene was stuck, and the countdown is running" % failures)
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "the view is closed and the tree is running")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_stuck_real_events")
