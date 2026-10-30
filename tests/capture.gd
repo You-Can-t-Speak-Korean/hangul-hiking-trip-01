@@ -14,7 +14,9 @@ extends Node
 ## {hearts_full,hearts_4_5,hearts_low,blood_burst,death_beat_dim}.png, and the walk-limit
 ## shots {walk_limit_x0,walk_limit_x32,walk_limit_x64,walk_limit_x32_before}.png. Pass
 ## `-- --hearts-only` to take only the hearts shots, `-- --walk-limit-only` for the walk-limit shots,
-## `-- --stuck-only` for the stuck-countdown and monster shots (they play the placeholder music).
+## `-- --stuck-only` for the stuck-countdown and monster shots (they play the placeholder music),
+## `-- --pause-only` for the pause menu shots {pause_menu_resume,pause_menu_restart_focus,
+## pause_menu_confirm}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -48,6 +50,10 @@ func _ready() -> void:
 		return
 	if "--stuck-only" in OS.get_cmdline_user_args():
 		await _stuck_shots()
+		get_tree().quit()
+		return
+	if "--pause-only" in OS.get_cmdline_user_args():
+		await _pause_shots()
 		get_tree().quit()
 		return
 	if "--credits-only" in OS.get_cmdline_user_args():
@@ -772,6 +778,50 @@ func _stuck_shots() -> void:
 		await get_tree().process_frame
 	_save("monster_both_down")
 	map.free()
+	GameState.new_hike()
+
+
+## The pause menu over a map that is stuck (the countdown number and vignette show
+## through the dim): open on Resume, the focus on Restart scene, and the question.
+func _pause_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.discovery.update([Vector2(plant.global_position.x, plant.global_position.z)], 0.0)
+	map.discovery.update([], 1.0)
+	map.discovery_hud.refresh()
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	var failures := 0
+	while not map.stuck_verdict["stuck"] and failures < 8:
+		failures += 1
+		_fail_block(map)
+	await get_tree().create_timer(1.5).timeout  # the failures' blood settles
+	map.countdown.left = 22.0
+	map.step(Vector2.ZERO, DELTA)
+	print("pause menu opens: %s (stuck %s)" % [map.open_pause_menu(), map.stuck_verdict["stuck"]])
+	await _frames(4)
+	_save("pause_menu_resume")
+	map.pause_menu.move(1)
+	map.pause_hud.refresh()
+	await _frames(3)
+	_save("pause_menu_restart_focus")
+	map.pause_hud.choose(1)
+	await _frames(4)
+	_save("pause_menu_confirm")
+	print("countdown still %.2f s, music silenced %s" % [map.countdown.left, map.music_silenced])
+	map.free()
+	get_tree().paused = false
 	GameState.new_hike()
 
 

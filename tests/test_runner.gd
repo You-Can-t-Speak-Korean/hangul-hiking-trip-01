@@ -67,11 +67,17 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_stuck_scene",
 	"test_stuck_monster",
 	"test_stuck_real_events",
+	"test_pause_menu_data",
+	"test_pause_menu_logic",
+	"test_pause_menu_scene",
+	"test_pause_menu_ignored",
+	"test_pause_menu_input",
+	"test_pause_menu_restart",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1388
+const MIN_CHECKS := 1523
 
 
 func check(condition: bool, label: String) -> void:
@@ -164,6 +170,13 @@ func _ready() -> void:
 	await test_stuck_scene()
 	await test_stuck_monster()
 	await test_stuck_real_events()
+	print("== Pause menu ==")
+	test_pause_menu_data()
+	test_pause_menu_logic()
+	await test_pause_menu_scene()
+	await test_pause_menu_ignored()
+	await test_pause_menu_input()
+	await test_pause_menu_restart()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -4632,3 +4645,412 @@ func test_stuck_real_events() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_stuck_real_events")
+
+
+# ---- Pause menu ----
+
+const PauseMenuScript := preload("res://scenes/foraging/pause_menu.gd")
+
+
+func test_pause_menu_data() -> void:
+	var block: Dictionary = _config().get("pause_menu", {})
+	check(not block.is_empty(), "hallasan.json has a pause_menu block")
+	for key in ["panel_size", "button_size"]:
+		var size = block.get(key)
+		check(size is Array and size.size() == 2 and float(size[0]) > 0.0 and float(size[1]) > 0.0, "pause_menu.%s is two positive numbers" % key)
+	check(float(block.get("button_gap", 0.0)) > 0.0, "pause_menu.button_gap is a positive number")
+	check(float(block.get("dim_alpha", 0.0)) > 0.0 and float(block.get("dim_alpha", 1.0)) <= 0.6, "the dim is a light positive alpha (%s)" % str(block.get("dim_alpha")))
+	for key in ["panel_color", "button_color", "outline_color", "text_color"]:
+		check(_is_color(block.get(key)), "pause_menu.%s is an r, g, b colour" % key)
+	for key in ["title", "resume_text", "restart_text", "confirm_text", "yes_text", "no_text"]:
+		check(block.get(key) is String and block[key] != "", "pause_menu.%s is a non-empty string" % key)
+	check(block["title"].contains("Paused") and block["resume_text"] == "Resume" and block["restart_text"] == "Restart scene", "the title and the two buttons are named as briefed")
+	check(block["confirm_text"] == "Restart? Progress in this scene is lost." and block["yes_text"] == "Yes" and block["no_text"] == "No", "the confirmation reads as briefed")
+	var panel := Vector2(float(block["panel_size"][0]), float(block["panel_size"][1]))
+	var button := Vector2(float(block["button_size"][0]), float(block["button_size"][1]))
+	check(panel.x <= 1280.0 and panel.y <= 720.0, "the panel fits in 1280x720")
+	check(button.x + 40.0 <= panel.x and 2.0 * button.y + float(block["button_gap"]) + 40.0 < panel.y, "both buttons fit inside the panel with room for the title")
+	_section_done("test_pause_menu_data")
+
+
+func test_pause_menu_logic() -> void:
+	var menu = PauseMenuScript.new()
+	check(not menu.is_open and not menu.confirming and menu.restart_requests == 0, "a new menu is closed")
+	check(menu.activate() == "" and menu.escape(false) == "" and not menu.close(), "closed: pressing, Esc (not allowed) and closing do nothing")
+	menu.move(1)
+	menu.focus_on(1)
+	check(menu.focus == 0, "closed: the focus does not move")
+	check(not menu.open(false) and not menu.is_open, "it does not open when the map says no")
+	check(menu.open(true) and menu.is_open and menu.focus == PauseMenuScript.RESUME and not menu.confirming, "it opens from closed, on Resume")
+	check(not menu.open(true), "opening an open menu does nothing")
+	check(menu.close() and not menu.is_open, "close() closes it")
+	check(menu.escape(true) == "open" and menu.is_open, "Esc opens it when allowed")
+	check(menu.escape(false) == "resume" and not menu.is_open, "Esc closes it, allowed or not")
+	menu.open(true)
+	check(menu.activate() == "resume" and not menu.is_open, "Resume closes it")
+	menu.open(true)
+	menu.move(1)
+	check(menu.focus == 1, "down moves to Restart scene")
+	menu.move(1)
+	check(menu.focus == 0, "down from the last wraps to the first")
+	menu.move(-1)
+	check(menu.focus == 1, "up from the first wraps to the last")
+	menu.move(-1)
+	menu.move(-1)
+	check(menu.focus == 1, "two ups wrap and come back")
+	menu.focus_on(0)
+	menu.focus_on(7)
+	menu.focus_on(-1)
+	check(menu.focus == 0, "focus_on ignores a choice that does not exist")
+	menu.focus_on(1)
+	check(menu.activate() == "ask" and menu.is_open and menu.confirming and menu.restart_requests == 0, "Restart scene asks first: nothing is requested yet")
+	check(menu.focus == PauseMenuScript.NO, "the confirmation starts on No")
+	check(menu.activate() == "back" and menu.is_open and not menu.confirming and menu.focus == PauseMenuScript.RESTART and menu.restart_requests == 0, "No returns to the menu, on Restart scene")
+	menu.activate()
+	check(menu.escape(false) == "back" and menu.is_open and not menu.confirming and menu.restart_requests == 0, "Esc on the confirmation is No")
+	menu.activate()
+	menu.move(1)
+	check(menu.confirming and menu.focus == PauseMenuScript.YES, "the confirmation's focus moves too")
+	check(menu.activate() == "restart" and menu.restart_requests == 1 and not menu.is_open, "Yes requests one restart and closes the menu")
+	check(menu.activate() == "" and menu.escape(true) == "" and not menu.open(true) and menu.restart_requests == 1, "after Yes nothing asks again: exactly one request")
+	_section_done("test_pause_menu_logic")
+
+
+## The first on-screen decoy plant clear of the HUD panels, with the player standing near x = 14.
+func _menu_decoy(map: Node3D) -> Dictionary:
+	map.player.global_position = _ground_point(map, 14.0, 0.0)
+	map.update_camera(0.0, true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var rects := [map.hearts_hud.panel_rect(), map.discovery_hud.get_child(0).get_global_rect(), map.basket_hud._panel.get_global_rect()]
+	return _visible_plant(map, func(p):
+		var at: Vector2 = map.camera.unproject_position(p.global_position + Vector3(0, 0.5, 0))
+		return p.kind != "target" and not rects.any(func(r): return r.has_point(at)))
+
+
+func _fake_music(map: Node3D) -> AudioStreamPlayer:
+	var player := AudioStreamPlayer.new()
+	player.stream = StuckMusicScript.make(_config()["stuck_music"])
+	map.add_child(player)
+	player.play()
+	map._music_player = player
+	map._music_tween = map.create_tween().set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
+	map._music_tween.tween_property(player, "volume_db", -30.0, 4.0)
+	return player
+
+
+func test_pause_menu_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map()
+	var viewport := map.get_viewport()
+	var hud = map.pause_hud
+	var menu = map.pause_menu
+	var config: Dictionary = _config()["pause_menu"]
+	var screen: Vector2 = viewport.get_visible_rect().size
+	await _settle_layout()
+
+	# Closed: nothing is drawn, nothing is paused, and a click reaches the map.
+	check(not menu.is_open and not hud.root_visible() and not hud._panel.is_visible_in_tree() and not get_tree().paused, "closed: the menu draws nothing and the tree runs")
+	check(hud.layer == 15 and hud.process_mode == Node.PROCESS_MODE_ALWAYS, "its layer runs in always mode, over the hover name and under the death dim")
+	var decoy: Dictionary = await _menu_decoy(map)
+	check(not decoy.is_empty(), "a decoy plant is on screen outside the HUD panels")
+	viewport.push_input(_click_event(decoy["screen"]))
+	viewport.push_input(_release_event(decoy["screen"]))
+	check(map.picking.walk_target == map.plants.find(decoy["plant"]), "closed: a real click on the plant reaches the map (the layer blocks nothing)")
+	map.picking.cancel_walk()
+
+	# Esc is shared with the spelling view: it takes the Esc when it is open, the map when it is closed.
+	check(map.open_spelling("ma") and get_tree().paused, "(setup) the spelling view is open")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.spelling_hud.is_open() and not menu.is_open and not hud.root_visible() and not get_tree().paused, "Esc in the spelling view closes the view and does not open the menu")
+	_tap(viewport, KEY_ESCAPE)
+	check(menu.is_open and hud.root_visible() and get_tree().paused and not map.spelling_hud.is_open(), "Esc with the view closed opens the menu and pauses the tree")
+	check(not map.open_spelling("ma") and not map.spelling.is_open() and not map.spelling_hud.is_open(), "the spelling view cannot open over the menu")
+	_tap(viewport, KEY_ESCAPE)
+	check(not menu.is_open and not hud.root_visible() and not get_tree().paused, "Esc on the open menu resumes it, and the same Esc does not open it again")
+	map.open_spelling("ma")
+	_tap(viewport, KEY_ESCAPE)
+	await get_tree().process_frame
+	check(not menu.is_open and not map.spelling_hud.is_open(), "one Esc event never does both: after a frame the view is closed and the menu is not open")
+
+	# The countdown, the vignette and the music while the menu is open.
+	var failures := _fail_until_stuck(map)
+	check(failures > 0 and map.countdown.running and map.music_playing, "(setup) stuck: the countdown runs and the music is on")
+	_run(map, 5.0)
+	var player := _fake_music(map)
+	var before := {"left": map.countdown.left, "alpha": map.stuck_hud._vignette.modulate.a, "number": map.stuck_hud._number.text, "starts": map.music_starts, "stops": map.music_stops, "volume": player.volume_db}
+	check(absf(map.countdown.left - 35.0) < 0.05 and before["alpha"] > 0.0, "(setup) 5 s in: %.2f s left, the vignette is up (%.4f)" % [map.countdown.left, before["alpha"]])
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	check(menu.is_open and get_tree().paused and not map.can_process(), "opened during the countdown: the tree and the map are paused")
+	check(map.countdown.paused and map.music_silenced and map.music_playing, "the countdown is held and the music is silenced, not stopped")
+	check(player.stream_paused and not map._music_tween.is_running(), "the audio player is paused (position kept) and its fade is held")
+	_run(map, 3.0)
+	check(map.countdown.left == before["left"], "3 s of ticks while open do not move the clock (%.3f)" % map.countdown.left)
+	check(map.stuck_hud._vignette.modulate.a == before["alpha"] and map.stuck_hud._number.text == before["number"], "the vignette and the number do not change")
+	check(map.hearts_hud.panel_rect().size.x > 0.0 and map.stuck_hud._vignette.visible, "the vignette stays drawn under the dim")
+
+	# The layout, centred and inside the viewport.
+	var panel: Rect2 = hud.panel_rect()
+	var size := Vector2(float(config["panel_size"][0]), float(config["panel_size"][1]))
+	check(Rect2(Vector2.ZERO, screen).encloses(panel), "the panel is inside the 1280x720 viewport (%s)" % str(panel))
+	check(panel.get_center().distance_to(screen / 2.0) < 1.5 and panel.size.is_equal_approx(size), "the panel is centred and as big as the data says (%s)" % str(panel))
+	var r0: Rect2 = hud.button_rect(0)
+	var r1: Rect2 = hud.button_rect(1)
+	var button := Vector2(float(config["button_size"][0]), float(config["button_size"][1]))
+	check(panel.encloses(r0) and panel.encloses(r1) and not r0.intersects(r1), "both buttons are inside the panel and do not overlap")
+	check(r0.size.x >= button.x - 0.5 and r0.size.y >= button.y - 0.5 and r1.size.x >= button.x - 0.5 and r1.size.y >= button.y - 0.5, "each is at least the data's button size")
+	check(hud._dim.get_global_rect() == Rect2(Vector2.ZERO, screen) and absf(hud._dim.color.a - float(config["dim_alpha"])) < 0.001, "the dim covers the screen at the data's alpha")
+	check(hud._root.mouse_filter == Control.MOUSE_FILTER_STOP and hud._dim.mouse_filter == Control.MOUSE_FILTER_IGNORE, "open, the root swallows the clicks")
+	check(hud.focused_style_on(0) and not hud.focused_style_on(1) and hud._buttons[0].text == "Resume" and hud._buttons[1].text == "Restart scene", "the focus is outlined on Resume; the buttons read Resume and Restart scene")
+
+	# Everything behind the menu is locked.
+	var basket_before: Array = map.picking.basket.duplicate()
+	var player_x: float = map.player.global_position.x
+	var partner_x: float = map.partner.global_position.x
+	check(not map.picks_allowed() and not map.restarting, "picks are not allowed, and `restarting` is not what blocks them")
+	map.player.global_position = _ground_point(map, decoy["plant"].global_position.x + 0.4, decoy["plant"].global_position.z + 0.2)
+	player_x = map.player.global_position.x
+	check(map.picking.nearest_pickable(Vector2(map.player.global_position.x, map.player.global_position.z)) >= 0, "(setup) a plant is in reach")
+	check(not map.pick_nearest() and map.picking.basket == basket_before, "Space-picking is rejected with a plant in reach")
+	check(not map.click(decoy["screen"]) and map.picking.walk_target == -1, "a click on a plant starts no walk")
+	viewport.push_input(_click_event(decoy["screen"]))
+	viewport.push_input(_release_event(decoy["screen"]))
+	check(map.picking.walk_target == -1, "(real click) the root swallows it")
+	map.step(Vector2(1.0, 0.0), 0.2)
+	check(is_equal_approx(map.player.global_position.x, player_x) and is_equal_approx(map.partner.global_position.x, partner_x), "walking is rejected: neither traveler moves")
+	map.update_hover(decoy["screen"], 0.1)
+	check(map._tip_plant == null and not map._tooltip.visible, "hover shows no name")
+	check(not map.open_spelling("minari"), "the spelling view cannot be opened by code")
+	var row: Control = map.discovery_hud._rows["ma"]
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(not map.spelling_hud.is_open(), "(real click) a click on a discovery entry opens nothing")
+	check(map.picking.basket == basket_before, "no letter left the basket")
+
+	# Resume restores everything where it was.
+	hud.choose(0)
+	check(not menu.is_open and not hud.root_visible() and not get_tree().paused and not map.countdown.paused, "Resume: closed, unpaused, the clock released")
+	check(not map.music_silenced and map.music_playing and not player.stream_paused and map._music_tween.is_running(), "the music is back on, its fade running again")
+	check(map.countdown.left == before["left"] and map.stuck_hud._vignette.modulate.a == before["alpha"] and map.stuck_hud._number.text == before["number"], "the countdown value, the vignette and the number are exactly as before")
+	check(map.music_starts == before["starts"] and map.music_stops == before["stops"] and map.countdown.starts == 1, "no music or countdown started or stopped in between")
+	_run(map, 1.0)
+	check(absf(map.countdown.left - (before["left"] - 1.0)) < 0.05, "and the clock runs on from there")
+	map.update_camera(0.0, true)
+	var seen_at: Vector2 = map.camera.unproject_position(decoy["plant"].global_position + Vector3(0, 0.5, 0))
+	map.update_hover(seen_at, 0.1)
+	check(map._tip_plant == decoy["plant"], "(control) hover shows names again")
+	map.player.global_position = _ground_point(map, player_x + 1.0, map.player.global_position.z)
+	var moved: float = map.player.global_position.x
+	map.step(Vector2(1.0, 0.0), 0.2)
+	check(map.player.global_position.x > moved, "(control) walking works again")
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(map.spelling_hud.is_open(), "(control) the same click on the entry opens the view")
+	map.spelling_hud.close()
+	map._stop_music()
+	check(player.is_queued_for_deletion() or not is_instance_valid(player), "(cleanup) stopping the music frees the fake player")
+	map.free()
+	check(not get_tree().paused, "freeing the map never leaves the tree paused")
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_pause_menu_scene")
+
+
+func test_pause_menu_ignored() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map()
+	var viewport := map.get_viewport()
+	check(_fail_until_stuck(map) > 0 and map.countdown.running, "(setup) stuck, the countdown runs")
+	_run(map, 39.2, 0.05)
+	check(map.countdown.is_locked() and map.restarting and map.kill == null, "(setup) the last second: locked, restarting set (%.2f s left)" % map.countdown.left)
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused and not map.pause_hud.root_visible(), "Esc in the last second is ignored")
+	check(not map.open_pause_menu(), "and so is a call to open it")
+	_run(map, 1.0, 0.05)
+	check(map.kill != null and map.deer != null and not map.is_death_beat_playing(), "(setup) the monster sequence is running")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused, "Esc during the monster sequence is ignored")
+	var guard := 0
+	while not map.is_death_beat_playing() and guard < 100:
+		_run(map, 0.1, 0.05)
+		guard += 1
+	check(map.is_death_beat_playing(), "(setup) the death beat is playing")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused and not map.pause_hud.root_visible(), "Esc during the death beat is ignored")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_pause_menu_ignored")
+
+
+func test_pause_menu_input() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map({}, false)
+	var viewport := map.get_viewport()
+	var menu = map.pause_menu
+	var hud = map.pause_hud
+	await _settle_layout()
+
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	check(menu.is_open and menu.focus == 0 and hud.focused_style_on(0), "Esc opens the menu with the focus on Resume")
+	# Player 1: W/S move the highlight and wrap; Space presses.
+	_tap(viewport, KEY_S)
+	check(menu.focus == 1 and hud.focused_style_on(1) and not hud.focused_style_on(0), "P1: S moves the highlight to Restart scene")
+	_tap(viewport, KEY_W)
+	check(menu.focus == 0, "P1: W moves it back")
+	_tap(viewport, KEY_W)
+	check(menu.focus == 1, "P1: W from the first wraps to the last")
+	_tap(viewport, KEY_S)
+	check(menu.focus == 0, "P1: S from the last wraps to the first")
+	# Player 2: Up/Down move, Enter and KP Enter press.
+	_tap(viewport, KEY_DOWN)
+	check(menu.focus == 1, "P2: Down moves the highlight")
+	_tap(viewport, KEY_UP)
+	_tap(viewport, KEY_UP)
+	check(menu.focus == 1, "P2: Up twice wraps")
+	_tap(viewport, KEY_DOWN)
+	check(menu.focus == 0, "P2: Down wraps")
+	_tap(viewport, KEY_SPACE)
+	check(not menu.is_open and not get_tree().paused, "P1: Space on Resume resumes")
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_ENTER)
+	check(not menu.is_open and not get_tree().paused, "P2: Enter on Resume resumes")
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_KP_ENTER, KEY_LOCATION_RIGHT)
+	check(not menu.is_open, "P2: KP Enter on Resume resumes")
+	# Restart needs a confirmation; both players can answer it.
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(menu.is_open and menu.confirming and menu.focus == 1 and menu.restart_requests == 0, "P1: Space on Restart scene asks for confirmation, on No")
+	check(hud._message.visible and not hud._title.visible and hud._buttons[0].text == "Yes" and hud._buttons[1].text == "No" and hud._message.text == "Restart? Progress in this scene is lost.", "the panel shows the question with Yes and No")
+	check(hud.panel_rect().encloses(hud._message.get_global_rect()) and hud.panel_rect().encloses(hud.button_rect(0)) and hud.panel_rect().encloses(hud.button_rect(1)), "the question and both answers are inside the panel")
+	_tap(viewport, KEY_ENTER)
+	check(menu.is_open and not menu.confirming and menu.focus == 1 and menu.restart_requests == 0, "P2: Enter on No goes back to the menu")
+	check(hud._title.visible and not hud._message.visible and hud._buttons[0].text == "Resume", "the menu is drawn again")
+	_tap(viewport, KEY_SPACE)
+	_tap(viewport, KEY_ESCAPE)
+	check(menu.is_open and not menu.confirming, "Esc on the question is No")
+	_tap(viewport, KEY_ESCAPE)
+	check(not menu.is_open, "Esc then resumes")
+
+	# No key reaches the map while open (the probe listens where the map does); a control after.
+	_tap(viewport, KEY_ESCAPE)
+	var probe := KeyProbe.new()
+	probe.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(probe)
+	var keys: Array = [KEY_W, KEY_S, KEY_A, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT]
+	for key in keys:
+		_tap(viewport, key)
+	check(probe.seen == 0 and menu.is_open, "none of 8 movement keys reached the map while open (%d)" % probe.seen)
+	for key in [KEY_S, KEY_SPACE, KEY_ENTER]:  # Restart scene, ask, back: the pick keys are taken as well
+		_tap(viewport, key)
+	_tap(viewport, KEY_KP_ENTER, KEY_LOCATION_RIGHT)
+	check(probe.seen == 0 and menu.is_open and menu.confirming, "Space, Enter and KP Enter did not reach the map either (%d)" % probe.seen)
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_ESCAPE)
+	check(probe.seen == 0 and not menu.is_open, "nor did the two Esc that answered No and closed it")
+	_tap(viewport, KEY_D)
+	check(probe.seen == 1, "(control) with the menu closed the same kind of key reaches the map (%d)" % probe.seen)
+	probe.queue_free()
+
+	# The mouse: both buttons, hover and the answers.
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	var motion := InputEventMouseMotion.new()
+	var over: Vector2 = hud.button_rect(1).get_center()
+	motion.position = over
+	motion.global_position = over
+	viewport.push_input(motion)
+	await get_tree().process_frame
+	check(menu.focus == 1 and hud.focused_style_on(1), "the mouse moving onto Restart scene moves the highlight there")
+	viewport.push_input(_click_event(over))
+	viewport.push_input(_release_event(over))
+	await _settle_layout()
+	check(menu.confirming and menu.is_open, "a real click on Restart scene asks for confirmation")
+	var no_at: Vector2 = hud.button_rect(1).get_center()
+	viewport.push_input(_click_event(no_at))
+	viewport.push_input(_release_event(no_at))
+	await _settle_layout()
+	check(menu.is_open and not menu.confirming and menu.restart_requests == 0, "a real click on No returns to the menu")
+	var resume_at: Vector2 = hud.button_rect(0).get_center()
+	viewport.push_input(_click_event(resume_at))
+	viewport.push_input(_release_event(resume_at))
+	check(not menu.is_open and not get_tree().paused and not hud.root_visible(), "a real click on Resume resumes")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_pause_menu_input")
+
+
+func test_pause_menu_restart() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var original_scene := get_tree().current_scene
+	var map: Node3D = await _stuck_map({"nestor": 9, "fernanda": 7})
+	remove_child(map)  # the real reload path runs for the current scene
+	get_tree().root.add_child(map)
+	get_tree().current_scene = map
+	await get_tree().physics_frame
+	var viewport := map.get_viewport()
+	var beats := []
+	var restarts := []
+	map.death_beat_started.connect(func(): beats.append(true))
+	map.restarted.connect(func(): restarts.append(true))
+	check(_fail_until_stuck(map) > 0 and map.countdown.running and map.music_playing, "(setup) stuck with the countdown running and the music on")
+	check(GameState.heart_units["nestor"] < 9 or GameState.heart_units["fernanda"] < 7, "(setup) the failures cost hearts")
+	_run(map, 12.0, 0.05)
+	await _settle_layout()
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	check(map.pause_menu.is_open and get_tree().paused, "(setup) the menu is open during the countdown")
+	var hud = map.pause_hud
+	var restart_at: Vector2 = hud.button_rect(1).get_center()
+	viewport.push_input(_click_event(restart_at))
+	viewport.push_input(_release_event(restart_at))
+	await _settle_layout()
+	check(map.pause_menu.confirming and restarts.is_empty(), "Restart scene asks first; nothing has restarted")
+	var no_at: Vector2 = hud.button_rect(1).get_center()
+	viewport.push_input(_click_event(no_at))
+	viewport.push_input(_release_event(no_at))
+	await _settle_layout()
+	check(map.pause_menu.is_open and not map.pause_menu.confirming and restarts.is_empty() and map.countdown.running and map.countdown.paused, "No: back in the menu, still paused, the countdown untouched")
+	viewport.push_input(_click_event(restart_at))
+	viewport.push_input(_release_event(restart_at))
+	await _settle_layout()
+	var yes_at: Vector2 = hud.button_rect(0).get_center()
+	viewport.push_input(_click_event(yes_at))
+	viewport.push_input(_release_event(yes_at))
+	check(restarts.size() == 1 and map.pause_menu.restart_requests == 1, "Yes restarts exactly once, through the existing path")
+	check(beats.is_empty() and not map.is_death_beat_playing() and map._dim == null and map.kill == null and map.deer == null, "no death beat, no dim, no monster")
+	check(GameState.heart_units["nestor"] == 9 and GameState.heart_units["fernanda"] == 7, "hearts are exactly the scene-start snapshot: no extra penalty")
+	check(not map.countdown.running and not map.music_playing and not get_tree().paused, "the countdown and the music are cancelled and the tree is running")
+	for i in 4:
+		await get_tree().process_frame
+	var fresh: Node = get_tree().current_scene
+	check(fresh != map and not is_instance_valid(map), "the scene was reloaded")
+	if fresh != map and is_instance_valid(fresh) and fresh.has_method("picks_allowed"):
+		check(fresh.picking.basket.is_empty() and fresh.discovery.entries.is_empty() and fresh.spelling.solved("ma").is_empty() and fresh.spares.credits.is_empty() and fresh.spare_plants.is_empty(), "the new scene has an empty basket, list, spelling progress, credits and spares")
+		check(not fresh.countdown.running and fresh.countdown.starts == 0 and not fresh.music_playing and fresh.kill == null and fresh.deer == null and fresh._dim == null and not fresh.stuck_hud._number.visible and not fresh.stuck_hud._vignette.visible, "and no countdown, music, monster, death beat, number or vignette")
+		check(not fresh.pause_menu.is_open and not fresh.pause_hud.root_visible() and not fresh.restarting and fresh.picks_allowed(), "the menu is closed and play is allowed")
+		check(GameState.heart_units["nestor"] == 9 and GameState.heart_units["fernanda"] == 7, "the new scene starts with the snapshot hearts")
+		fresh.set_process(false)
+		fresh.free()
+	get_tree().current_scene = original_scene
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_pause_menu_restart")

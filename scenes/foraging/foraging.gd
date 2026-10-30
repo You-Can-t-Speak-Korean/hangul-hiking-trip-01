@@ -23,6 +23,8 @@ const KillTimeline := preload("res://scenes/foraging/kill_timeline.gd")
 const StuckHud := preload("res://scenes/foraging/stuck_hud.gd")
 const StuckMusic := preload("res://scenes/foraging/stuck_music.gd")
 const Deer := preload("res://scenes/foraging/deer.gd")
+const PauseMenu := preload("res://scenes/foraging/pause_menu.gd")
+const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -85,6 +87,12 @@ var spare_plants: Array[Node3D] = []
 ## second of the stuck countdown (_tick_stuck), until the scene is restarted:
 ## picks, walks, hover names and opening the spelling view are ignored.
 var restarting := false
+## The pause menu (Esc): its rules and its HUD. While it is open the tree is paused
+## and `picks_allowed()` is false, but `restarting` is not set (that would block
+## Resume). `music_silenced` is true while it holds the countdown music still.
+var pause_menu
+var pause_hud: CanvasLayer
+var music_silenced := false
 ## Data: foraging.stuck_music.
 var music_config: Dictionary = {}
 ## The stuck countdown (see Stuck, Countdown), its HUD and the verdict of the
@@ -213,6 +221,11 @@ func _ready() -> void:
 	stuck_hud.setup(config["stuck"])
 	monster = config["monster"]
 	music_config = config["stuck_music"]
+	pause_menu = PauseMenu.new()
+	pause_hud = PauseMenuHud.new()
+	add_child(pause_hud)
+	pause_hud.setup(pause_menu, config["pause_menu"])
+	pause_hud.chosen.connect(_on_pause_chosen)
 	GameState.begin_scene("foraging")  # a death restores the hearts held now
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
@@ -235,7 +248,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
-	if spelling_hud != null and spelling_hud.is_open():  # never leave the tree paused behind
+	if (spelling_hud != null and spelling_hud.is_open()) or (pause_menu != null and pause_menu.is_open):  # never leave the tree paused behind
 		get_tree().paused = false
 
 
@@ -250,7 +263,11 @@ func _physics_process(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
+		# Only reached when the spelling view did not take this Esc (it closes itself and handles it).
+		open_pause_menu()
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		click(event.position)
 	elif event.is_action_pressed("p1_pick"):  # no echo: holding Space picks once
 		pick_nearest()
@@ -265,7 +282,7 @@ func step(input: Vector2, delta: float) -> void:
 		picking.cancel_walk()  # the keys take over
 	elif picking.walk_target >= 0:
 		walk = _walk_step(delta)
-	if not restarting:  # the last second, the kill and the death beat: nobody walks
+	if not restarting and not pause_menu.is_open:  # the last second, the kill, the death beat and the menu: nobody walks
 		player.drive(walk, delta)
 		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
@@ -281,9 +298,10 @@ func step(input: Vector2, delta: float) -> void:
 	_tick_stuck(delta)
 
 
-## False while restarting or once the travelers are dead (no one can pick).
+## False while restarting, while the pause menu is open, or once the travelers are
+## dead (no one can pick).
 func picks_allowed() -> bool:
-	if restarting:
+	if restarting or pause_menu.is_open:
 		return false
 	for id in GameState.TRAVELERS:
 		if not GameState.is_alive(id):
@@ -844,7 +862,7 @@ func plant_at(screen_pos: Vector2) -> Node3D:
 ## a plant again; moving straight from one plant onto another starts the new
 ## tooltip at once. Only one is up at a time: the latest trigger wins.
 func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
-	if restarting:  # no names in the last second, the kill or the death beat
+	if restarting or pause_menu.is_open:  # no names in the last second, the kill, the death beat or the menu
 		_hover_plant = null
 		_tip_plant = null
 		_tooltip.visible = false
@@ -1081,7 +1099,7 @@ func _log_stuck(event: String, verdict: Dictionary, note: String) -> void:
 ## one place besides begin_death_beat), so picks, walks, hover names and the
 ## spelling view are rejected through the checks that flag already has.
 func _tick_stuck(delta: float) -> void:
-	countdown.paused = spelling_hud.is_open()
+	countdown.paused = spelling_hud.is_open() or pause_menu.is_open
 	if countdown.tick(delta):
 		_begin_monster()  # the kill's clock starts at the next tick, not with what is left of this one
 	else:
@@ -1090,6 +1108,50 @@ func _tick_stuck(delta: float) -> void:
 			picking.cancel_walk()
 		_tick_monster(delta)
 	stuck_hud.refresh(countdown, spelling_hud.is_open())
+
+
+## Esc with the spelling view closed: opens the pause menu and pauses the map, the
+## countdown and the music. False (and nothing happens) while the view is open, the
+## scene is restarting (the last second, the kill, the death beat), a traveler is
+## dead or the menu is open already.
+func open_pause_menu() -> bool:
+	if spelling_hud.is_open() or not picks_allowed() or _dim != null or kill != null:
+		return false
+	if not pause_menu.open(true):
+		return false
+	picking.cancel_walk()
+	_tip_plant = null  # a hover name would stay frozen on screen
+	_tooltip.visible = false
+	countdown.paused = true
+	_silence_music(true)
+	pause_hud.refresh()
+	get_tree().paused = true
+	return true
+
+
+## The menu said what was chosen ("ask" and "back" only change what it shows).
+func _on_pause_chosen(result: String) -> void:
+	if result == "resume" or result == "restart":
+		get_tree().paused = false
+		countdown.paused = spelling_hud.is_open()
+		_silence_music(false)
+	if result == "restart":
+		_restart()  # the death path's own restart, without the beat
+
+
+## Holds the countdown music still (its position and fade stay where they were)
+## or lets it go on.
+func _silence_music(silent: bool) -> void:
+	music_silenced = silent and music_playing
+	if _music_player == null:
+		return
+	_music_player.stream_paused = silent
+	if _music_tween != null and _music_tween.is_valid():
+		if silent:
+			_music_tween.pause()
+		else:
+			_music_tween.play()
+	audio_calls += 1
 
 
 ## The countdown reached 0: stop the music, bring in the deer and start the kill.
@@ -1204,6 +1266,7 @@ func _stop_music() -> void:
 	if not music_playing:
 		return
 	music_playing = false
+	music_silenced = false
 	music_stops += 1
 	if _music_player == null:
 		return
