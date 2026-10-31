@@ -6,7 +6,7 @@ const CURRICULUM_PATH := "res://data/series/curriculum.json"
 const RULES_PATH := "res://data/series/rules.json"
 const ITEMS_PATH := "res://data/series/items.json"
 const MOUNTAIN_DIR := "res://data/mountains/"
-const ITEM_KINDS: Array[String] = ["elixir", "charm", "hint", "note"]
+const ITEM_KINDS: Array[String] = ["elixir", "charm", "hint", "note", "currency"]
 
 var curriculum: Dictionary = {}
 var rules: Dictionary = {}
@@ -34,7 +34,7 @@ func _load_items() -> void:
 
 ## Why `entry` can't be an item next to the `known` ones (id -> definition), or ""
 ## if it can: it must be a dictionary with a new id and a kind from ITEM_KINDS,
-## and an elixir needs heal_units of at least 1.
+## and an elixir needs heal_units of at least 1. An icon is optional.
 static func item_problem(entry: Variant, known: Dictionary) -> String:
 	if not entry is Dictionary or String(entry.get("id", "")) == "":
 		return "Item without an id"
@@ -46,6 +46,8 @@ static func item_problem(entry: Variant, known: Dictionary) -> String:
 		return "Item '%s' has unknown kind '%s' (want one of %s)" % [id, kind, ITEM_KINDS]
 	if kind == "elixir" and int(entry.get("heal_units", 0)) < 1:
 		return "Elixir '%s' needs heal_units of at least 1" % id
+	if entry.has("icon") and (not entry["icon"] is String or entry["icon"] == ""):
+		return "Item '%s' has an icon that is not a name" % id
 	return ""
 
 

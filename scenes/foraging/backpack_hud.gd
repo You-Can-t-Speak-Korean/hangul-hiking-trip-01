@@ -3,7 +3,8 @@ extends CanvasLayer
 ## in GameState.inventory (Korean name, English name, ×count, and the description
 ## in smaller text), or "Empty". Placed and sized from foraging.backpack_hud. It
 ## runs while the tree is paused (process mode ALWAYS). The panel swallows clicks;
-## the layer's root does not. The rows are not selectable yet.
+## the layer's root does not. The rows are not selectable yet. A row whose item
+## has an icon (items.json) draws it on the left, `icon_size` pixels square.
 ## Keys: while it is open, either backpack key, Esc and the Close button ask the
 ## map to close it; while it is closed, a backpack key asks the map to open it
 ## through `open_handler` (and is only taken if the map did). This runs in
@@ -11,6 +12,7 @@ extends CanvasLayer
 ## swallowed first; a Tab the map turns down is left alone.
 
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
+const ItemIcon := preload("res://scenes/foraging/item_icon.gd")
 
 ## The panel should close (key, Esc or the Close button). The map unpauses on this.
 signal close_requested
@@ -187,10 +189,27 @@ func _make_row(id: String, count: int) -> PanelContainer:
 	style.set_corner_radius_all(8)
 	style.set_content_margin_all(10.0)
 	row.add_theme_stylebox_override("panel", style)
+	var icon_id := String(item.get("icon", ""))
+	var beside: Node = row
+	if icon_id != "":
+		if ItemIcon.is_known(icon_id):
+			var line := HBoxContainer.new()  # the icon, then the usual row text
+			line.add_theme_constant_override("separation", 12)
+			line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			row.add_child(line)
+			var icon := ItemIcon.new()
+			var icon_size := float(_config.get("icon_size", 56.0))
+			icon.setup(icon_id, icon_size)
+			icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			line.add_child(icon)
+			beside = line
+		else:
+			push_warning("Item '%s' has unknown icon '%s'" % [id, icon_id])
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 2)
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(column)
+	beside.add_child(column)
 	var top := HBoxContainer.new()
 	top.add_theme_constant_override("separation", 12)
 	top.mouse_filter = Control.MOUSE_FILTER_IGNORE

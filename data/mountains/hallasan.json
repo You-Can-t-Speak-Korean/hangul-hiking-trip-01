@@ -17,12 +17,21 @@
     "keyboard_select": {"_note": "The red highlight on the basket tile the keyboard cursor is on, while the spelling view is open. Colours are r, g, b, a. 'outline_width' is the solid border and 'halo_width' the softer glow outside it, both in pixels; the halo fades outward. 'pulse_speed' is pulses per second and 'pulse_depth' (0..1) how much the halo dims at the low point of the pulse.", "outline_color": [1.0, 0.1, 0.1, 1.0], "outline_width": 4.0, "halo_color": [1.0, 0.15, 0.1, 0.45], "halo_width": 10.0, "pulse_speed": 1.2, "pulse_depth": 0.25},
     "damage": {"_note": "What a failed spelling syllable costs. 'failure_damage_units' is in half-units (1 = half a heart) and hits BOTH travelers. Placeholder.", "failure_damage_units": 1},
     "gore_placeholder": {"_note": "Placeholder blood on the travelers (never plants or animals) until the art pass. 'burst_duration' seconds of spray; the second traveler's burst starts 'stagger' seconds after the first; 'tint_color' flashes on a hit traveler's body for 'tint_duration' seconds; 'death_beat' seconds pass between a death and the scene restart while the screen dims to 'death_dim_alpha' black.", "burst_duration": 0.6, "stagger": 0.15, "blood_color": [0.45, 0.02, 0.04], "tint_color": [0.9, 0.1, 0.1], "tint_duration": 0.3, "death_beat": 1.5, "death_dim_alpha": 0.75},
+    "decoy_rewards": {
+      "_note": "What a reward decoy (노루귀, 들쭉나무) gives when picked: one entry rolled by weight (chance = weight / total), 'count' of that item into the backpack. Every item must exist in items.json, weight > 0, count >= 1. PLACEHOLDER weights. spelling_hint and slow_time_charm are not in the table yet. 'floating_label' is the text that rises from the picked plant: it rises 'rise' m and fades over 'seconds'; 'font_size' is Label3D pixels, 'pixel_size' metres per pixel, colour r, g, b.",
+      "table": [
+        {"item": "ssanghwatang", "weight": 3, "count": 1},
+        {"item": "gongjindan", "weight": 1, "count": 1},
+        {"item": "ddeok", "weight": 4, "count": 1}
+      ],
+      "floating_label": {"rise": 1.6, "seconds": 1.4, "font_size": 48, "pixel_size": 0.012, "color": [1.0, 0.95, 0.6]}
+    },
     "hearts_hud": {"_note": "The heart readout at the top right, one row per traveler. 'heart_size', 'gap' and 'margin' are pixels; a half heart is half filled, an empty one only an outline.", "heart_size": 26.0, "gap": 4.0, "margin": 16.0, "fill_color": [0.85, 0.12, 0.18], "outline_color": [0.95, 0.9, 0.9]},
     "spares": {"_note": "Every completed word earns one credit (once). A completion that leaves a jamo short spends its own credit at once on a spare plant of that word's kind, carrying the jamo the unfinished words are most short of; otherwise the credit is banked. A failed syllable spends the oldest banked credits, one spare each, while a shortage is left. Credits banked plus spares spawned never pass 'cap'. 'grow_seconds' is the grow-in (scale 0 to 1), during which the spare cannot be picked. 'slots' maps a word (target kind) id to the fixed [x, z] where its spare appears, in the word's own zone: at least 2 m from every plant and slot, 4 m from other plants of its kind, 6 m from the starts, clear of props. Slots are invisible until used. Positions come from a one-off script, as the first 36 plants did.", "cap": 6, "grow_seconds": 0.5, "slots": {"ma": [15.0, -8.5], "meoru": [13.0, -1.0], "minari": [22.5, -10.0], "gosari": [16.5, -1.0], "gobi": [12.0, 6.5], "simiro": [57.5, 10.0]}},
     "stuck": {"_note": "When no sequence of correct words can finish the scene any more (and nobody is dead), a countdown of 'countdown_seconds' starts; the monster comes at 0. The last 'lockout_seconds' cannot be cancelled and reject every input. 'number_alpha' is the opacity of the seconds number at the top centre ('number_margin' px from the top); the edge vignette reaches 'vignette_strength' opacity at 0 s and grows as (time spent / countdown) to the power 'vignette_growth'. Placeholder.", "countdown_seconds": 40.0, "lockout_seconds": 1.0, "number_alpha": 0.3, "number_margin": 12.0, "vignette_strength": 0.85, "vignette_growth": 1.6},
     "stuck_music": {"_note": "PLACEHOLDER countdown music, generated in code (no audio files): two detuned drone tones ('drone_hz', 'drone_level') and sparse gong-like hits ('hit_hz', 'hit_volume' relative to the drone, gaps drawn from 'hit_interval_min'..'hit_interval_max' seconds). Starts at 'volume_db', fading in over 'fade_seconds'; one loop is 'loop_seconds' long. Never tuned by ear.", "volume_db": -30.0, "fade_seconds": 4.0, "loop_seconds": 24.0, "drone_hz": [55.0, 55.8], "drone_level": 0.5, "hit_hz": 82.0, "hit_volume": 0.9, "hit_interval_min": 3.0, "hit_interval_max": 8.0, "seed": 7},
     "monster": {"_note": "The legendary monster that kills both travelers when the stuck countdown runs out. Hallasan: a white deer (the legend's folklore details are unverified, none are claimed). It leaps in from just off the left screen edge over 'leap_seconds', lands 'standoff' m left of the first traveler (the leftmost) and hits it, 'hit_gap_seconds' later the second, and 'aftermath_seconds' after that the death beat starts. Each hit sprays 'burst_strength' times the normal gore, flashes the traveler red for 'tint_seconds' and throws it 'knock_distance' m, tipped over 'knock_tilt_degrees', in 'knock_seconds'. Colours are r, g, b. Placeholder shapes.", "id": "white_deer", "name": "White deer", "scale": 1.5, "body_color": [0.96, 0.96, 0.93], "antler_color": [0.86, 0.8, 0.68], "eye_color": [0.8, 0.05, 0.05], "enter_margin": 3.0, "arc_height": 1.8, "standoff": 1.6, "leap_seconds": 0.3, "hit_gap_seconds": 0.35, "aftermath_seconds": 0.6, "burst_strength": 5.0, "tint_seconds": 0.6, "knock_distance": 3.5, "knock_seconds": 0.35, "knock_tilt_degrees": 90.0},
-    "backpack_hud": {"_note": "Fernanda's backpack panel (Tab, or right Shift / right Ctrl). 'position' and 'size' are the panel's top-left corner and size in pixels; colours are r, g, b and 'panel_alpha' is the panel's opacity; font sizes are pixels. Rows list GameState.inventory; description text is the smaller, muted colour.", "title": "Fernanda's backpack", "empty_text": "Empty", "close_text": "Close", "position": [380, 120], "size": [520, 480], "panel_color": [0.1, 0.11, 0.13], "panel_alpha": 0.95, "row_color": [0.2, 0.22, 0.26], "text_color": [0.95, 0.95, 0.95], "muted_text_color": [0.72, 0.74, 0.78], "count_color": [0.95, 0.85, 0.4], "title_font_size": 28, "name_font_size": 24, "count_font_size": 24, "description_font_size": 16, "empty_font_size": 22, "button_font_size": 20},
+    "backpack_hud": {"_note": "Fernanda's backpack panel (Tab, or right Shift / right Ctrl). 'position' and 'size' are the panel's top-left corner and size in pixels; colours are r, g, b and 'panel_alpha' is the panel's opacity; font sizes are pixels. Rows list GameState.inventory; description text is the smaller, muted colour.", "title": "Fernanda's backpack", "empty_text": "Empty", "close_text": "Close", "position": [380, 120], "size": [520, 480], "panel_color": [0.1, 0.11, 0.13], "panel_alpha": 0.95, "row_color": [0.2, 0.22, 0.26], "text_color": [0.95, 0.95, 0.95], "muted_text_color": [0.72, 0.74, 0.78], "count_color": [0.95, 0.85, 0.4], "title_font_size": 28, "name_font_size": 24, "count_font_size": 24, "description_font_size": 16, "empty_font_size": 22, "icon_size": 56, "button_font_size": 20},
     "pause_menu": {"panel_size": [460, 330], "button_size": [280, 58], "button_gap": 16, "dim_alpha": 0.4, "title": "일시정지 · Paused", "resume_text": "Resume", "restart_text": "Restart scene", "confirm_text": "Restart? Progress in this scene is lost.", "yes_text": "Yes", "no_text": "No", "panel_color": [0.1, 0.11, 0.13], "button_color": [0.22, 0.24, 0.28], "outline_color": [0.95, 0.85, 0.4], "text_color": [0.95, 0.95, 0.95]},
     "start": {"nestor": [6.0, 1.5], "fernanda": [4.0, -1.5]},
     "terrain": {
@@ -85,7 +94,7 @@
       {"id": "alpine", "name": "Alpine grassland", "x": [44, 64], "tint": [0.55, 0.55, 0.3]}
     ],
     "plants": {
-      "_note": "10 kinds, 36 plants. Each plant is one entry in 'placed': kind id, x, z (y comes from the terrain) and, for a target, the single letter it carries. A target kind has one plant per letter of its name (repeats count: 미나리 has two ㅣ plants), so every letter plant of a word is needed. A decoy carries one letter too (from the letters of the six target words, the two plants of a kind differ), so only the hover name tells it apart. kind: target | decoy_harm (injury) | decoy_reward (reward). Decoys look exactly like targets. Injury and reward ids are placeholders. Positions are fixed here, never random, and the letters of a word are not in word order along x.",
+      "_note": "10 kinds, 36 plants. Each plant is one entry in 'placed': kind id, x, z (y comes from the terrain) and, for a target, the single letter it carries. A target kind has one plant per letter of its name (repeats count: 미나리 has two ㅣ plants), so every letter plant of a word is needed. A decoy carries one letter too (from the letters of the six target words, the two plants of a kind differ), so only the hover name tells it apart. kind: target | decoy_harm (injury) | decoy_reward (reward). Decoys look exactly like targets. Injury ids are placeholders; a harm decoy carries 'damage_units' (half-units the picker loses, 1 = half a heart); a reward decoy carries nothing, its item is rolled from foraging.decoy_rewards. Positions are fixed here, never random, and the letters of a word are not in word order along x.",
       "kinds": [
         {
           "id": "ma",
@@ -141,7 +150,8 @@
           "zone": "lower_forest",
           "letter_style": "sprouting",
           "color": [0.35, 0.28, 0.38],
-          "injury": "poison_swell"
+          "injury": "poison_swell",
+          "damage_units": 1
         },
         {
           "id": "butsunnamu",
@@ -152,7 +162,8 @@
           "letter_style": "hanging",
           "color": [0.18, 0.36, 0.24],
           "fruit_color": [0.72, 0.4, 0.15],
-          "injury": "poison_burst"
+          "injury": "poison_burst",
+          "damage_units": 1
         },
         {
           "id": "norugui",
@@ -161,8 +172,7 @@
           "kind": "decoy_reward",
           "zone": "mid_slope",
           "letter_style": "sprouting",
-          "color": [0.5, 0.58, 0.45],
-          "reward": "slow_time"
+          "color": [0.5, 0.58, 0.45]
         },
         {
           "id": "simiro",
@@ -181,8 +191,7 @@
           "zone": "alpine",
           "letter_style": "hanging",
           "color": [0.3, 0.32, 0.42],
-          "fruit_color": [0.08, 0.12, 0.32],
-          "reward": "spelling_hint"
+          "fruit_color": [0.08, 0.12, 0.32]
         }
       ],
       "placed": [

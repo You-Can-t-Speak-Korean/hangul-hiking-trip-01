@@ -82,11 +82,16 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_backpack_ignored",
 	"test_backpack_restart",
 	"test_backpack_input",
+	"test_ddeok_item",
+	"test_reward_table",
+	"test_reward_pick",
+	"test_harm_pick",
+	"test_backpack_icons",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1743
+const MIN_CHECKS := 1822
 
 
 func check(condition: bool, label: String) -> void:
@@ -196,6 +201,11 @@ func _ready() -> void:
 	await test_backpack_ignored()
 	await test_backpack_restart()
 	test_backpack_input()
+	test_ddeok_item()
+	test_reward_table()
+	await test_reward_pick()
+	await test_harm_pick()
+	await test_backpack_icons()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -676,14 +686,14 @@ func test_plants_data() -> void:
 		check(["target", "decoy_harm", "decoy_reward"].has(kind["kind"]), "%s has a valid kind" % kind["name"])
 		check(["hanging", "sprouting", "unfurling", "on_top"].has(kind["letter_style"]), "%s has a letter_style" % kind["name"])
 		if kind["kind"] == "decoy_harm":
-			kind_ok = kind_ok and kind.has("injury") and not kind.has("reward")
+			kind_ok = kind_ok and kind.has("injury") and not kind.has("reward") and int(kind.get("damage_units", 0)) >= 1
 		if kind["kind"] == "decoy_reward":
-			kind_ok = kind_ok and kind.has("reward") and not kind.has("injury")
+			kind_ok = kind_ok and not kind.has("reward") and not kind.has("charm") and not kind.has("hint") and not kind.has("injury") and not kind.has("damage_units")
 		check(_zone_range(kind["zone"]).size() == 2, "%s names a real zone" % kind["name"])
 		if kind["kind"] == "target":
 			var unknown := Hangul.unknown_letters(kind["name"], known)
 			check(unknown.size() <= 2, "%s needs at most 2 unknown letters" % kind["name"])
-	check(kind_ok, "decoy_harm have an injury id, decoy_reward a reward id")
+	check(kind_ok, "decoy_harm have an injury id and damage_units, decoy_reward carry no old reward field")
 
 	# Counts: one plant per letter token for a target, 2 for a decoy, 36 in all.
 	var expected := {"ma": 2, "meoru": 4, "minari": 6, "gosari": 6, "gobi": 4, "simiro": 6,
@@ -5086,14 +5096,14 @@ const KO_FONT_FILE := "NotoSansKR-VariableFont_wght.ttf"
 
 func test_items_data() -> void:
 	var file: Array = Content.load_json(Content.ITEMS_PATH).get("items", [])
-	check(file.size() == 4 and Content.items.size() == 4, "items.json lists four items and all four loaded")
-	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm"], "the ids load in file order")
+	check(file.size() == 5 and Content.items.size() == 5, "items.json lists five items and all five loaded")
+	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm", "ddeok"], "the ids load in file order")
 	for id in Content.items:
 		var item: Dictionary = Content.item(id)
 		check(item["id"] == id and Content.ITEM_KINDS.has(item["kind"]), "%s has its id and a valid kind" % id)
 		check(item["name_en"] is String and item["name_en"] != "" and item["description_en"] is String and item["description_en"] != "", "%s has an English name and description" % id)
 		check(item["name_ko"] is String, "%s has a name_ko (possibly empty)" % id)
-	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note"], "the kinds are elixir, charm, hint and note")
+	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note", "currency"], "the kinds are elixir, charm, hint, note and currency")
 	var a: Dictionary = Content.item("ssanghwatang")
 	check(a["kind"] == "elixir" and a["name_ko"] == "쌍화탕" and a["name_en"] == "Ssanghwatang" and a["description_en"] == "Herbal tonic. Restores half a heart." and a["heal_units"] == 1, "ssanghwatang is as briefed")
 	var b: Dictionary = Content.item("gongjindan")
@@ -5540,3 +5550,247 @@ func test_backpack_input() -> void:
 	shift.location = KEY_LOCATION_RIGHT
 	check(not SpellingCursorScript.is_player_key(shift) and not SpellingCursorScript.is_player_key(tab), "Tab and right Shift are not spelling-view player keys")
 	_section_done("test_backpack_input")
+
+
+# ---- Prompt 7b: DDEOK, reward rolls, harm decoys ----
+
+const RewardTableScript := preload("res://scripts/reward_table.gd")
+
+
+## A stand-in random source: always returns `value` (clamped into the range asked for).
+class ForcedRng:
+	extends RefCounted
+	var value := 1
+
+	func randi_range(from: int, to: int) -> int:
+		return clampi(value, from, to)
+
+
+func test_ddeok_item() -> void:
+	var d: Dictionary = Content.item("ddeok")
+	check(d["kind"] == "currency" and d["name_ko"] == "DDEOK" and d["name_en"] == "DDEOK" and d["description_en"] == "Virtual rice-cake token. A precursor of the in-game currency." and d["usable"] == false, "ddeok is as briefed")
+	check(d["icon"] == "baekseolgi", "ddeok has the baekseolgi icon")
+	check(Content.item_problem({"id": "c", "kind": "currency"}, {}) == "", "kind currency is valid")
+	check(Content.item_problem({"id": "w", "kind": "coin"}, {}).contains("unknown kind 'coin'"), "an unknown kind is still rejected")
+	check(Content.item_problem({"id": "n", "kind": "note"}, {}) == "" and Content.item_problem({"id": "n", "kind": "note", "icon": "baekseolgi"}, {}) == "", "the icon field is optional")
+	check(Content.item_problem({"id": "n", "kind": "note", "icon": ""}, {}) != "" and Content.item_problem({"id": "n", "kind": "note", "icon": 3}, {}) != "", "an icon that is not a name is rejected")
+	check(not Content.item("ssanghwatang").has("icon"), "the other items have no icon")
+	GameState.new_hike(0)
+	check(GameState.inventory.add("ddeok", 1000) and GameState.inventory.count("ddeok") == 1000, "ddeok stacks with no cap")
+	GameState.new_hike()
+	_section_done("test_ddeok_item")
+
+
+func test_reward_table() -> void:
+	var block: Dictionary = _config().get("decoy_rewards", {})
+	var table: Array = block.get("table", [])
+	var shape: Array = []
+	for entry in table:
+		shape.append([entry["item"], int(entry["weight"]), int(entry["count"])])
+	check(shape == [["ssanghwatang", 3, 1], ["gongjindan", 1, 1], ["ddeok", 4, 1]], "the data table is the placeholder 3 : 1 : 4, count 1 each")
+	var label = block.get("floating_label")
+	check(label is Dictionary and _is_color(label.get("color")) and float(label.get("rise", 0)) > 0.0 and float(label.get("seconds", 0)) > 0.0, "the floating label has a rise, a duration and a colour")
+	var good := RewardTableScript.new(table, Content.items)
+	check(good.is_valid() and good.problem == "" and good.total_weight() == 8, "the data table is valid, total weight 8")
+	var items := Content.items
+	var bad := {
+		"an unknown item": [{"item": "bogus", "weight": 1, "count": 1}],
+		"a zero weight": [{"item": "ddeok", "weight": 0, "count": 1}],
+		"a negative weight": [{"item": "ddeok", "weight": -2, "count": 1}],
+		"a count of 0": [{"item": "ddeok", "weight": 1, "count": 0}],
+		"a missing count": [{"item": "ddeok", "weight": 1}],
+		"a fractional weight": [{"item": "ddeok", "weight": 1.5, "count": 1}],
+		"an entry that is not a dictionary": ["ddeok"],
+		"no entries": [],
+	}
+	for what in bad:
+		var t := RewardTableScript.new(bad[what], items)
+		check(not t.is_valid() and t.problem != "" and t.roll(ForcedRng.new()).is_empty(), "a table with %s is an error with a message, and rolls nothing (%s)" % [what, t.problem])
+	check(not RewardTableScript.new(null, items).is_valid(), "a table that is not an array is an error")
+	check(RewardTableScript.new(bad["an unknown item"], items).problem.contains("'bogus'"), "the message names the unknown item")
+	# Forced rolls: 1..3 ssanghwatang, 4 gongjindan, 5..8 ddeok.
+	var rng := ForcedRng.new()
+	var expected := ["ssanghwatang", "ssanghwatang", "ssanghwatang", "gongjindan", "ddeok", "ddeok", "ddeok", "ddeok"]
+	var forced_ok := true
+	for i in 8:
+		rng.value = i + 1
+		var won: Dictionary = good.roll(rng)
+		forced_ok = forced_ok and won == {"item": expected[i], "count": 1}
+	check(forced_ok, "a forced roll of 1..8 returns each entry by its weight")
+	var multi := RewardTableScript.new([{"item": "ddeok", "weight": 1, "count": 5}], items)
+	check(multi.roll(rng) == {"item": "ddeok", "count": 5}, "an entry's count is returned")
+	# Pinned seed: repeatable.
+	var a := RandomNumberGenerator.new()
+	var b := RandomNumberGenerator.new()
+	a.seed = 12345
+	b.seed = 12345
+	var seq_a: Array = []
+	var seq_b: Array = []
+	for i in 50:
+		seq_a.append(good.roll(a)["item"])
+		seq_b.append(good.roll(b)["item"])
+	check(seq_a == seq_b, "the same seed gives the same sequence")
+	# Proportions: 8000 rolls, each share within 3 percentage points of 3/8, 1/8, 4/8.
+	var n := 8000
+	var tally := {"ssanghwatang": 0, "gongjindan": 0, "ddeok": 0}
+	var big := RandomNumberGenerator.new()
+	big.seed = 20261031
+	for i in n:
+		tally[good.roll(big)["item"]] += 1
+	var want := {"ssanghwatang": 3.0 / 8.0, "gongjindan": 1.0 / 8.0, "ddeok": 4.0 / 8.0}
+	for id in tally:
+		var share: float = float(tally[id]) / n
+		check(absf(share - want[id]) <= 0.03, "over %d rolls %s came up %.3f of the time, within 0.03 of %.3f" % [n, id, share, want[id]])
+	_section_done("test_reward_table")
+
+
+## A map for the decoy tests, built with the backpack holding `held` and `controlled` picking.
+func _decoy_map(controlled := "fernanda", held := {}) -> Node3D:
+	GameState.new_hike()
+	for id in held:
+		GameState.inventory.add(id, held[id])
+	GameState.controlled = controlled
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	return map
+
+
+func _plant_of(map: Node3D, kind: String, nth := 0) -> Node3D:
+	var seen := 0
+	for plant in map.plants:
+		if plant.kind == kind:
+			if seen == nth:
+				return plant
+			seen += 1
+	return null
+
+
+func test_reward_pick() -> void:
+	var map: Node3D = await _decoy_map()
+	check(map.reward_table.is_valid(), "(setup) the map's reward table is valid")
+	var rng := ForcedRng.new()
+	map.reward_rng = rng
+	var plant := _plant_of(map, "decoy_reward", 0)
+	var basket_before: Array = map.picking.basket.duplicate()
+	var hearts_before: Dictionary = GameState.heart_units.duplicate()
+	rng.value = 5  # ddeok
+	map.pick_plant(plant)
+	check(GameState.inventory.snapshot() == {"ddeok": 1}, "a reward pick adds exactly the rolled item and count to the backpack")
+	check(map.picking.basket == basket_before and plant.letter == "" and not map.picking.has_letter(map.plants.find(plant)), "the letter handling is unchanged: gone from the plant, not in the basket")
+	check(map.find_children("*", "CPUParticles3D", false, false).size() == 1, "the steam puff still plays")
+	check(GameState.heart_units == hearts_before, "a reward decoy costs no hearts")
+	var float_label := map.find_child("FloatingLabel", false, false) as Label3D
+	check(float_label != null and float_label.text == "+1 DDEOK", "a floating '+1 DDEOK' label appears")
+	check(float_label != null and float_label.global_position.distance_to(plant.letter_position()) < 0.01, "it starts at the picked plant's letter")
+	var second := _plant_of(map, "decoy_reward", 1)
+	rng.value = 1  # ssanghwatang
+	map.pick_plant(second)
+	check(GameState.inventory.snapshot() == {"ddeok": 1, "ssanghwatang": 1}, "a second pick adds the next roll")
+	var labels := map.find_children("*", "Label3D", false, false)
+	var texts: Array = labels.map(func(l): return l.text)
+	check(texts.has("+1 Ssanghwatang 쌍화탕"), "its label reads name_en then name_ko")
+	rng.value = 4  # gongjindan
+	map.pick_plant(_plant_of(map, "decoy_reward", 2))
+	check(GameState.inventory.count("gongjindan") == 1, "a third roll gives gongjindan")
+	map.pick_plant(second)  # already picked
+	check(GameState.inventory.count("ssanghwatang") == 1, "a picked plant gives nothing twice")
+	var label_count := map.find_children("*", "Label3D", false, false).size()
+	await get_tree().create_timer(float(map.reward_label_config["seconds"]) + 0.3).timeout
+	check(label_count == 3 and map.find_children("*", "Label3D", false, false).size() == 0, "the labels rise, fade and free themselves")
+	# A restart (death) removes what was found.
+	map.begin_death_beat()
+	map.tick_beat(100.0)
+	check(GameState.inventory.is_empty(), "a death restores the backpack to the scene start: the finds are gone")
+	map.free()
+	get_tree().paused = false
+	# The real random source: randomized, rolls something valid.
+	map = await _decoy_map()
+	check(map.reward_rng is RandomNumberGenerator, "the game rolls with a RandomNumberGenerator")
+	map.pick_plant(_plant_of(map, "decoy_reward", 0))
+	var got: Array = GameState.inventory.items()
+	check(got.size() == 1 and ["ssanghwatang", "gongjindan", "ddeok"].has(got[0]["id"]) and got[0]["count"] == 1, "a real pick gives one of the table's items")
+	map.free()
+	# A bad table: no crash, no item, steam still plays.
+	map = await _decoy_map()
+	map.reward_table = RewardTableScript.new([], Content.items)
+	map.pick_plant(_plant_of(map, "decoy_reward", 0))
+	check(GameState.inventory.is_empty() and map.find_children("*", "CPUParticles3D", false, false).size() == 1, "a bad table gives nothing but the steam still plays")
+	map.free()
+	GameState.new_hike()
+	_section_done("test_reward_pick")
+
+
+func test_harm_pick() -> void:
+	for controlled in ["fernanda", "nestor"]:
+		var other: String = GameState.partner_of(controlled)
+		var map: Node3D = await _decoy_map(controlled, {"ddeok": 2})
+		var start := GameState.max_units()
+		var cost := 0
+		for kind_id in ["keuncheonnamseong", "butsunnamu"]:
+			var units := 0
+			for k in _config()["plants"]["kinds"]:
+				if k["id"] == kind_id:
+					units = int(k["damage_units"])
+			var plant: Node3D
+			for p in map.plants:
+				if p.kind_id == kind_id:
+					plant = p
+					break
+			var puffs_before := map.find_children("*", "CPUParticles3D", false, false).size()
+			map.pick_plant(plant)
+			cost += units
+			check(units == 1 and GameState.heart_units[controlled] == start - cost, "%s: picking %s costs the picker %d half-unit(s)" % [controlled, kind_id, units])
+			check(GameState.heart_units[other] == start, "%s: the other traveler's hearts are unchanged" % controlled)
+			check(map.find_children("*", "CPUParticles3D", false, false).size() == puffs_before + 1, "%s: the steam still plays for %s" % [controlled, kind_id])
+			check(plant.letter == "" and map.picking.basket.is_empty(), "%s: the harm decoy's letter is gone and not in the basket" % controlled)
+		check(GameState.inventory.snapshot() == {"ddeok": 2} and not map.is_death_beat_playing(), "%s: no item change and no death from non-lethal picks" % controlled)
+		map.free()
+		get_tree().paused = false
+	# Lethal: the picker is at half a heart.
+	var map: Node3D = await _decoy_map("fernanda", {"ddeok": 1})
+	GameState.inventory.add("gongjindan")
+	GameState.heart_units["fernanda"] = 1
+	var deaths: Array = []
+	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
+	GameState.travelers_died.connect(on_death)
+	var restarts := [0]
+	map.restarted.connect(func(): restarts[0] += 1)
+	map.pick_plant(_plant_of(map, "decoy_harm", 0))
+	check(deaths.size() == 1 and deaths[0][0] == "fernanda" and deaths[0][1] == "nestor", "the lethal pick announces the death once (%s)" % str(deaths))
+	check(not GameState.is_alive("fernanda") and map.is_death_beat_playing() and map.restarting and not map.picks_allowed(), "the death beat starts and nothing can be picked")
+	map.pick_plant(_plant_of(map, "decoy_harm", 1))
+	check(deaths.size() == 1, "a further pick in the beat does not repeat the death")
+	map.tick_beat(100.0)
+	GameState.travelers_died.disconnect(on_death)
+	check(restarts[0] == 1 and not map.is_death_beat_playing(), "the scene restarts once")
+	check(GameState.heart_units["fernanda"] == GameState.max_units() and GameState.heart_units["nestor"] == GameState.max_units(), "hearts are restored to the scene start")
+	check(GameState.inventory.snapshot() == {"ddeok": 1}, "the backpack is restored to the scene-start contents")
+	map.free()
+	GameState.new_hike()
+	_section_done("test_harm_pick")
+
+
+func test_backpack_icons() -> void:
+	var map: Node3D = await _backpack_map({"ddeok": 3, "ssanghwatang": 1, "gongjindan": 1})
+	check(map.open_backpack(), "(setup) the backpack opens")
+	await _settle_layout()
+	var hud = map.backpack_hud
+	var size := float(_config()["backpack_hud"]["icon_size"])
+	check(hud.row_count() == 3 and hud.row_id(0) == "ddeok", "(setup) three rows, ddeok first")
+	check(_row_texts(hud, 0) == ["DDEOK", "DDEOK", "×3", "Virtual rice-cake token. A precursor of the in-game currency."], "the DDEOK row reads as data says (%s)" % str(_row_texts(hud, 0)))
+	var icon := hud._rows.get_child(0).find_child("Icon", true, false) as Control
+	check(icon != null and icon.size == Vector2(size, size) and icon.is_visible_in_tree(), "the DDEOK row has an icon of the data's size")
+	check(icon != null and hud.row_rect(0).encloses(icon.get_global_rect()), "the icon is inside its row")
+	check(icon != null and icon.get_global_rect().end.x <= hud.row_label(0, "NameEn").get_global_rect().position.x, "the icon sits beside the text, to its left")
+	check(hud._rows.get_child(1).find_child("Icon", true, false) == null and hud._rows.get_child(2).find_child("Icon", true, false) == null, "rows without an icon have none")
+	check(_row_texts(hud, 1) == ["쌍화탕", "Ssanghwatang", "×1", "Herbal tonic. Restores half a heart."], "an icon-less row reads as before")
+	check(hud._rows.get_child(1).get_child(0) is VBoxContainer, "an icon-less row keeps its old layout: the text column is the row's only child")
+	map.close_backpack()
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_backpack_icons")

@@ -27,6 +27,8 @@ const PauseMenu := preload("res://scenes/foraging/pause_menu.gd")
 const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
 const Backpack := preload("res://scenes/foraging/backpack.gd")
 const BackpackHud := preload("res://scenes/foraging/backpack_hud.gd")
+const RewardTable := preload("res://scripts/reward_table.gd")
+const PLANT_FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -100,6 +102,12 @@ var music_silenced := false
 ## it or with the spelling view. `restarting` is not set while it is open.
 var backpack
 var backpack_hud: CanvasLayer
+## What reward decoys give (data: foraging.decoy_rewards): the weighted table, the
+## random source it is rolled with (randomized once per scene start; tests may
+## replace it with anything that has randi_range) and the rise of the floating label.
+var reward_table
+var reward_rng = RandomNumberGenerator.new()
+var reward_label_config: Dictionary = {}
 ## Data: foraging.stuck_music.
 var music_config: Dictionary = {}
 ## The stuck countdown (see Stuck, Countdown), its HUD and the verdict of the
@@ -239,6 +247,12 @@ func _ready() -> void:
 	backpack_hud.setup(backpack, GameState.inventory, config["backpack_hud"])
 	backpack_hud.open_handler = open_backpack
 	backpack_hud.close_requested.connect(close_backpack)
+	var rewards: Dictionary = config["decoy_rewards"]
+	reward_table = RewardTable.new(rewards["table"], Content.items)
+	if not reward_table.is_valid():
+		push_error("%s in foraging.decoy_rewards of %s: reward decoys will give nothing" % [reward_table.problem, GameState.game_id])
+	reward_label_config = rewards["floating_label"]
+	reward_rng.randomize()
 	GameState.begin_scene("foraging")  # a death restores the hearts held now
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
@@ -568,6 +582,59 @@ func pick_plant(plant: Node3D) -> void:
 	else:
 		_puff(at)
 		_play_tsss()
+		match plant.kind:
+			"decoy_reward":
+				_give_reward(at)
+			"decoy_harm":
+				_harm_picker(plant)
+
+
+## A reward decoy was picked: rolls the table, puts the item in the backpack and
+## floats "+1 Name 이름" up from the plant. Nothing if the table is bad.
+func _give_reward(at: Vector3) -> Dictionary:
+	var won: Dictionary = reward_table.roll(reward_rng)
+	if won.is_empty() or not GameState.inventory.add(won["item"], won["count"]):
+		return {}
+	var item: Dictionary = Content.item(won["item"])
+	var text := "+%d %s" % [won["count"], item["name_en"]]
+	if String(item.get("name_ko", "")) != "" and item["name_ko"] != item["name_en"]:
+		text += " " + String(item["name_ko"])
+	_float_label(text, at)
+	return won
+
+
+## A short label that rises from a world position and fades (Label3D, like the letters).
+func _float_label(text: String, at: Vector3) -> Label3D:
+	var cfg := reward_label_config
+	var label := Label3D.new()
+	label.name = "FloatingLabel"  # a second one at once is renamed by Godot; find them by type
+	label.text = text
+	label.font = PLANT_FONT
+	label.font_size = int(cfg["font_size"])
+	label.pixel_size = float(cfg["pixel_size"])
+	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	label.shaded = false
+	label.no_depth_test = true  # never hidden by the plant it rose from
+	label.outline_size = 16
+	label.outline_modulate = Color(0.08, 0.06, 0.1)
+	var c: Array = cfg["color"]
+	label.modulate = Color(c[0], c[1], c[2])
+	add_child(label)
+	label.global_position = at
+	var tween := create_tween().set_parallel(true)
+	tween.tween_property(label, "global_position:y", at.y + float(cfg["rise"]), float(cfg["seconds"]))
+	tween.tween_property(label, "modulate:a", 0.0, float(cfg["seconds"]))
+	tween.chain().tween_callback(label.queue_free)
+	return label
+
+
+## A harm decoy was picked: the picker (and only the picker) loses the plant's
+## damage_units half-units. If that kills them both the death beat starts. The
+## gore for the two harm decoys is not built (word bank v0.1 is not in the repo).
+func _harm_picker(plant: Node3D) -> void:
+	var units := int(_kinds[plant.kind_id].get("damage_units", 0))
+	if units > 0 and GameState.damage_units(GameState.controlled, units, String(_kinds[plant.kind_id].get("injury", ""))):
+		begin_death_beat()
 
 
 ## A one-shot puff of grey-white steam at a world position.

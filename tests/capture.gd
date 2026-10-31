@@ -17,7 +17,9 @@ extends Node
 ## `-- --stuck-only` for the stuck-countdown and monster shots (they play the placeholder music),
 ## `-- --pause-only` for the pause menu shots {pause_menu_resume,pause_menu_restart_focus,
 ## pause_menu_confirm}.png, `-- --backpack-only` for the backpack shots
-## {backpack_filled,backpack_empty}.png.
+## {backpack_filled,backpack_empty}.png, `-- --reward-shots` for the decoy shots
+## {reward_backpack_ddeok,reward_floating_label,harm_keuncheonnamseong,harm_butsunnamu}.png (the harm
+## shots show the steam and the hearts only: the gore is not built, see the 7b log).
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -59,6 +61,10 @@ func _ready() -> void:
 		return
 	if "--backpack-only" in OS.get_cmdline_user_args():
 		await _backpack_shots()
+		get_tree().quit()
+		return
+	if "--reward-shots" in OS.get_cmdline_user_args():
+		await _reward_shots()
 		get_tree().quit()
 		return
 	if "--credits-only" in OS.get_cmdline_user_args():
@@ -852,6 +858,73 @@ func _backpack_shots() -> void:
 	await _frames(5)
 	_save("backpack_empty")
 	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+
+
+## A map with `player` standing next to `plant`, the camera snapped to it.
+func _stand_by(map: Node3D, plant: Node3D) -> void:
+	var x: float = plant.global_position.x - 2.0
+	map.partner.global_position = Vector3(x - 1.5, map.terrain.height_at(x - 1.5), plant.global_position.z)
+	map.player.global_position = Vector3(x, map.terrain.height_at(x), plant.global_position.z)
+	map.update_camera(0.0, true)
+
+
+## The reward decoy shots: the backpack holding DDEOK x3, Ssanghwatang x1 and
+## Gongjindan x1; the floating "+1 DDEOK" after a pick; and each harm decoy just
+## after it was picked (steam and a lower heart row; no gore yet).
+func _reward_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	GameState.inventory.add("ddeok", 3)
+	GameState.inventory.add("ssanghwatang")
+	GameState.inventory.add("gongjindan")
+	print("backpack opens: %s" % map.open_backpack())
+	await _frames(5)
+	_save("reward_backpack_ddeok")
+	map.close_backpack()
+	GameState.new_hike()
+	await _frames(3)
+	var forced := RefCounted.new()
+	forced.set_script(load("res://tests/forced_rng.gd"))
+	forced.value = 5  # DDEOK
+	map.reward_rng = forced
+	var reward: Node3D
+	for plant in map.plants:
+		if plant.kind == "decoy_reward":
+			reward = plant
+			break
+	_stand_by(map, reward)
+	await _frames(5)
+	map.pick_plant(reward)
+	await _frames(20)
+	_save("reward_floating_label")
+	map.free()
+	for kind_id in ["keuncheonnamseong", "butsunnamu"]:
+		GameState.new_hike()
+		map = load("res://scenes/foraging/foraging.tscn").instantiate()
+		add_child(map)
+		map.set_physics_process(false)
+		map.set_process(false)
+		await _frames(5)
+		var harm: Node3D
+		for plant in map.plants:
+			if plant.kind_id == kind_id:
+				harm = plant
+				break
+		_stand_by(map, harm)
+		await _frames(5)
+		map.pick_plant(harm)
+		await _frames(12)
+		_save("harm_" + kind_id)
+		map.free()
 	get_tree().paused = false
 	GameState.new_hike()
 
