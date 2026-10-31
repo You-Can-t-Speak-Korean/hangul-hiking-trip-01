@@ -4,16 +4,58 @@ extends Node
 
 const CURRICULUM_PATH := "res://data/series/curriculum.json"
 const RULES_PATH := "res://data/series/rules.json"
+const ITEMS_PATH := "res://data/series/items.json"
 const MOUNTAIN_DIR := "res://data/mountains/"
+const ITEM_KINDS: Array[String] = ["elixir", "charm", "hint", "note"]
 
 var curriculum: Dictionary = {}
 var rules: Dictionary = {}
+## Item id -> its definition, in file order (see items.json).
+var items: Dictionary = {}
 var _mountains: Dictionary = {}
 
 
 func _ready() -> void:
 	curriculum = load_json(CURRICULUM_PATH)
 	rules = load_json(RULES_PATH)
+	_load_items()
+
+
+## Reads items.json. An entry that item_problem() rejects is reported and skipped.
+func _load_items() -> void:
+	items.clear()
+	for entry in load_json(ITEMS_PATH).get("items", []):
+		var problem := item_problem(entry, items)
+		if problem != "":
+			push_error("%s in %s" % [problem, ITEMS_PATH])
+		else:
+			items[entry["id"]] = entry
+
+
+## Why `entry` can't be an item next to the `known` ones (id -> definition), or ""
+## if it can: it must be a dictionary with a new id and a kind from ITEM_KINDS,
+## and an elixir needs heal_units of at least 1.
+static func item_problem(entry: Variant, known: Dictionary) -> String:
+	if not entry is Dictionary or String(entry.get("id", "")) == "":
+		return "Item without an id"
+	var id := String(entry["id"])
+	if known.has(id):
+		return "Item id '%s' appears twice" % id
+	var kind := String(entry.get("kind", ""))
+	if not ITEM_KINDS.has(kind):
+		return "Item '%s' has unknown kind '%s' (want one of %s)" % [id, kind, ITEM_KINDS]
+	if kind == "elixir" and int(entry.get("heal_units", 0)) < 1:
+		return "Elixir '%s' needs heal_units of at least 1" % id
+	return ""
+
+
+## The definition of item `id`, or {} if there is no such item.
+func item(id: String) -> Dictionary:
+	return items.get(id, {})
+
+
+func has_item(id: String) -> bool:
+	return items.has(id)
 
 
 func load_json(path: String) -> Dictionary:

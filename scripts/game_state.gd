@@ -10,6 +10,10 @@ extends Node
 ## - If one traveler hits 0, both die (the monster eats the survivor).
 ## - Death restarts the current scene with the hearts held at its start.
 ## - DDEOK (the currency) carries over to the next game.
+## - Fernanda's backpack (`inventory`) is restored with the hearts: a death or a
+##   restart puts back exactly what it held when the scene began.
+
+const InventoryScript := preload("res://scripts/inventory.gd")
 
 ## `units` is the traveler's new total in half-units, not hearts.
 signal hearts_changed(traveler: String, units: int)
@@ -27,9 +31,12 @@ var two_player: bool = false
 var heart_units: Dictionary = {}  # traveler -> half-units
 var ddeok: int = 0
 var current_scene: String = ""
+## Fernanda's backpack. One instance for the whole run (HUDs stay connected to it).
+var inventory := InventoryScript.new()
 
 var _scene_start_units: Dictionary = {}
 var _scene_start_ddeok: int = 0
+var _scene_start_inventory: Dictionary = {}
 
 
 func _ready() -> void:
@@ -77,15 +84,17 @@ func new_hike(starting_ddeok: int = -1) -> void:
 		ddeok = starting_ddeok
 	else:
 		ddeok = int(Content.rules.get("starting_ddeok_without_save", 0))
+	inventory.clear()
 	current_scene = ""
 	begin_scene("")
 
 
-## Snapshots hearts and ddeok so restart_scene() can restore them.
+## Snapshots hearts, ddeok and the backpack so restart_scene() can restore them.
 func begin_scene(scene_id: String) -> void:
 	current_scene = scene_id
 	_scene_start_units = heart_units.duplicate()
 	_scene_start_ddeok = ddeok
+	_scene_start_inventory = inventory.snapshot()
 	# Saving goes here later (progress save per scene).
 
 
@@ -93,6 +102,7 @@ func begin_scene(scene_id: String) -> void:
 func restart_scene() -> void:
 	heart_units = _scene_start_units.duplicate()
 	ddeok = _scene_start_ddeok
+	inventory.restore(_scene_start_inventory)
 	for t in TRAVELERS:
 		hearts_changed.emit(t, heart_units[t])
 	ddeok_changed.emit(ddeok)

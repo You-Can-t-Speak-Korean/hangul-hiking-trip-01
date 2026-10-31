@@ -16,7 +16,8 @@ extends Node
 ## `-- --hearts-only` to take only the hearts shots, `-- --walk-limit-only` for the walk-limit shots,
 ## `-- --stuck-only` for the stuck-countdown and monster shots (they play the placeholder music),
 ## `-- --pause-only` for the pause menu shots {pause_menu_resume,pause_menu_restart_focus,
-## pause_menu_confirm}.png.
+## pause_menu_confirm}.png, `-- --backpack-only` for the backpack shots
+## {backpack_filled,backpack_empty}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -54,6 +55,10 @@ func _ready() -> void:
 		return
 	if "--pause-only" in OS.get_cmdline_user_args():
 		await _pause_shots()
+		get_tree().quit()
+		return
+	if "--backpack-only" in OS.get_cmdline_user_args():
+		await _backpack_shots()
 		get_tree().quit()
 		return
 	if "--credits-only" in OS.get_cmdline_user_args():
@@ -820,6 +825,32 @@ func _pause_shots() -> void:
 	await _frames(4)
 	_save("pause_menu_confirm")
 	print("countdown still %.2f s, music silenced %s" % [map.countdown.left, map.music_silenced])
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+
+
+## Fernanda's backpack, opened through the real path (open_backpack): one
+## ssanghwatang, two gongjindan and one spelling hint, then emptied while it is open.
+func _backpack_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	GameState.inventory.add("ssanghwatang")
+	GameState.inventory.add("gongjindan", 2)
+	GameState.inventory.add("spelling_hint")
+	print("backpack opens: %s" % map.open_backpack())
+	await _frames(5)
+	_save("backpack_filled")
+	GameState.inventory.clear()
+	await _frames(5)
+	_save("backpack_empty")
 	map.free()
 	get_tree().paused = false
 	GameState.new_hike()

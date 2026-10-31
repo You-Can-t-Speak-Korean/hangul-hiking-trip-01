@@ -25,6 +25,8 @@ const StuckMusic := preload("res://scenes/foraging/stuck_music.gd")
 const Deer := preload("res://scenes/foraging/deer.gd")
 const PauseMenu := preload("res://scenes/foraging/pause_menu.gd")
 const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
+const Backpack := preload("res://scenes/foraging/backpack.gd")
+const BackpackHud := preload("res://scenes/foraging/backpack_hud.gd")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
 const CAMERA_DISTANCE := 30.0   # orthographic: only needs to clear the stage
@@ -93,6 +95,11 @@ var restarting := false
 var pause_menu
 var pause_hud: CanvasLayer
 var music_silenced := false
+## Fernanda's backpack (Tab, right Shift or right Ctrl): its rules and its HUD. It
+## pauses the map exactly as the pause menu does and is never open together with
+## it or with the spelling view. `restarting` is not set while it is open.
+var backpack
+var backpack_hud: CanvasLayer
 ## Data: foraging.stuck_music.
 var music_config: Dictionary = {}
 ## The stuck countdown (see Stuck, Countdown), its HUD and the verdict of the
@@ -226,6 +233,12 @@ func _ready() -> void:
 	add_child(pause_hud)
 	pause_hud.setup(pause_menu, config["pause_menu"])
 	pause_hud.chosen.connect(_on_pause_chosen)
+	backpack = Backpack.new()
+	backpack_hud = BackpackHud.new()
+	add_child(backpack_hud)
+	backpack_hud.setup(backpack, GameState.inventory, config["backpack_hud"])
+	backpack_hud.open_handler = open_backpack
+	backpack_hud.close_requested.connect(close_backpack)
 	GameState.begin_scene("foraging")  # a death restores the hearts held now
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
@@ -248,7 +261,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
-	if (spelling_hud != null and spelling_hud.is_open()) or (pause_menu != null and pause_menu.is_open):  # never leave the tree paused behind
+	if (spelling_hud != null and spelling_hud.is_open()) or (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open):  # never leave the tree paused behind
 		get_tree().paused = false
 
 
@@ -282,7 +295,7 @@ func step(input: Vector2, delta: float) -> void:
 		picking.cancel_walk()  # the keys take over
 	elif picking.walk_target >= 0:
 		walk = _walk_step(delta)
-	if not restarting and not pause_menu.is_open:  # the last second, the kill, the death beat and the menu: nobody walks
+	if not restarting and not pause_menu.is_open and not backpack.is_open:  # the last second, the kill, the death beat and the menus: nobody walks
 		player.drive(walk, delta)
 		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
@@ -298,10 +311,10 @@ func step(input: Vector2, delta: float) -> void:
 	_tick_stuck(delta)
 
 
-## False while restarting, while the pause menu is open, or once the travelers are
-## dead (no one can pick).
+## False while restarting, while the pause menu or the backpack is open, or once
+## the travelers are dead (no one can pick).
 func picks_allowed() -> bool:
-	if restarting or pause_menu.is_open:
+	if restarting or pause_menu.is_open or backpack.is_open:
 		return false
 	for id in GameState.TRAVELERS:
 		if not GameState.is_alive(id):
@@ -862,7 +875,7 @@ func plant_at(screen_pos: Vector2) -> Node3D:
 ## a plant again; moving straight from one plant onto another starts the new
 ## tooltip at once. Only one is up at a time: the latest trigger wins.
 func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
-	if restarting or pause_menu.is_open:  # no names in the last second, the kill, the death beat or the menu
+	if restarting or pause_menu.is_open or backpack.is_open:  # no names in the last second, the kill, the death beat or the menus
 		_hover_plant = null
 		_tip_plant = null
 		_tooltip.visible = false
@@ -1099,7 +1112,7 @@ func _log_stuck(event: String, verdict: Dictionary, note: String) -> void:
 ## one place besides begin_death_beat), so picks, walks, hover names and the
 ## spelling view are rejected through the checks that flag already has.
 func _tick_stuck(delta: float) -> void:
-	countdown.paused = spelling_hud.is_open() or pause_menu.is_open
+	countdown.paused = spelling_hud.is_open() or pause_menu.is_open or backpack.is_open
 	if countdown.tick(delta):
 		_begin_monster()  # the kill's clock starts at the next tick, not with what is left of this one
 	else:
@@ -1126,6 +1139,38 @@ func open_pause_menu() -> bool:
 	_silence_music(true)
 	pause_hud.refresh()
 	get_tree().paused = true
+	return true
+
+
+## A backpack key with the panel closed (the HUD calls this): opens Fernanda's
+## backpack and pauses the map, the countdown and the music, as the pause menu
+## does. False (and nothing happens) while the spelling view or the pause menu is
+## open, the scene is restarting (the last second, the kill, the death beat, a
+## restart asked for), a traveler is dead or the backpack is open already.
+func open_backpack() -> bool:
+	if spelling_hud.is_open() or not picks_allowed() or _dim != null or kill != null or pause_menu.restart_requests > 0:
+		return false
+	if not backpack.open(true):
+		return false
+	picking.cancel_walk()
+	_tip_plant = null  # a hover name would stay frozen on screen
+	_tooltip.visible = false
+	countdown.paused = true
+	_silence_music(true)
+	backpack_hud.refresh()
+	get_tree().paused = true
+	return true
+
+
+## Closes the backpack and lets the map, the countdown and the music go on in
+## place. False if it was not open.
+func close_backpack() -> bool:
+	if not backpack.close():
+		return false
+	get_tree().paused = false
+	countdown.paused = spelling_hud.is_open()
+	_silence_music(false)
+	backpack_hud.refresh()
 	return true
 
 

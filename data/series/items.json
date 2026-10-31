@@ -1,0 +1,9 @@
+{
+  "_note": "Series-wide item types. kind is elixir | charm | hint | note. heal_units is in half-hearts (rules.json half_units_per_heart). Items with usable false cannot be used yet. No note items exist yet.",
+  "items": [
+    {"id": "ssanghwatang", "kind": "elixir", "name_ko": "쌍화탕", "name_en": "Ssanghwatang", "description_en": "Herbal tonic. Restores half a heart.", "heal_units": 1},
+    {"id": "gongjindan", "kind": "elixir", "name_ko": "공진단", "name_en": "Gongjindan", "description_en": "Herbal pill. Restores one heart.", "heal_units": 2},
+    {"id": "spelling_hint", "kind": "hint", "name_ko": "", "name_en": "Spelling hint", "description_en": "Shows one correct letter for 2 seconds.", "usable": false},
+    {"id": "slow_time_charm", "kind": "charm", "name_ko": "", "name_en": "Slow-time charm", "description_en": "Slows time.", "usable": false}
+  ]
+}

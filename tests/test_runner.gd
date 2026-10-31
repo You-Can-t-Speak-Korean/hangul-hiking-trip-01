@@ -73,11 +73,20 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_pause_menu_ignored",
 	"test_pause_menu_input",
 	"test_pause_menu_restart",
+	"test_items_data",
+	"test_inventory_logic",
+	"test_inventory_game_state",
+	"test_backpack_data",
+	"test_backpack_logic",
+	"test_backpack_scene",
+	"test_backpack_ignored",
+	"test_backpack_restart",
+	"test_backpack_input",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1523
+const MIN_CHECKS := 1743
 
 
 func check(condition: bool, label: String) -> void:
@@ -177,6 +186,16 @@ func _ready() -> void:
 	await test_pause_menu_ignored()
 	await test_pause_menu_input()
 	await test_pause_menu_restart()
+	print("== Items and Fernanda's backpack ==")
+	test_items_data()
+	test_inventory_logic()
+	test_inventory_game_state()
+	test_backpack_data()
+	test_backpack_logic()
+	await test_backpack_scene()
+	await test_backpack_ignored()
+	await test_backpack_restart()
+	test_backpack_input()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -5054,3 +5073,470 @@ func test_pause_menu_restart() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_pause_menu_restart")
+
+
+
+# ---- Items and Fernanda's backpack ----
+
+const InventoryScript := preload("res://scripts/inventory.gd")
+const BackpackScript := preload("res://scenes/foraging/backpack.gd")
+const BackpackHudScript := preload("res://scenes/foraging/backpack_hud.gd")
+const KO_FONT_FILE := "NotoSansKR-VariableFont_wght.ttf"
+
+
+func test_items_data() -> void:
+	var file: Array = Content.load_json(Content.ITEMS_PATH).get("items", [])
+	check(file.size() == 4 and Content.items.size() == 4, "items.json lists four items and all four loaded")
+	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm"], "the ids load in file order")
+	for id in Content.items:
+		var item: Dictionary = Content.item(id)
+		check(item["id"] == id and Content.ITEM_KINDS.has(item["kind"]), "%s has its id and a valid kind" % id)
+		check(item["name_en"] is String and item["name_en"] != "" and item["description_en"] is String and item["description_en"] != "", "%s has an English name and description" % id)
+		check(item["name_ko"] is String, "%s has a name_ko (possibly empty)" % id)
+	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note"], "the kinds are elixir, charm, hint and note")
+	var a: Dictionary = Content.item("ssanghwatang")
+	check(a["kind"] == "elixir" and a["name_ko"] == "쌍화탕" and a["name_en"] == "Ssanghwatang" and a["description_en"] == "Herbal tonic. Restores half a heart." and a["heal_units"] == 1, "ssanghwatang is as briefed")
+	var b: Dictionary = Content.item("gongjindan")
+	check(b["kind"] == "elixir" and b["name_ko"] == "공진단" and b["name_en"] == "Gongjindan" and b["description_en"] == "Herbal pill. Restores one heart." and b["heal_units"] == 2, "gongjindan is as briefed")
+	var c: Dictionary = Content.item("spelling_hint")
+	check(c["kind"] == "hint" and c["name_ko"] == "" and c["name_en"] == "Spelling hint" and c["description_en"] == "Shows one correct letter for 2 seconds." and c["usable"] == false, "spelling_hint is as briefed")
+	var d: Dictionary = Content.item("slow_time_charm")
+	check(d["kind"] == "charm" and d["name_ko"] == "" and d["name_en"] == "Slow-time charm" and d["description_en"] == "Slows time." and d["usable"] == false, "slow_time_charm is as briefed")
+	check(a["heal_units"] * 2 == b["heal_units"], "gongjindan heals twice what ssanghwatang does")
+	check(b["heal_units"] == GameState.units_per_heart(), "gongjindan heals exactly one heart")
+	check(Content.item("nope").is_empty() and not Content.has_item("nope") and Content.has_item("gongjindan"), "an unknown id has no definition")
+	# The loader's rules, on made-up entries (nothing is added to Content).
+	var known := {"x": {}}
+	check(Content.item_problem({"id": "n", "kind": "note", "name_ko": "", "name_en": "Note", "description_en": "A note."}, known) == "", "a note item is valid")
+	check(Content.item_problem({"id": "e", "kind": "elixir", "heal_units": 1}, known) == "", "an elixir with heal_units is valid")
+	check(Content.item_problem({"id": "e", "kind": "elixir"}, known).contains("heal_units"), "an elixir without heal_units is rejected, and the reason says so")
+	check(Content.item_problem({"id": "w", "kind": "weapon"}, known).contains("unknown kind 'weapon'"), "an unknown kind is rejected with a clear reason")
+	check(Content.item_problem({"id": "x", "kind": "note"}, known).contains("twice"), "a repeated id is rejected")
+	check(Content.item_problem({"kind": "note"}, known) != "" and Content.item_problem("text", known) != "", "an entry without an id, or not a dictionary, is rejected")
+	_section_done("test_items_data")
+
+
+func test_inventory_logic() -> void:
+	var inv = InventoryScript.new()
+	var fired := [0]
+	inv.changed.connect(func(): fired[0] += 1)
+	check(inv.is_empty() and inv.items() == [] and inv.count("ssanghwatang") == 0 and inv.snapshot() == {}, "a new inventory is empty")
+	check(not inv.add("bogus") and inv.last_error == "Unknown item id 'bogus'", "an unknown id is rejected with a clear error (%s)" % inv.last_error)
+	check(not inv.add("ssanghwatang", 0) and not inv.add("ssanghwatang", -2) and inv.last_error != "", "a count below 1 is rejected")
+	check(inv.is_empty() and fired[0] == 0, "rejected adds change nothing and announce nothing")
+	check(inv.add("ssanghwatang") and inv.last_error == "" and inv.count("ssanghwatang") == 1 and fired[0] == 1, "add puts one in and announces it")
+	check(inv.add("gongjindan", 2) and inv.add("spelling_hint") and inv.add("ssanghwatang") and fired[0] == 4, "more adds, each announced")
+	check(inv.items() == [{"id": "ssanghwatang", "count": 2}, {"id": "gongjindan", "count": 2}, {"id": "spelling_hint", "count": 1}], "items() is in the order first added, with counts")
+	check(not inv.is_empty() and inv.count("gongjindan") == 2 and inv.count("slow_time_charm") == 0, "count() reads one item")
+	var before: Dictionary = inv.snapshot()
+	fired[0] = 0
+	check(not inv.remove("gongjindan", 3) and inv.last_error.contains("only 2 held"), "removing more than held fails (%s)" % inv.last_error)
+	check(not inv.remove("slow_time_charm") and not inv.remove("gongjindan", 0) and not inv.remove("gongjindan", -1), "removing what isn't held, or a count below 1, fails")
+	check(inv.snapshot() == before and fired[0] == 0, "failed removals change nothing and announce nothing")
+	check(inv.remove("gongjindan") and inv.count("gongjindan") == 1 and fired[0] == 1, "remove takes one out and announces it")
+	check(inv.remove("ssanghwatang", 2) and inv.count("ssanghwatang") == 0 and fired[0] == 2, "removing them all works")
+	check(inv.items() == [{"id": "gongjindan", "count": 1}, {"id": "spelling_hint", "count": 1}], "zero-count items are dropped from items()")
+	inv.add("ssanghwatang")
+	check(inv.items()[2]["id"] == "ssanghwatang", "an item added again after it was gone goes to the end")
+	# Snapshot and restore.
+	var snap: Dictionary = inv.snapshot()
+	inv.add("slow_time_charm", 5)
+	inv.remove("gongjindan")
+	check(snap == {"gongjindan": 1, "spelling_hint": 1, "ssanghwatang": 1}, "the snapshot was a copy: later changes did not touch it")
+	fired[0] = 0
+	check(inv.restore(snap) and fired[0] == 1, "restore succeeds and announces once")
+	check(inv.items() == [{"id": "gongjindan", "count": 1}, {"id": "spelling_hint", "count": 1}, {"id": "ssanghwatang", "count": 1}] and inv.snapshot() == snap, "restore puts back the contents exactly, in the same order")
+	inv.restore({"slow_time_charm": 1, "gongjindan": 3})
+	check(inv.items() == [{"id": "slow_time_charm", "count": 1}, {"id": "gongjindan", "count": 3}], "restore takes the order of the snapshot it is given")
+	inv.restore(snap)
+	snap["gongjindan"] = 99
+	check(inv.count("gongjindan") == 1, "changing the snapshot afterwards doesn't change the inventory")
+	var held: Dictionary = inv.snapshot()
+	fired[0] = 0
+	check(not inv.restore({"ssanghwatang": 1, "bogus": 1}) and not inv.restore({"ssanghwatang": 0}) and not inv.restore({"ssanghwatang": 1.5}), "a snapshot with an unknown id, a zero count or a fractional count is rejected")
+	check(inv.snapshot() == held and fired[0] == 0, "and nothing changed, nothing announced")
+	check(inv.restore({}) and inv.is_empty() and fired[0] == 1, "restoring an empty snapshot empties it")
+	inv.add("spelling_hint")
+	fired[0] = 0
+	inv.clear()
+	check(inv.is_empty() and inv.items() == [] and fired[0] == 1, "clear empties it and announces it")
+	inv.clear()
+	check(fired[0] == 1, "clearing an empty inventory announces nothing")
+	check(inv.add("gongjindan", 1000) and inv.count("gongjindan") == 1000, "there is no cap per item")
+	_section_done("test_inventory_logic")
+
+
+func test_inventory_game_state() -> void:
+	GameState.new_hike(0)
+	var inv = GameState.inventory
+	check(inv.is_empty(), "a new hike starts with an empty backpack")
+	inv.add("ssanghwatang")
+	inv.add("gongjindan", 2)
+	GameState.begin_scene("foraging")
+	inv.add("gongjindan")
+	inv.add("spelling_hint")
+	inv.remove("ssanghwatang")
+	GameState.damage("nestor", "eye_branch")
+	var fired := [0]
+	var count_changes := func(): fired[0] += 1
+	inv.changed.connect(count_changes)
+	GameState.restart_scene()
+	inv.changed.disconnect(count_changes)
+	check(inv.items() == [{"id": "ssanghwatang", "count": 1}, {"id": "gongjindan", "count": 2}], "a restart puts the backpack back as the scene began: later items gone, an item used is back")
+	check(inv.count("spelling_hint") == 0 and fired[0] == 1, "the item found during the scene is gone, and the restore was announced")
+	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "hearts are restored as before")
+	check(GameState.inventory == inv, "it is the same Inventory object throughout (HUDs stay connected)")
+	inv.add("slow_time_charm")
+	GameState.restart_scene()
+	check(inv.count("slow_time_charm") == 0 and inv.count("gongjindan") == 2, "a second restart restores the same scene-start backpack")
+	inv.add("slow_time_charm")
+	GameState.begin_scene("animals")
+	inv.clear()
+	GameState.restart_scene()
+	check(inv.items() == [{"id": "ssanghwatang", "count": 1}, {"id": "gongjindan", "count": 2}, {"id": "slow_time_charm", "count": 1}], "the next scene's snapshot is its own start: what was held when it began, the earlier items included")
+	GameState.new_hike()
+	check(GameState.inventory.is_empty(), "a new hike empties the backpack")
+	GameState.restart_scene()
+	check(GameState.inventory.is_empty(), "and its scene-start snapshot is empty too")
+	_section_done("test_inventory_game_state")
+
+
+func test_backpack_data() -> void:
+	var block: Dictionary = _config().get("backpack_hud", {})
+	check(not block.is_empty(), "hallasan.json has a backpack_hud block")
+	for key in ["position", "size"]:
+		var pair = block.get(key)
+		check(pair is Array and pair.size() == 2, "backpack_hud.%s is two numbers" % key)
+	check(float(block["size"][0]) > 0.0 and float(block["size"][1]) > 0.0, "backpack_hud.size is positive")
+	check(float(block["position"][0]) >= 0.0 and float(block["position"][1]) >= 0.0 and float(block["position"][0]) + float(block["size"][0]) <= 1280.0 and float(block["position"][1]) + float(block["size"][1]) <= 720.0, "the panel fits in 1280x720")
+	for key in ["panel_color", "row_color", "text_color", "muted_text_color", "count_color"]:
+		check(_is_color(block.get(key)), "backpack_hud.%s is an r, g, b colour" % key)
+	check(float(block.get("panel_alpha", 0.0)) > 0.0 and float(block.get("panel_alpha", 2.0)) <= 1.0, "panel_alpha is in (0, 1]")
+	for key in ["title_font_size", "name_font_size", "count_font_size", "description_font_size", "empty_font_size", "button_font_size"]:
+		check(int(block.get(key, 0)) > 0, "backpack_hud.%s is a positive size" % key)
+	check(int(block["description_font_size"]) < int(block["name_font_size"]), "the description is in smaller text than the name")
+	check(block["title"] == "Fernanda's backpack" and block["empty_text"] == "Empty" and block["close_text"] == "Close", "the title, the empty text and the Close button read as briefed")
+	_section_done("test_backpack_data")
+
+
+func test_backpack_logic() -> void:
+	var pack = BackpackScript.new()
+	check(not pack.is_open, "a new backpack is closed")
+	check(pack.escape() == "" and not pack.close() and pack.toggle(false) == "", "closed: Esc, close and a key that isn't allowed do nothing")
+	check(not pack.open(false) and not pack.is_open, "it does not open when the map says no")
+	check(pack.open(true) and pack.is_open, "it opens when allowed")
+	check(not pack.open(true), "opening an open backpack does nothing")
+	check(pack.close() and not pack.is_open, "close() closes it")
+	check(pack.toggle(true) == "open" and pack.is_open, "a key opens it when allowed")
+	check(pack.toggle(false) == "close" and not pack.is_open, "a key closes it, allowed or not")
+	pack.open(true)
+	check(pack.escape() == "close" and not pack.is_open, "Esc closes it")
+	check(pack.escape() == "", "and Esc then does nothing: the pause menu is the map's business")
+	_section_done("test_backpack_logic")
+
+
+## A map with the backpack's starting contents already in the bag when the scene begins.
+func _backpack_map(held := {}) -> Node3D:
+	GameState.new_hike()
+	for id in held:
+		GameState.inventory.add(id, held[id])
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	return map
+
+
+func _row_texts(hud, index: int) -> Array:
+	var ko = hud.row_label(index, "NameKo")
+	return [ko.text if ko != null else "", hud.row_label(index, "NameEn").text, hud.row_label(index, "Count").text, hud.row_label(index, "Description").text]
+
+
+
+func test_backpack_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map()
+	var viewport := map.get_viewport()
+	var hud = map.backpack_hud
+	var pack = map.backpack
+	var config: Dictionary = _config()["backpack_hud"]
+	var screen: Vector2 = viewport.get_visible_rect().size
+	GameState.inventory.add("ssanghwatang")
+	GameState.inventory.add("gongjindan", 2)
+	GameState.inventory.add("spelling_hint")
+	var held: Dictionary = GameState.inventory.snapshot()
+	await _settle_layout()
+
+	check(not pack.is_open and not hud.panel_visible() and not get_tree().paused, "closed: nothing is drawn and the tree runs")
+	check(hud.layer == 12 and hud.process_mode == Node.PROCESS_MODE_ALWAYS, "its layer runs in always mode, over the hover name and under the pause menu")
+	check(hud._root.mouse_filter == Control.MOUSE_FILTER_IGNORE and hud._panel.mouse_filter == Control.MOUSE_FILTER_STOP, "the panel swallows clicks; the layer's root does not")
+	check(map.open_backpack() and pack.is_open and get_tree().paused, "(setup) code can open it")
+	check(map.close_backpack() and not pack.is_open and not get_tree().paused and not map.close_backpack(), "(setup) and close it; closing a closed one does nothing")
+
+	# Stuck, with the countdown running: the same freeze as the pause menu.
+	check(_fail_until_stuck(map) > 0 and map.countdown.running and map.music_playing, "(setup) stuck: the countdown runs and the music is on")
+	_run(map, 5.0)
+	var player := _fake_music(map)
+	var before := {"left": map.countdown.left, "alpha": map.stuck_hud._vignette.modulate.a, "number": map.stuck_hud._number.text, "starts": map.music_starts, "stops": map.music_stops}
+	check(absf(map.countdown.left - 35.0) < 0.05 and before["alpha"] > 0.0, "(setup) 5 s in: %.2f s left, the vignette is up" % map.countdown.left)
+	var decoy: Dictionary = await _menu_decoy(map)
+	check(not decoy.is_empty(), "(setup) a decoy plant is on screen outside the HUD panels")
+
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	check(pack.is_open and hud.panel_visible() and get_tree().paused and not map.can_process(), "Tab opens the backpack and pauses the tree and the map")
+	check(map.countdown.paused and map.music_silenced and map.music_playing, "the countdown is held and the music is silenced, not stopped")
+	check(player.stream_paused and not map._music_tween.is_running(), "the audio player is paused (position kept) and its fade is held")
+	check(not map.restarting and not map.pause_menu.is_open, "`restarting` is not what blocks the map, and the pause menu is closed")
+	_run(map, 3.0)
+	check(map.countdown.left == before["left"], "3 s of ticks while open do not move the clock (%.3f)" % map.countdown.left)
+	check(map.stuck_hud._vignette.modulate.a == before["alpha"] and map.stuck_hud._number.text == before["number"], "the vignette and the number do not change")
+	check(GameState.inventory.snapshot() == held, "opening it and pausing never change the inventory")
+
+	# The panel: title, one row per item, layout.
+	check(hud._title.text == "Fernanda's backpack" and hud.row_count() == 3 and not hud.empty_visible(), "the title reads Fernanda's backpack and there is one row per item")
+	check(_row_texts(hud, 0) == ["쌍화탕", "Ssanghwatang", "×1", "Herbal tonic. Restores half a heart."], "row 1: Korean name, English name, ×count, description (%s)" % str(_row_texts(hud, 0)))
+	check(_row_texts(hud, 1) == ["공진단", "Gongjindan", "×2", "Herbal pill. Restores one heart."], "row 2 shows ×2 (%s)" % str(_row_texts(hud, 1)))
+	check(_row_texts(hud, 2) == ["", "Spelling hint", "×1", "Shows one correct letter for 2 seconds."] and hud.row_label(2, "NameKo") == null, "an item without a Korean name has no Korean label (%s)" % str(_row_texts(hud, 2)))
+	check(hud.row_label(0, "NameKo").get_theme_font("font").resource_path.ends_with(KO_FONT_FILE), "the Korean name is in Noto Sans KR")
+	check(hud.row_label(0, "Description").get_theme_font_size("font_size") == int(config["description_font_size"]) and hud.row_label(0, "NameEn").get_theme_font_size("font_size") == int(config["name_font_size"]), "the description and the name use the data's font sizes")
+	var panel: Rect2 = hud.panel_rect()
+	var wanted := Rect2(Vector2(float(config["position"][0]), float(config["position"][1])), Vector2(float(config["size"][0]), float(config["size"][1])))
+	check(panel.position.is_equal_approx(wanted.position) and panel.size.is_equal_approx(wanted.size), "the panel is where the data puts it, at the data's size (%s)" % str(panel))
+	check(Rect2(Vector2.ZERO, screen).encloses(panel), "the panel is inside the 1280x720 viewport")
+	var rows_ok := true
+	for i in hud.row_count():
+		rows_ok = rows_ok and panel.encloses(hud.row_rect(i)) and (i == 0 or hud.row_rect(i).position.y >= hud.row_rect(i - 1).end.y)
+	check(rows_ok and panel.encloses(hud.close_button_rect()), "the rows are inside the panel, one under the other, and so is the Close button")
+
+	# Everything behind the panel is locked.
+	var basket_before: Array = map.picking.basket.duplicate()
+	check(not map.picks_allowed(), "picks are not allowed")
+	map.player.global_position = _ground_point(map, decoy["plant"].global_position.x + 0.4, decoy["plant"].global_position.z + 0.2)
+	var player_x: float = map.player.global_position.x
+	var partner_x: float = map.partner.global_position.x
+	check(map.picking.nearest_pickable(Vector2(map.player.global_position.x, map.player.global_position.z)) >= 0, "(setup) a plant is in reach")
+	check(not map.pick_nearest() and map.picking.basket == basket_before, "Space-picking is rejected with a plant in reach")
+	check(not map.click(decoy["screen"]) and map.picking.walk_target == -1, "a click on a plant starts no walk")
+	map.step(Vector2(1.0, 0.0), 0.2)
+	check(is_equal_approx(map.player.global_position.x, player_x) and is_equal_approx(map.partner.global_position.x, partner_x), "walking is rejected: neither traveler moves")
+	map.update_hover(decoy["screen"], 0.1)
+	check(map._tip_plant == null and not map._tooltip.visible, "hover shows no name")
+	check(not map.open_spelling("minari") and not map.spelling_hud.is_open(), "the spelling view cannot be opened by code")
+	var row: Control = map.discovery_hud._rows["ma"]
+	check(not panel.intersects(row.get_global_rect()), "(setup) the discovery entry is not under the panel")
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(not map.spelling_hud.is_open(), "(real click) a click on a discovery entry opens nothing")
+	check(not map.open_pause_menu() and not map.pause_menu.is_open, "the pause menu cannot open over the backpack")
+	check(map.picking.basket == basket_before, "no letter left the basket")
+
+	# Live updates while it is open.
+	GameState.inventory.add("slow_time_charm")
+	check(hud.row_count() == 4 and _row_texts(hud, 3)[1] == "Slow-time charm", "adding an item while open adds its row at once")
+	GameState.inventory.add("ssanghwatang", 2)
+	check(hud.row_count() == 4 and hud.row_label(0, "Count").text == "×3", "adding more of one updates its count")
+	GameState.inventory.remove("gongjindan", 2)
+	check(hud.row_count() == 3 and hud.row_id(1) == "spelling_hint", "removing every one of an item takes its row away")
+	GameState.inventory.restore(held)
+	check(hud.row_count() == 3 and hud.row_label(1, "Count").text == "×2", "a restore redraws the rows")
+	GameState.inventory.clear()
+	check(hud.row_count() == 0 and hud.empty_visible() and hud.empty_text() == "Empty", "an empty backpack says Empty")
+	GameState.inventory.restore(held)
+
+	# Close with the Close button (a real click), Tab and the P2 keys; the left keys do nothing.
+	var close_at: Vector2 = hud.close_button_rect().get_center()
+	viewport.push_input(_click_event(close_at))
+	viewport.push_input(_release_event(close_at))
+	check(not pack.is_open and not hud.panel_visible() and not get_tree().paused, "(real click) the Close button closes it")
+	for closer in [[KEY_TAB, 0, "Tab"], [KEY_SHIFT, 2, "right Shift"], [KEY_CTRL, 2, "right Ctrl"]]:
+		_tap(viewport, KEY_TAB)
+		_tap(viewport, closer[0], closer[1])
+		check(not pack.is_open and not get_tree().paused, "%s closes it" % closer[2])
+	for opener in [[KEY_SHIFT, 2, "right Shift"], [KEY_CTRL, 2, "right Ctrl"]]:
+		_tap(viewport, opener[0], opener[1])
+		check(pack.is_open and get_tree().paused and hud.panel_visible(), "%s opens it" % opener[2])
+		_tap(viewport, KEY_SHIFT, KEY_LOCATION_LEFT)
+		_tap(viewport, KEY_CTRL, KEY_LOCATION_LEFT)
+		check(pack.is_open, "(open) left Shift and left Ctrl don't close it")
+		_tap(viewport, KEY_TAB)
+		check(not pack.is_open, "(open) Tab closes it")
+	_tap(viewport, KEY_SHIFT, KEY_LOCATION_LEFT)
+	_tap(viewport, KEY_CTRL, KEY_LOCATION_LEFT)
+	check(not pack.is_open and not get_tree().paused, "(closed) left Shift and left Ctrl don't open it")
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_ESCAPE)
+	await get_tree().process_frame
+	check(not pack.is_open and not map.pause_menu.is_open and not get_tree().paused and not map.pause_hud.root_visible(), "one Esc closes the backpack only: after a frame the pause menu is not open")
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open and not pack.is_open and get_tree().paused, "the next Esc, with the backpack closed, opens the pause menu as before")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused, "and the one after resumes")
+
+	# Closing resumes everything in place.
+	_tap(viewport, KEY_TAB)
+	_run(map, 2.0)
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not hud.panel_visible() and not get_tree().paused and not map.countdown.paused, "closed: unpaused, the clock released")
+	check(not map.music_silenced and map.music_playing and not player.stream_paused and map._music_tween.is_running(), "the music is back on, its fade running again")
+	check(map.countdown.left == before["left"] and map.stuck_hud._vignette.modulate.a == before["alpha"] and map.stuck_hud._number.text == before["number"], "the countdown value, the vignette and the number are exactly as before")
+	check(map.music_starts == before["starts"] and map.music_stops == before["stops"] and map.countdown.starts == 1, "no music or countdown started or stopped in between")
+	_run(map, 1.0)
+	check(absf(map.countdown.left - (before["left"] - 1.0)) < 0.05, "and the clock runs on from there")
+	check(GameState.inventory.snapshot() == held, "the inventory is what it was before the backpack was ever opened")
+	map.update_camera(0.0, true)
+	map.update_hover(map.camera.unproject_position(decoy["plant"].global_position + Vector3(0, 0.5, 0)), 0.1)
+	check(map._tip_plant == decoy["plant"], "(control) hover shows names again")
+	map.player.global_position = _ground_point(map, player_x + 1.0, map.player.global_position.z)
+	var moved: float = map.player.global_position.x
+	map.step(Vector2(1.0, 0.0), 0.2)
+	check(map.player.global_position.x > moved, "(control) walking works again")
+	viewport.push_input(_click_event(row.get_global_rect().get_center()))
+	viewport.push_input(_release_event(row.get_global_rect().get_center()))
+	check(map.spelling_hud.is_open(), "(control) the same click on the entry opens the view")
+	map.spelling_hud.close()
+	map._stop_music()
+	map.free()
+	check(not get_tree().paused, "freeing the map never leaves the tree paused")
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_backpack_scene")
+
+
+func test_backpack_ignored() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _stuck_map()
+	var viewport := map.get_viewport()
+	var pack = map.backpack
+	GameState.inventory.add("gongjindan")
+	# The spelling view.
+	check(map.open_spelling("ma") and get_tree().paused, "(setup) the spelling view is open")
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_SHIFT, KEY_LOCATION_RIGHT)
+	_tap(viewport, KEY_CTRL, KEY_LOCATION_RIGHT)
+	check(not pack.is_open and not map.backpack_hud.panel_visible() and map.spelling_hud.is_open() and not map.open_backpack(), "Tab, right Shift and right Ctrl don't open it over the spelling view")
+	map.spelling_hud.close()
+	check(not get_tree().paused, "(setup) the view is closed")
+	# The pause menu, on both screens.
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open and map.pause_menu.focus == 0, "(setup) the pause menu is open, on Resume")
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_SHIFT, KEY_LOCATION_RIGHT)
+	_tap(viewport, KEY_CTRL, KEY_LOCATION_RIGHT)
+	check(not pack.is_open and map.pause_menu.is_open and not map.pause_menu.confirming and map.pause_menu.focus == 0 and map.pause_menu.restart_requests == 0, "Tab and the P2 keys don't open it over the pause menu, and the menu's focus is untouched")
+	check(not map.open_backpack() and get_tree().paused, "nor does a call from code")
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_SPACE)
+	check(map.pause_menu.confirming and map.pause_menu.focus == PauseMenuScript.NO, "(setup) Restart scene asks, with the focus on No")
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_CTRL, KEY_LOCATION_RIGHT)
+	check(not pack.is_open and map.pause_menu.is_open and map.pause_menu.confirming and map.pause_menu.focus == PauseMenuScript.NO and map.pause_menu.restart_requests == 0, "on the question Tab changes nothing: still on No, nothing restarted")
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open and not map.pause_menu.confirming and map.pause_menu.focus == PauseMenuScript.RESTART, "Esc is still No")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused and not pack.is_open, "and Esc then resumes; the backpack never opened")
+	# Restarting, a restart asked for, a dead traveler.
+	map.restarting = true
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not map.open_backpack() and not get_tree().paused, "while `restarting` Tab does nothing")
+	map.restarting = false
+	map.pause_menu.restart_requests = 1
+	check(not map.open_backpack() and not pack.is_open, "once a restart has been asked for it can't open")
+	map.pause_menu.restart_requests = 0
+	GameState.heart_units["nestor"] = 0
+	check(not map.open_backpack() and not pack.is_open, "with a traveler dead it can't open")
+	GameState.heart_units["nestor"] = GameState.max_units()
+	_tap(viewport, KEY_TAB)
+	check(pack.is_open, "(control) with all of that cleared the same key opens it")
+	_tap(viewport, KEY_TAB)
+	# The last second, the monster, the death beat.
+	check(_fail_until_stuck(map) > 0 and map.countdown.running, "(setup) stuck, the countdown runs")
+	_run(map, 39.2, 0.05)
+	check(map.countdown.is_locked() and map.restarting and map.kill == null, "(setup) the last second: locked, restarting set")
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not get_tree().paused and not map.open_backpack(), "Tab in the last second is ignored")
+	_run(map, 1.0, 0.05)
+	check(map.kill != null and map.deer != null and not map.is_death_beat_playing(), "(setup) the monster sequence is running")
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_CTRL, KEY_LOCATION_RIGHT)
+	check(not pack.is_open and not get_tree().paused and not map.open_backpack(), "Tab during the monster sequence is ignored")
+	var guard := 0
+	while not map.is_death_beat_playing() and guard < 100:
+		_run(map, 0.1, 0.05)
+		guard += 1
+	check(map.is_death_beat_playing(), "(setup) the death beat is playing")
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not get_tree().paused and not map.backpack_hud.panel_visible() and not map.open_backpack(), "Tab during the death beat is ignored")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_backpack_ignored")
+
+
+func test_backpack_restart() -> void:
+	# The pause menu's Restart scene.
+	var map: Node3D = await _backpack_map({"ssanghwatang": 1, "gongjindan": 2})
+	var held: Dictionary = GameState.inventory.snapshot()
+	check(held == {"ssanghwatang": 1, "gongjindan": 2}, "(setup) the scene begins with two kinds held")
+	GameState.inventory.add("spelling_hint")
+	GameState.inventory.remove("gongjindan")
+	check(map.open_backpack() and GameState.inventory.snapshot() != held, "(setup) the backpack is open with a changed bag")
+	check(map.close_backpack() and GameState.inventory.count("spelling_hint") == 1 and GameState.inventory.count("gongjindan") == 1, "opening and closing never change the bag")
+	check(map.open_pause_menu(), "(setup) the pause menu is open")
+	map.pause_hud.choose(1)
+	map.pause_hud.choose(0)
+	check(map.pause_menu.restart_requests == 1, "(setup) Restart scene was confirmed")
+	check(GameState.inventory.snapshot() == held and GameState.inventory.count("spelling_hint") == 0, "Restart scene returns the backpack to what the scene began with")
+	check(not map.open_backpack(), "after the restart was asked for the backpack can't open")
+	map.free()
+	get_tree().paused = false
+	# A death.
+	map = await _backpack_map({"slow_time_charm": 1})
+	held = GameState.inventory.snapshot()
+	GameState.inventory.add("gongjindan", 3)
+	map.begin_death_beat()
+	map.tick_beat(100.0)
+	check(GameState.inventory.snapshot() == held, "a death returns the backpack to what the scene began with")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_backpack_restart")
+
+
+func test_backpack_input() -> void:
+	check(_bound_keys("backpack_p1") == [[KEY_TAB, 0]], "backpack_p1 is bound to Tab only")
+	check(_bound_keys("backpack_p2") == [[KEY_SHIFT, KEY_LOCATION_RIGHT], [KEY_CTRL, KEY_LOCATION_RIGHT]], "backpack_p2 is bound to right Shift and right Ctrl")
+	var cases := [
+		["Tab", KEY_TAB, KEY_LOCATION_UNSPECIFIED, true, false],
+		["right Shift", KEY_SHIFT, KEY_LOCATION_RIGHT, false, true],
+		["right Ctrl", KEY_CTRL, KEY_LOCATION_RIGHT, false, true],
+		["left Shift", KEY_SHIFT, KEY_LOCATION_LEFT, false, false],
+		["left Ctrl", KEY_CTRL, KEY_LOCATION_LEFT, false, false],
+		["Space", KEY_SPACE, KEY_LOCATION_UNSPECIFIED, false, false],
+		["Esc", KEY_ESCAPE, KEY_LOCATION_UNSPECIFIED, false, false],
+	]
+	for c in cases:
+		var event := _key_event(c[1])
+		event.location = c[2]
+		check(InputMap.event_is_action(event, "backpack_p1") == c[3] and event.is_action_pressed("backpack_p1") == c[3], "%s %s backpack_p1" % [c[0], "matches" if c[3] else "does not match"])
+		check(InputMap.event_is_action(event, "backpack_p2") == c[4] and event.is_action_pressed("backpack_p2") == c[4], "%s %s backpack_p2" % [c[0], "matches" if c[4] else "does not match"])
+		check(BackpackHudScript.is_backpack_key(event) == (c[3] or c[4]), "%s %s a backpack key" % [c[0], "is" if c[3] or c[4] else "is not"])
+	var release := _key_event(KEY_TAB, false)
+	check(not release.is_action_pressed("backpack_p1") and not BackpackHudScript.is_backpack_key(release), "a release is not a press")
+	# Nothing else on the map reacts to the new keys.
+	var tab := _key_event(KEY_TAB)
+	for action in ["p1_left", "p1_right", "p1_up", "p1_down", "p1_pick", "p2_left", "p2_right", "p2_up", "p2_down", "p2_pick"]:
+		check(not InputMap.event_is_action(tab, action), "Tab is not %s" % action)
+	var shift := _key_event(KEY_SHIFT)
+	shift.location = KEY_LOCATION_RIGHT
+	check(not SpellingCursorScript.is_player_key(shift) and not SpellingCursorScript.is_player_key(tab), "Tab and right Shift are not spelling-view player keys")
+	_section_done("test_backpack_input")
