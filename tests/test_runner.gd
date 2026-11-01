@@ -94,11 +94,16 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_decoy_gore_countdown",
 	"test_decoy_gore_lethal",
 	"test_decoy_gore_restart",
+	"test_drink_data",
+	"test_drink_logic",
+	"test_drink_scene",
+	"test_drink_input",
+	"test_drink_restart",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1986
+const MIN_CHECKS := 2208
 
 
 func check(condition: bool, label: String) -> void:
@@ -221,6 +226,12 @@ func _ready() -> void:
 	await test_decoy_gore_countdown()
 	await test_decoy_gore_lethal()
 	await test_decoy_gore_restart()
+	print("== Drinking elixirs ==")
+	test_drink_data()
+	test_drink_logic()
+	await test_drink_scene()
+	await test_drink_input()
+	await test_drink_restart()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -6175,3 +6186,447 @@ func test_decoy_gore_restart() -> void:
 		get_tree().paused = false
 	GameState.new_hike()
 	_section_done("test_decoy_gore_restart")
+
+
+# ---- Drinking elixirs from the backpack ----
+
+## A map whose scene begins with `held` in the bag and the travelers on `nestor_units` and `fernanda_units` (half-units).
+func _drink_map(held: Dictionary, nestor_units := 10, fernanda_units := 10) -> Node3D:
+	GameState.new_hike()
+	GameState.heart_units["nestor"] = nestor_units
+	GameState.heart_units["fernanda"] = fernanda_units
+	for id in held:
+		GameState.inventory.add(id, held[id])
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	return map
+
+
+func _click_at(viewport: Viewport, at: Vector2) -> void:
+	viewport.push_input(_click_event(at))
+	viewport.push_input(_release_event(at))
+
+
+## True if the hearts HUD draws both travelers' current hearts.
+func _hearts_drawn_ok(map: Node3D) -> bool:
+	for id in GameState.TRAVELERS:
+		if map.hearts_hud.drawn_states(id) != map.hearts_hud.states_for(int(GameState.heart_units[id])):
+			return false
+	return true
+
+
+func _data_color(value: Array) -> Color:
+	return Color(value[0], value[1], value[2])
+
+
+func test_drink_data() -> void:
+	var block: Dictionary = _config()["backpack_hud"]
+	for key in ["selected_row_color", "selected_border_color", "choice_color", "choice_button_color", "choice_selected_color", "choice_selected_border_color", "message_color", "message_wasted_color"]:
+		check(_is_color(block.get(key)), "backpack_hud.%s is an r, g, b colour" % key)
+	for key in ["row_padding", "selected_border_width", "choice_padding", "choice_prompt_font_size", "choice_selected_border_width", "message_font_size"]:
+		check(float(block.get(key, 0)) > 0.0, "backpack_hud.%s is positive" % key)
+	check(block["choice_button_size"] is Array and block["choice_button_size"].size() == 2 and float(block["choice_button_size"][0]) > 0.0, "backpack_hud.choice_button_size is two positive numbers")
+	check(float(block["message_seconds"]) > 0.0, "the message stays a positive number of seconds")
+	for key in ["choice_prompt", "choice_button_text", "hearts_text"]:
+		check(block[key] is String and block[key] != "", "backpack_hud.%s is text" % key)
+	var words: Dictionary = block["messages"]
+	for key in ["drank", "partial", "wasted", "heart", "hearts", "half_glyph"]:
+		check(words.get(key) is String and words[key] != "", "backpack_hud.messages.%s is text" % key)
+	check("{healed}" in words["drank"] and "{healed}" in words["partial"] and "{wasted}" in words["partial"], "the drank and partial texts have their amount slots")
+	var panel := Rect2(Vector2(float(block["position"][0]), float(block["position"][1])), Vector2(float(block["size"][0]), float(block["size"][1])))
+	check(Rect2(Vector2.ZERO, Vector2(1280, 720)).encloses(panel), "the panel still fits the 1280x720 viewport")
+	_section_done("test_drink_data")
+
+
+func test_drink_logic() -> void:
+	var inv = InventoryScript.new()
+	inv.add("ssanghwatang")
+	inv.add("spelling_hint")
+	inv.add("gongjindan", 2)
+	inv.add("ddeok", 5)
+	inv.add("slow_time_charm")
+	var items: Array = inv.items()
+	var words: Dictionary = _config()["backpack_hud"]["messages"]
+
+	# Selectability.
+	check(BackpackScript.is_selectable("ssanghwatang") and BackpackScript.is_selectable("gongjindan"), "both elixirs are selectable")
+	for id in ["ddeok", "spelling_hint", "slow_time_charm", "bogus_item", ""]:
+		check(not BackpackScript.is_selectable(id), "'%s' is not selectable" % id)
+	check(BackpackScript.selectable_ids(items) == ["ssanghwatang", "gongjindan"], "the selectable rows are the elixir rows, in row order")
+	var pack = BackpackScript.new()
+	check(not pack.select("ddeok", items) and not pack.select("spelling_hint", items) and not pack.select("slow_time_charm", items) and pack.selected == "", "currency, hint and charm rows can't be selected")
+	check(not pack.select("ssanghwatang", []), "an elixir that is not in the bag can't be selected")
+	check(pack.select("gongjindan", items) and pack.selected == "gongjindan", "an elixir row can be selected")
+	check(pack.open_choice(10, 10) and pack.choosing, "the question opens for a selected elixir")
+	pack.reset()
+	check(pack.selected == "" and not pack.choosing and pack.message == "", "reset forgets the selection, the question and the message")
+	check(not pack.open_choice(10, 10) and not pack.choosing, "with nothing selected the question can't open")
+
+	# Nothing to select: unchanged.
+	var plain: Array = [{"id": "ddeok", "count": 2}, {"id": "spelling_hint", "count": 1}]
+	for action in ["left", "right", "up", "down", "place"]:
+		check(pack.key(action, plain) == "" and pack.selected == "", "'%s' with no elixirs does nothing" % action)
+		check(pack.key(action, []) == "" and pack.selected == "", "'%s' with an empty bag does nothing" % action)
+
+	# Keyboard cursor over the list: the first press shows it, then it steps with wrap.
+	check(pack.key("down", items) == "selected" and pack.selected == "ssanghwatang", "the first key shows the cursor on the first elixir row")
+	check(pack.key("down", items) == "moved" and pack.selected == "gongjindan", "down steps to the next elixir row, skipping the hint")
+	check(pack.key("right", items) == "moved" and pack.selected == "ssanghwatang", "and wraps around")
+	check(pack.key("left", items) == "moved" and pack.selected == "gongjindan", "left steps back, wrapping")
+	check(pack.key("up", items) == "moved" and pack.selected == "ssanghwatang", "up steps back")
+	check(pack.key("", items) == "", "no action, nothing happens")
+	check(pack.key("place", items) == "ask" and pack.selected == "ssanghwatang", "place asks (the HUD opens the question)")
+
+	# Preselection.
+	var table := [[10, 10, 0], [4, 7, 0], [7, 4, 1], [7, 6, 1], [6, 7, 0], [1, 2, 0], [2, 1, 1], [0, 5, 0], [9, 10, 0], [10, 9, 1], [9, 9, 0], [1, 1, 0]]
+	for row in table:
+		check(BackpackScript.preselect(row[0], row[1]) == row[2], "Nestor %s / Fernanda %s hearts preselect %s" % [row[0] / 2.0, row[1] / 2.0, BackpackScript.CHOICES[row[2]]])
+	check(pack.open_choice(8, 3) and pack.choosing and pack.choice == 1, "the question opens on the traveler with fewer hearts")
+	check(pack.select("gongjindan", items) == false and pack.selected == "ssanghwatang", "while the question is up the selection can't move")
+	check(pack.key("left", items) == "moved" and pack.choice == 0 and pack.key("left", items) == "moved" and pack.choice == 1, "in the question left/right switch buttons, wrapping")
+	check(pack.key("down", items) == "moved" and pack.choice == 0 and pack.key("up", items) == "moved" and pack.choice == 1, "and up/down do too")
+	check(pack.key("place", items) == "drink", "place in the question says drink")
+	check(pack.escape() == "cancel_choice" and not pack.choosing and pack.selected == "ssanghwatang" and not pack.is_open, "Esc cancels the question and keeps the selection")
+	check(pack.escape() == "", "Esc with the backpack closed does nothing")
+	pack.open(true)
+	pack.open_choice(10, 10)
+	check(pack.escape() == "cancel_choice" and pack.is_open, "the first Esc only cancels the question")
+	check(pack.escape() == "close" and not pack.is_open and pack.selected == "" and not pack.choosing, "the next Esc closes, and the selection is forgotten")
+	check(BackpackScript.hearts_number(3.5) == "3.5" and BackpackScript.hearts_number(5.0) == "5" and BackpackScript.hearts_number(0.5) == "0.5", "hearts read 3.5, 5 and 0.5")
+
+	# sync: the selection follows when its row goes.
+	var bag = InventoryScript.new()
+	bag.add("ssanghwatang")
+	bag.add("spelling_hint")
+	bag.add("gongjindan")
+	pack.select("ssanghwatang", bag.items())
+	bag.remove("ssanghwatang")
+	pack.sync(bag.items())
+	check(pack.selected == "gongjindan", "the first elixir gone: the selection moves to the next elixir")
+	bag.add("ssanghwatang")
+	pack.select("gongjindan", bag.items())
+	bag.remove("gongjindan")
+	pack.sync(bag.items())
+	check(pack.selected == "ssanghwatang", "the last elixir gone: it moves to the nearest one before it")
+	pack.open_choice(10, 10)
+	bag.remove("ssanghwatang")
+	pack.sync(bag.items())
+	check(pack.selected == "" and not pack.choosing, "no elixir left: nothing selected and no question")
+	pack.sync(bag.items())
+
+	# Healing, node-free, against the real GameState.
+	var cases := [
+		# [item, start units, healed, wasted, message]
+		["ssanghwatang", 1, 1, 0, "Fernanda drank 쌍화탕: +½ heart"],
+		["ssanghwatang", 8, 1, 0, "Fernanda drank 쌍화탕: +½ heart"],
+		["ssanghwatang", 9, 1, 0, "Fernanda drank 쌍화탕: +½ heart"],
+		["ssanghwatang", 10, 0, 1, "Fernanda drank 쌍화탕: wasted (already full)"],
+		["gongjindan", 1, 2, 0, "Fernanda drank 공진단: +1 heart"],
+		["gongjindan", 8, 2, 0, "Fernanda drank 공진단: +1 heart"],
+		["gongjindan", 9, 1, 1, "Fernanda drank 공진단: +½ heart (½ heart wasted)"],
+		["gongjindan", 10, 0, 2, "Fernanda drank 공진단: wasted (already full)"],
+	]
+	for c in cases:
+		GameState.new_hike()
+		GameState.heart_units["fernanda"] = c[1]
+		var held = InventoryScript.new()
+		held.add(c[0], 3)
+		var drinker = BackpackScript.new()
+		drinker.select(c[0], held.items())
+		var seen: Array = []
+		var listener := func(who, units): seen.append([who, units])
+		GameState.hearts_changed.connect(listener)
+		var r: Dictionary = drinker.drink(held, "fernanda")
+		GameState.hearts_changed.disconnect(listener)
+		var label := "%s at %s hearts" % [c[0], c[1] / 2.0]
+		check(r["ok"] and r["healed"] == c[2] and r["wasted"] == c[3] and r["nominal"] == c[2] + c[3], "%s: healed %d, wasted %d" % [label, c[2], c[3]])
+		check(GameState.heart_units["fernanda"] == c[1] + c[2] and GameState.heart_units["nestor"] == 10, "%s: only Fernanda's hearts moved, to %d" % [label, c[1] + c[2]])
+		check(held.count(c[0]) == 2, "%s: exactly one is consumed (even when wasted)" % label)
+		check(BackpackScript.message_for(r, words) == c[4], "%s: the message reads '%s' (%s)" % [label, c[4], BackpackScript.message_for(r, words)])
+		check(not drinker.choosing, "%s: the question is closed" % label)
+		check(seen.size() == 1 and seen[0][0] == "fernanda", "%s: GameState.heal() announced one change" % label)
+	GameState.new_hike()
+	GameState.heart_units["nestor"] = 3
+	var many = InventoryScript.new()
+	many.add("gongjindan", 2)
+	var again = BackpackScript.new()
+	again.select("gongjindan", many.items())
+	var first: Dictionary = again.drink(many, "nestor")
+	var second: Dictionary = again.drink(many, "nestor")
+	check(first["ok"] and second["ok"] and first["healed"] == 2 and second["healed"] == 2 and many.is_empty() and GameState.heart_units["nestor"] == 7, "Nestor can drink too, as often as there are elixirs (3 + 2 + 2 half-hearts)")
+	var gone: Dictionary = again.drink(many, "nestor")
+	check(not gone["ok"] and GameState.heart_units["nestor"] == 7, "with none left nothing is drunk")
+	var held = InventoryScript.new()
+	held.add("ssanghwatang")
+	GameState.heart_units["nestor"] = 0
+	again.reset()
+	again.select("ssanghwatang", held.items())
+	check(not again.drink(held, "nestor")["ok"] and held.count("ssanghwatang") == 1 and GameState.heart_units["nestor"] == 0, "a dead traveler can't drink: nothing is consumed")
+	var unselected = BackpackScript.new()
+	check(not unselected.drink(held, "fernanda")["ok"] and held.count("ssanghwatang") == 1, "with no selection nothing is drunk")
+	var cur = BackpackScript.new()
+	held.add("ddeok")
+	check(not cur.select("ddeok", held.items()) and not cur.drink(held, "fernanda")["ok"] and held.count("ddeok") == 1, "DDEOK can't be drunk")
+	again.select("ssanghwatang", held.items())
+	check(not again.drink(held, "stranger")["ok"] and held.count("ssanghwatang") == 1, "an unknown traveler can't drink")
+	GameState.new_hike()
+
+	# Amounts and the message timer.
+	check(BackpackScript.amount_text(1, words) == "½ heart" and BackpackScript.amount_text(2, words) == "1 heart" and BackpackScript.amount_text(3, words) == "1½ hearts" and BackpackScript.amount_text(4, words) == "2 hearts", "amounts read ½ heart, 1 heart, 1½ hearts, 2 hearts")
+	var timed = BackpackScript.new()
+	timed.set_message("hello", 4.0)
+	timed.tick(3.9)
+	check(timed.message == "hello", "the message is still there before its time")
+	timed.tick(0.2)
+	check(timed.message == "" and timed.message_left == 0.0, "and gone after it")
+	timed.tick(1.0)
+	_section_done("test_drink_logic")
+
+
+func test_drink_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _drink_map({"ssanghwatang": 2, "gongjindan": 1, "spelling_hint": 1, "ddeok": 3}, 10, 6)
+	var viewport := map.get_viewport()
+	var hud = map.backpack_hud
+	var pack = map.backpack
+	var config: Dictionary = _config()["backpack_hud"]
+	var held: Dictionary = GameState.inventory.snapshot()
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	check(pack.is_open and hud.row_count() == 4 and hud.row_id(0) == "ssanghwatang" and hud.row_id(2) == "spelling_hint", "(setup) four rows are on screen")
+	var none_selected := true
+	for i in 4:
+		none_selected = none_selected and not hud.row_selected(i)
+	check(none_selected and not hud.choice_visible() and hud.message_text() == "", "at first nothing is highlighted, no question, no message")
+
+	# Rows that are not elixirs ignore clicks.
+	for i in [2, 3]:
+		_click_at(viewport, hud.row_rect(i).get_center())
+		await _settle_layout()
+	check(pack.selected == "" and not pack.choosing and not hud.choice_visible() and not hud.row_selected(2) and not hud.row_selected(3), "clicking the hint or DDEOK row selects nothing and shows no highlight")
+	check(hud._rows.get_child(2).mouse_filter == Control.MOUSE_FILTER_IGNORE and hud._rows.get_child(0).mouse_filter == Control.MOUSE_FILTER_STOP, "only elixir rows take mouse clicks")
+
+	# A click selects and asks, with the weaker traveler picked.
+	_click_at(viewport, hud.row_rect(0).get_center())
+	await _settle_layout()
+	check(pack.selected == "ssanghwatang" and hud.row_selected(0) and not hud.row_selected(1), "a click on an elixir row selects it and highlights it")
+	var style: StyleBoxFlat = hud._rows.get_child(0).get_theme_stylebox("panel")
+	check(style.bg_color.is_equal_approx(_data_color(config["selected_row_color"])) and style.border_width_left == int(config["selected_border_width"]) and style.border_color.is_equal_approx(_data_color(config["selected_border_color"])), "the highlight uses the data's colours and border width")
+	var plain: StyleBoxFlat = hud._rows.get_child(1).get_theme_stylebox("panel")
+	check(plain.border_width_left == 0 and plain.content_margin_left == float(config["row_padding"]), "other rows have no border and the data's padding")
+	check(pack.choosing and hud.choice_visible() and hud.choice_prompt_text() == "Who drinks 쌍화탕?", "and opens the question (%s)" % hud.choice_prompt_text())
+	check(hud.choice_button(0).text == "Nestor  5 / 5" and hud.choice_button(1).text == "Fernanda  3 / 5", "the buttons show each traveler's hearts (%s | %s)" % [hud.choice_button(0).text, hud.choice_button(1).text])
+	check(pack.choice == 1, "Fernanda (fewer hearts) is preselected")
+	var hi: StyleBoxFlat = hud.choice_button(1).get_theme_stylebox("normal")
+	var lo: StyleBoxFlat = hud.choice_button(0).get_theme_stylebox("normal")
+	check(hi.border_width_left > 0 and lo.border_width_left == 0 and hi.bg_color != lo.bg_color, "the preselected button looks different")
+	check(hud.panel_rect().encloses(hud.choice_button(0).get_global_rect()) and hud.panel_rect().encloses(hud.choice_button(1).get_global_rect()), "the question is inside the backpack panel")
+	check(not map.open_pause_menu() and not map.pause_menu.is_open, "the pause menu can't open over the question")
+	check(GameState.inventory.snapshot() == held, "asking drinks nothing")
+
+	# Esc layering: one Esc, one thing.
+	_tap(viewport, KEY_ESCAPE)
+	await get_tree().process_frame
+	check(not pack.choosing and not hud.choice_visible() and pack.selected == "ssanghwatang" and hud.row_selected(0), "the first Esc cancels the question and keeps the selection")
+	check(pack.is_open and get_tree().paused and not map.pause_menu.is_open, "and the backpack is still open, the pause menu still shut")
+	_tap(viewport, KEY_ESCAPE)
+	await get_tree().process_frame
+	check(not pack.is_open and not get_tree().paused and not map.pause_menu.is_open, "the second Esc closes the backpack and nothing else")
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open, "the third Esc opens the pause menu as before")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused, "(setup) and the next one resumes")
+	check(GameState.inventory.snapshot() == held and GameState.heart_units["fernanda"] == 6, "none of it drank anything")
+
+	# A real click on a button drinks.
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	check(pack.selected == "" and not hud.row_selected(0), "reopened: the selection did not survive the close")
+	_click_at(viewport, hud.row_rect(0).get_center())
+	await _settle_layout()
+	var labels_before: int = map.find_children("*", "Label3D", true, false).size()
+	_click_at(viewport, hud.choice_button(1).get_global_rect().get_center())
+	await _settle_layout()
+	check(GameState.heart_units["fernanda"] == 7 and GameState.heart_units["nestor"] == 10, "(real click) the Fernanda button heals Fernanda by half a heart")
+	check(GameState.inventory.count("ssanghwatang") == 1 and GameState.inventory.count("gongjindan") == 1, "exactly one 쌍화탕 is gone")
+	check(hud.message_text() == "Fernanda drank 쌍화탕: +½ heart", "the panel says so (%s)" % hud.message_text())
+	check(pack.is_open and hud.panel_visible() and not hud.choice_visible() and not pack.choosing, "the panel stays open and the question closes")
+	check(hud.row_label(0, "Count").text == "×1", "the row shows the new count")
+	check(_hearts_drawn_ok(map), "the hearts HUD shows the new hearts while the backpack is open")
+	check(pack.selected == "ssanghwatang" and hud.row_selected(0), "the drunk row stays selected while any are left")
+	check(map.find_children("*", "Label3D", true, false).size() == labels_before, "no floating label is added to the world")
+
+	# Wasted on a full traveler; the last one in the row disappears.
+	_click_at(viewport, hud.row_rect(0).get_center())
+	await _settle_layout()
+	check(hud.choice_button(1).text == "Fernanda  3.5 / 5" and pack.choice == 1, "the question shows 3.5 / 5 and still prefers the weaker traveler")
+	_click_at(viewport, hud.choice_button(0).get_global_rect().get_center())
+	await _settle_layout()
+	check(hud.message_text() == "Nestor drank 쌍화탕: wasted (already full)" and GameState.heart_units["nestor"] == 10, "(real click) Nestor at full hearts: wasted, and the message says so")
+	check(GameState.inventory.count("ssanghwatang") == 0 and hud.row_count() == 3 and hud.row_id(0) == "gongjindan", "the row at count 0 is gone")
+	check(pack.selected == "gongjindan" and hud.row_selected(0), "and the selection moved to the nearest elixir row")
+	check(hud._message.get_theme_color("font_color").is_equal_approx(_data_color(config["message_wasted_color"])), "a wasted message uses the wasted colour")
+	pack.tick(float(config["message_seconds"]) - 0.1)
+	hud.refresh()
+	check(hud.message_text() != "", "the message is still visible just before its time")
+	pack.tick(0.2)
+	hud.refresh()
+	check(hud.message_text() == "", "and gone after message_seconds")
+
+	# The last elixir leaves nothing selected.
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(pack.choosing, "(keyboard) Space on the selected row asks")
+	_tap(viewport, KEY_D)
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(GameState.inventory.count("gongjindan") == 0 and hud.row_count() == 2 and pack.selected == "" and not pack.choosing, "the last elixir drunk: its row goes, nothing is selected, no question")
+	check(hud.message_text().begins_with("Nestor drank 공진단") or hud.message_text().begins_with("Fernanda drank 공진단"), "with a message (%s)" % hud.message_text())
+	var snapshot_left: Dictionary = GameState.inventory.snapshot()
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_SPACE)
+	check(pack.selected == "" and not pack.choosing and GameState.inventory.snapshot() == snapshot_left, "with no elixirs the keys do nothing: the panel behaves as before")
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not get_tree().paused and _hearts_drawn_ok(map), "closed: the hearts HUD still shows the hearts")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_drink_scene")
+
+
+func test_drink_input() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _drink_map({"ssanghwatang": 2, "spelling_hint": 1, "gongjindan": 2, "ddeok": 1}, 10, 8)
+	var viewport := map.get_viewport()
+	var hud = map.backpack_hud
+	var pack = map.backpack
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	# Player 1: W A S D and Space.
+	_tap(viewport, KEY_S)
+	check(pack.selected == "ssanghwatang" and hud.row_selected(0) and not pack.choosing, "P1: the first S shows the cursor on the first elixir row")
+	_tap(viewport, KEY_S)
+	check(pack.selected == "gongjindan" and hud.row_selected(2), "P1: S moves to the next elixir row, past the hint")
+	_tap(viewport, KEY_W)
+	check(pack.selected == "ssanghwatang", "P1: W moves back")
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(pack.choosing and pack.choice == 1 and hud.choice_visible(), "P1: Space opens the question, Fernanda (4 / 5) preselected")
+	_tap(viewport, KEY_A)
+	check(pack.choice == 0, "P1: A moves to Nestor")
+	_tap(viewport, KEY_D)
+	check(pack.choice == 1, "P1: D moves to Fernanda")
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(GameState.heart_units["fernanda"] == 9 and GameState.inventory.count("ssanghwatang") == 1 and not pack.choosing, "P1: Space drinks: Fernanda 4 -> 4.5 hearts, one 쌍화탕 gone")
+	check(hud.message_text() == "Fernanda drank 쌍화탕: +½ heart", "P1: the message shows (%s)" % hud.message_text())
+	# Player 2: arrows and Enter, on the same panel.
+	_tap(viewport, KEY_DOWN)
+	check(pack.selected == "gongjindan", "P2: Down moves the cursor")
+	_tap(viewport, KEY_UP)
+	check(pack.selected == "ssanghwatang", "P2: Up moves the cursor")
+	_tap(viewport, KEY_DOWN)
+	_tap(viewport, KEY_ENTER)
+	await _settle_layout()
+	check(pack.choosing and pack.selected == "gongjindan" and pack.choice == 1, "P2: Enter opens the question on 공진단")
+	_tap(viewport, KEY_LEFT)
+	check(pack.choice == 0, "P2: Left moves to Nestor")
+	_tap(viewport, KEY_RIGHT)
+	check(pack.choice == 1, "P2: Right moves to Fernanda")
+	_tap(viewport, KEY_LEFT)
+	_tap(viewport, KEY_ENTER)
+	await _settle_layout()
+	check(GameState.heart_units["nestor"] == 10 and GameState.inventory.count("gongjindan") == 1, "P2: Enter drinks for Nestor, who is full: the 공진단 is wasted but gone")
+	check(hud.message_text() == "Nestor drank 공진단: wasted (already full)", "P2: the wasted message shows (%s)" % hud.message_text())
+	# Esc layering by keyboard, and the toggle keys.
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(pack.choosing, "(setup) the question is up again")
+	_tap(viewport, KEY_ESCAPE)
+	check(not pack.choosing and pack.is_open and pack.selected == "gongjindan", "Esc: question gone, backpack open, selection kept")
+	_tap(viewport, KEY_SPACE)
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not pack.choosing and pack.selected == "" and not get_tree().paused, "Tab with the question up closes the backpack and clears the state")
+	for opener in [[KEY_TAB, 0, "Tab"], [KEY_SHIFT, 2, "right Shift"], [KEY_CTRL, 2, "right Ctrl"]]:
+		_tap(viewport, opener[0], opener[1])
+		check(pack.is_open and get_tree().paused, "%s still opens the backpack" % opener[2])
+		_tap(viewport, KEY_S)
+		_tap(viewport, KEY_SPACE)
+		check(pack.choosing, "(setup) %s: the question is up" % opener[2])
+		_tap(viewport, opener[0], opener[1])
+		check(not pack.is_open and not get_tree().paused and not pack.choosing and pack.selected == "", "%s still closes it, even with the question up" % opener[2])
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open and not pack.is_open, "with the backpack closed Esc opens the pause menu")
+	_tap(viewport, KEY_ESCAPE)
+	# An elixir-free backpack: the movement keys are not taken.
+	GameState.inventory.clear()
+	GameState.inventory.add("ddeok", 2)
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_DOWN)
+	_tap(viewport, KEY_SPACE)
+	_tap(viewport, KEY_ENTER)
+	check(pack.is_open and pack.selected == "" and not pack.choosing and GameState.inventory.count("ddeok") == 2, "with only DDEOK nothing can be selected or drunk")
+	_tap(viewport, KEY_TAB)
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_drink_input")
+
+
+func test_drink_restart() -> void:
+	# Restart scene.
+	var map: Node3D = await _drink_map({"ssanghwatang": 2, "gongjindan": 1}, 10, 6)
+	var held: Dictionary = GameState.inventory.snapshot()
+	check(map.open_backpack(), "(setup) the backpack is open")
+	map.backpack.select("ssanghwatang", GameState.inventory.items())
+	map.backpack_hud._ask()
+	map.backpack_hud.drink_chosen()
+	check(GameState.heart_units["fernanda"] == 7 and GameState.inventory.count("ssanghwatang") == 1 and map.backpack_hud.message_text() != "", "(setup) a drink: Fernanda 3.5 hearts, one 쌍화탕 left, a message up")
+	map.backpack.select("gongjindan", GameState.inventory.items())
+	map.backpack_hud._ask()
+	check(map.backpack.choosing and map.backpack.selected == "gongjindan", "(setup) and a question is pending")
+	check(map.close_backpack() and not map.backpack.choosing and map.backpack.selected == "" and map.backpack.message == "", "closing clears the selection, the question and the message")
+	check(map.open_pause_menu(), "(setup) the pause menu is open")
+	map.pause_hud.choose(1)
+	map.pause_hud.choose(0)
+	check(map.pause_menu.restart_requests == 1, "(setup) Restart scene was confirmed")
+	check(GameState.heart_units["fernanda"] == 6 and GameState.heart_units["nestor"] == 10 and GameState.inventory.snapshot() == held, "Restart scene: hearts and backpack are the scene-start values")
+	check(map.backpack.selected == "" and not map.backpack.choosing and map.backpack.message == "" and not map.backpack_hud.choice_visible() and map.backpack_hud.message_text() == "", "no selection, question or message is left")
+	map.free()
+	get_tree().paused = false
+	# A death with a question pending.
+	map = await _drink_map({"ssanghwatang": 2, "gongjindan": 1}, 10, 6)
+	held = GameState.inventory.snapshot()
+	check(map.open_backpack(), "(setup) the backpack is open again")
+	map.backpack.select("gongjindan", GameState.inventory.items())
+	map.backpack_hud._ask()
+	map.backpack_hud.drink_chosen()
+	map.backpack.select("ssanghwatang", GameState.inventory.items())
+	map.backpack_hud._ask()
+	check(GameState.heart_units["fernanda"] == 8 and map.backpack.choosing and map.backpack.message != "", "(setup) 공진단 drunk (Fernanda 4 hearts) and a new question is pending")
+	map.begin_death_beat()
+	map.tick_beat(100.0)
+	check(GameState.heart_units["fernanda"] == 6 and GameState.heart_units["nestor"] == 10 and GameState.inventory.snapshot() == held, "death: hearts and backpack are the scene-start values")
+	check(map.backpack.selected == "" and not map.backpack.choosing and map.backpack.message == "" and not map.backpack_hud.choice_visible() and map.backpack_hud.message_text() == "", "death: no selection, question or message is left")
+	check(_hearts_drawn_ok(map), "the hearts HUD shows the restored hearts")
+	map.free()
+	get_tree().paused = false
+	# A second scene starts clean.
+	map = await _drink_map({"gongjindan": 1}, 10, 6)
+	check(map.backpack.selected == "" and not map.backpack.choosing and map.backpack.message == "", "a new scene starts with no selection, question or message")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_drink_restart")

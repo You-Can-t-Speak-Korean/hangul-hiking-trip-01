@@ -22,7 +22,8 @@ extends Node
 ## shots show the steam and the hearts only: the gore is not built, see the 7b log), and
 ## `-- --gore-shots` for the harm gore beats {gore_face_swell_pop_building,gore_face_swell_pop_after_pop,
 ## gore_convulse_eyes_pop_building,gore_convulse_eyes_pop_after_pop}.png and the reward label over
-## the steam {gore_label_over_steam}.png.
+## the steam {gore_label_over_steam}.png, and `-- --drink-shots` for the elixir shots
+## {drink_selected,drink_choice,drink_message,drink_wasted}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -72,6 +73,10 @@ func _ready() -> void:
 		return
 	if "--gore-shots" in OS.get_cmdline_user_args():
 		await _gore_shots()
+		get_tree().quit()
+		return
+	if "--drink-shots" in OS.get_cmdline_user_args():
+		await _drink_shots()
 		get_tree().quit()
 		return
 	if "--credits-only" in OS.get_cmdline_user_args():
@@ -864,6 +869,45 @@ func _backpack_shots() -> void:
 	GameState.inventory.clear()
 	await _frames(5)
 	_save("backpack_empty")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+
+
+## The backpack with an elixir row selected (as the keyboard cursor does it), the
+## "who drinks" question with Fernanda (fewer hearts) preselected, the message after
+## a normal drink, and the message after a drink on a full traveler.
+func _drink_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	GameState.new_hike()
+	GameState.heart_units["fernanda"] = 6
+	GameState.inventory.add("ssanghwatang", 2)
+	GameState.inventory.add("gongjindan")
+	GameState.inventory.add("spelling_hint")
+	GameState.inventory.add("ddeok", 3)
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	var hud = map.backpack_hud
+	print("backpack opens: %s" % map.open_backpack())
+	hud._on_key_action("down")  # the cursor appears on the first elixir row
+	await _frames(5)
+	_save("drink_selected")
+	hud._on_key_action("place")
+	await _frames(5)
+	_save("drink_choice")
+	hud.drink_chosen()  # Fernanda, half a heart
+	await _frames(5)
+	_save("drink_message")
+	hud._on_key_action("place")
+	hud._on_key_action("left")  # Nestor, who is full
+	hud.drink_chosen()
+	await _frames(5)
+	_save("drink_wasted")
 	map.free()
 	get_tree().paused = false
 	GameState.new_hike()

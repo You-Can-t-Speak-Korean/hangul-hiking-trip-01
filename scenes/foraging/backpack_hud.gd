@@ -3,8 +3,9 @@ extends CanvasLayer
 ## in GameState.inventory (Korean name, English name, ×count, and the description
 ## in smaller text), or "Empty". Placed and sized from foraging.backpack_hud. It
 ## runs while the tree is paused (process mode ALWAYS). The panel swallows clicks;
-## the layer's root does not. The rows are not selectable yet. A row whose item
-## has an icon (items.json) draws it on the left, `icon_size` pixels square.
+## the layer's root does not. Elixir rows can be selected (a click, or the
+## players' movement keys and Space / Enter); selecting one asks who drinks it, and
+## the answer drinks it (see Backpack). A row whose item has an icon (items.json) draws it on the left, `icon_size` pixels square.
 ## Keys: while it is open, either backpack key, Esc and the Close button ask the
 ## map to close it; while it is closed, a backpack key asks the map to open it
 ## through `open_handler` (and is only taken if the map did). This runs in
@@ -13,6 +14,7 @@ extends CanvasLayer
 
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 const ItemIcon := preload("res://scenes/foraging/item_icon.gd")
+const BackpackLogic := preload("res://scenes/foraging/backpack.gd")
 
 ## The panel should close (key, Esc or the Close button). The map unpauses on this.
 signal close_requested
@@ -31,6 +33,10 @@ var _close_button: Button
 var _empty: Label
 var _scroll: ScrollContainer
 var _rows: VBoxContainer
+var _choice: PanelContainer
+var _choice_prompt: Label
+var _choice_buttons: Array[Button] = []
+var _message: Label
 
 
 ## `backpack` is the Backpack, `inventory` the Inventory to list, `config` is
@@ -99,18 +105,34 @@ func setup(backpack, inventory, config: Dictionary) -> void:
 	_empty.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(_empty)
+	_build_choice(column)
+	_message = _label("Message", int(config["message_font_size"]), _color(config["message_color"]))
+	_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_message.visible = false
+	column.add_child(_message)
 	_inventory.changed.connect(refresh)
+	GameState.hearts_changed.connect(_on_hearts_changed)
 	refresh()
 
 
 func _exit_tree() -> void:
 	if _inventory != null and _inventory.changed.is_connected(refresh):
 		_inventory.changed.disconnect(refresh)
+	if GameState.hearts_changed.is_connected(_on_hearts_changed):
+		GameState.hearts_changed.disconnect(_on_hearts_changed)
+
+
+func _process(delta: float) -> void:
+	if _backpack.message != "":
+		_backpack.tick(delta)
+		_update_message()
 
 
 ## Shows or hides the panel to match the Backpack, and redraws the rows.
 func refresh() -> void:
 	_root.visible = _backpack.is_open
+	_backpack.sync(_inventory.items())
 	for row in _rows.get_children():
 		_rows.remove_child(row)
 		row.queue_free()
@@ -119,19 +141,154 @@ func refresh() -> void:
 		_rows.add_child(_make_row(entry["id"], int(entry["count"])))
 	_empty.visible = items.is_empty()
 	_scroll.visible = not items.is_empty()
+	_update_choice()
+	_update_message()
 
 
-## Backpack keys and Esc. The map is paused while it is open, so its own
-## _unhandled_input is not reached: this is where the keys are read.
+## Backpack keys, Esc and the selection keys. The map is paused while it is open,
+## so its own _unhandled_input is not reached: this is where the keys are read.
+## One Esc does one thing: with the question up it cancels the question only.
 func _input(event: InputEvent) -> void:
-	if not event is InputEventKey or not event.pressed or event.echo:
+	if not event is InputEventKey or not event.pressed:
 		return
 	if _backpack.is_open:
-		if event.keycode == KEY_ESCAPE or is_backpack_key(event):
+		var action := BackpackLogic.action_for(event)
+		if action != "":
+			if _on_key_action(action):
+				get_viewport().set_input_as_handled()
+			return
+		if event.echo:
+			return
+		if event.keycode == KEY_ESCAPE:
+			get_viewport().set_input_as_handled()
+			if _backpack.choosing:
+				_backpack.escape()
+				refresh()
+			else:
+				close_requested.emit()
+		elif is_backpack_key(event):
 			get_viewport().set_input_as_handled()
 			close_requested.emit()
-	elif is_backpack_key(event) and open_handler.is_valid() and open_handler.call():
+		return
+	if not event.echo and is_backpack_key(event) and open_handler.is_valid() and open_handler.call():
 		get_viewport().set_input_as_handled()
+
+
+## A movement or place key of either player while the panel is open. True if it
+## did something (an empty or elixir-free backpack leaves the key alone).
+func _on_key_action(action: String) -> bool:
+	var result: String = _backpack.key(action, _inventory.items())
+	if result == "":
+		return false
+	if result == "ask":
+		_ask()
+	elif result == "drink":
+		drink_chosen()
+	refresh()
+	return true
+
+
+## Opens the "who drinks" question for the selected row, with the traveler who has
+## fewer hearts picked.
+func _ask() -> void:
+	_backpack.open_choice(int(GameState.heart_units["nestor"]), int(GameState.heart_units["fernanda"]))
+
+
+## Drinks the selected elixir for the traveler the question has picked, and shows
+## the result line.
+func drink_chosen() -> Dictionary:
+	var result: Dictionary = _backpack.drink(_inventory, BackpackLogic.CHOICES[_backpack.choice])
+	if result["ok"]:
+		var words: Dictionary = _config["messages"]
+		_backpack.set_message(BackpackLogic.message_for(result, words), float(_config["message_seconds"]), int(result["healed"]) == 0)
+	refresh()
+	return result
+
+
+func _on_hearts_changed(_traveler: String, _units: int) -> void:
+	_update_choice()
+
+
+func _on_row_input(event: InputEvent, id: String) -> void:
+	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if _backpack.select(id, _inventory.items()):
+			_ask()
+			refresh()
+		get_viewport().set_input_as_handled()
+
+
+func _on_choice_pressed(index: int) -> void:
+	_backpack.choice = index
+	drink_chosen()
+
+
+## The question: its prompt, one button per traveler with their hearts, and the
+## highlighted button. Hidden unless the question is up.
+func _update_choice() -> void:
+	_choice.visible = _backpack.is_open and _backpack.choosing
+	if not _backpack.choosing:
+		return
+	var item: Dictionary = Content.item(_backpack.selected)
+	var item_name := String(item.get("name_ko", "")) if String(item.get("name_ko", "")) != "" else String(item.get("name_en", _backpack.selected))
+	_choice_prompt.text = String(_config["choice_prompt"]).format({"item": item_name})
+	for i in BackpackLogic.CHOICES.size():
+		var who: String = BackpackLogic.CHOICES[i]
+		var hearts := String(_config["hearts_text"]).format({
+			"hearts": BackpackLogic.hearts_number(GameState.hearts_for_display(who)),
+			"max": str(GameState.max_hearts())})
+		_choice_buttons[i].text = String(_config["choice_button_text"]).format({"name": who.capitalize(), "hearts": hearts})
+		_style_choice_button(_choice_buttons[i], i == _backpack.choice)
+
+
+func _update_message() -> void:
+	_message.visible = _backpack.message != ""
+	_message.text = _backpack.message
+	_message.add_theme_color_override("font_color", _color(_config["message_wasted_color" if _backpack.message_wasted else "message_color"]))
+
+
+func _build_choice(column: VBoxContainer) -> void:
+	_choice = PanelContainer.new()
+	_choice.name = "Choice"
+	_choice.visible = false
+	_choice.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var back := StyleBoxFlat.new()
+	back.bg_color = _color(_config["choice_color"])
+	back.set_corner_radius_all(8)
+	back.set_content_margin_all(float(_config["choice_padding"]))
+	_choice.add_theme_stylebox_override("panel", back)
+	column.add_child(_choice)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 8)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_choice.add_child(box)
+	_choice_prompt = _label("Prompt", int(_config["choice_prompt_font_size"]), _color(_config["text_color"]))
+	_choice_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(_choice_prompt)
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 16)
+	buttons.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(buttons)
+	for i in BackpackLogic.CHOICES.size():
+		var button := Button.new()
+		button.name = "Choice_" + BackpackLogic.CHOICES[i]
+		button.focus_mode = Control.FOCUS_NONE
+		button.custom_minimum_size = _vec(_config["choice_button_size"])
+		button.add_theme_font_size_override("font_size", int(_config["button_font_size"]))
+		button.pressed.connect(_on_choice_pressed.bind(i))
+		buttons.add_child(button)
+		_choice_buttons.append(button)
+
+
+func _style_choice_button(button: Button, highlighted: bool) -> void:
+	var style := StyleBoxFlat.new()
+	style.bg_color = _color(_config["choice_selected_color" if highlighted else "choice_button_color"])
+	style.set_corner_radius_all(8)
+	if highlighted:
+		style.set_border_width_all(int(_config["choice_selected_border_width"]))
+		style.border_color = _color(_config["choice_selected_border_color"])
+	for state in ["normal", "hover", "pressed", "focus"]:
+		button.add_theme_stylebox_override(state, style)
 
 
 ## True for a press of either player's backpack key.
@@ -165,6 +322,27 @@ func row_rect(index: int) -> Rect2:
 	return (_rows.get_child(index) as Control).get_global_rect()
 
 
+## Whether a row is drawn as the selected one (tests).
+func row_selected(index: int) -> bool:
+	return _rows.get_child(index).get_meta("item_id") == _backpack.selected and _backpack.selected != ""
+
+
+func choice_visible() -> bool:
+	return _choice.visible
+
+
+func choice_prompt_text() -> String:
+	return _choice_prompt.text
+
+
+func choice_button(index: int) -> Button:
+	return _choice_buttons[index]
+
+
+func message_text() -> String:
+	return _message.text if _message.visible else ""
+
+
 func empty_visible() -> bool:
 	return _empty.visible
 
@@ -185,10 +363,17 @@ func _make_row(id: String, count: int) -> PanelContainer:
 	row.set_meta("item_id", id)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var style := StyleBoxFlat.new()
-	style.bg_color = _color(_config["row_color"])
+	var chosen: bool = id == _backpack.selected
+	style.bg_color = _color(_config["selected_row_color" if chosen else "row_color"])
 	style.set_corner_radius_all(8)
-	style.set_content_margin_all(10.0)
+	style.set_content_margin_all(float(_config["row_padding"]))
+	if chosen:
+		style.set_border_width_all(int(_config["selected_border_width"]))
+		style.border_color = _color(_config["selected_border_color"])
 	row.add_theme_stylebox_override("panel", style)
+	if BackpackLogic.is_selectable(id):
+		row.mouse_filter = Control.MOUSE_FILTER_STOP  # only elixir rows take clicks
+		row.gui_input.connect(_on_row_input.bind(id))
 	var icon_id := String(item.get("icon", ""))
 	var beside: Node = row
 	if icon_id != "":

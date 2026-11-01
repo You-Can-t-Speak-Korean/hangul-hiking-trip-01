@@ -499,6 +499,9 @@ func _restart() -> void:
 	_cancel_gore()
 	_abandon_stuck()
 	GameState.restart_scene()
+	if backpack != null:  # no selection, question or message carries into the new scene
+		backpack.reset()
+		backpack_hud.refresh()
 	restarted.emit()
 	if get_tree().current_scene == self:
 		get_tree().reload_current_scene()
