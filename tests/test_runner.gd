@@ -87,11 +87,18 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_reward_pick",
 	"test_harm_pick",
 	"test_backpack_icons",
+	"test_decoy_gore_data",
+	"test_decoy_gore_logic",
+	"test_decoy_gore_scene",
+	"test_decoy_gore_gating",
+	"test_decoy_gore_countdown",
+	"test_decoy_gore_lethal",
+	"test_decoy_gore_restart",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 1822
+const MIN_CHECKS := 1986
 
 
 func check(condition: bool, label: String) -> void:
@@ -206,6 +213,14 @@ func _ready() -> void:
 	await test_reward_pick()
 	await test_harm_pick()
 	await test_backpack_icons()
+	print("== Harm decoy gore beats ==")
+	test_decoy_gore_data()
+	test_decoy_gore_logic()
+	await test_decoy_gore_scene()
+	await test_decoy_gore_gating()
+	await test_decoy_gore_countdown()
+	await test_decoy_gore_lethal()
+	await test_decoy_gore_restart()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -1609,6 +1624,14 @@ func _release_event(at: Vector2) -> InputEventMouseButton:
 
 
 ## Ticks the map until the walk ends (or 10 s pass). Returns the ticks used.
+## Runs a gore beat that is playing to its end (not the death that may follow it).
+func _finish_gore(map: Node3D) -> void:
+	var ticks := 0
+	while map.decoy_gore.active and ticks < 1000:
+		map.tick_gore(1.0 / 60.0)
+		ticks += 1
+
+
 func _walk_until_done(map: Node3D) -> int:
 	var ticks := 0
 	while map.picking.walk_target >= 0 and ticks < 600:
@@ -1688,6 +1711,7 @@ func test_picking_scene() -> void:
 	map._unhandled_input(_click_event(decoy_screen))
 	check(map.picking.walk_target == map.plants.find(decoy_plant), "clicking a decoy starts a walk too")
 	_walk_until_done(map)
+	_finish_gore(map)  # (a harm decoy plays its gore beat, which blocks clicks until it ends)
 	check(map.picking.basket == [letter], "a decoy's letter never enters the basket")
 	check(decoy_plant.letter == "" and not map.picking.has_letter(map.plants.find(decoy_plant)), "the decoy's letter is gone")
 	var puffs := map.find_children("*", "CPUParticles3D", false, false)
@@ -5747,6 +5771,7 @@ func test_harm_pick() -> void:
 			check(GameState.heart_units[other] == start, "%s: the other traveler's hearts are unchanged" % controlled)
 			check(map.find_children("*", "CPUParticles3D", false, false).size() == puffs_before + 1, "%s: the steam still plays for %s" % [controlled, kind_id])
 			check(plant.letter == "" and map.picking.basket.is_empty(), "%s: the harm decoy's letter is gone and not in the basket" % controlled)
+			_finish_gore(map)  # the gore beat blocks the next pick until it ends
 		check(GameState.inventory.snapshot() == {"ddeok": 2} and not map.is_death_beat_playing(), "%s: no item change and no death from non-lethal picks" % controlled)
 		map.free()
 		get_tree().paused = false
@@ -5761,9 +5786,14 @@ func test_harm_pick() -> void:
 	map.restarted.connect(func(): restarts[0] += 1)
 	map.pick_plant(_plant_of(map, "decoy_harm", 0))
 	check(deaths.size() == 1 and deaths[0][0] == "fernanda" and deaths[0][1] == "nestor", "the lethal pick announces the death once (%s)" % str(deaths))
-	check(not GameState.is_alive("fernanda") and map.is_death_beat_playing() and map.restarting and not map.picks_allowed(), "the death beat starts and nothing can be picked")
+	check(not GameState.is_alive("fernanda") and not map.is_death_beat_playing() and map.is_gore_playing() and not map.picks_allowed(), "the death waits: the gore beat plays first and nothing can be picked")
 	map.pick_plant(_plant_of(map, "decoy_harm", 1))
 	check(deaths.size() == 1, "a further pick in the beat does not repeat the death")
+	_finish_gore(map)
+	map.tick_beat(100.0)
+	check(not map.is_death_beat_playing(), "the death beat has not started when the gore ends (it waits one tick)")
+	map.tick_gore(1.0 / 60.0)
+	check(map.is_death_beat_playing() and map.restarting, "the death beat starts on the next tick")
 	map.tick_beat(100.0)
 	GameState.travelers_died.disconnect(on_death)
 	check(restarts[0] == 1 and not map.is_death_beat_playing(), "the scene restarts once")
@@ -5794,3 +5824,354 @@ func test_backpack_icons() -> void:
 	get_tree().paused = false
 	GameState.new_hike()
 	_section_done("test_backpack_icons")
+
+
+# ---- Harm decoy gore beats ----
+
+const DecoyGoreScript := preload("res://scenes/foraging/decoy_gore.gd")
+const GORE_PAIRS := [["keuncheonnamseong", "face_swell_pop"], ["butsunnamu", "convulse_eyes_pop"]]
+
+
+func _kinds_copy() -> Array:
+	return _config()["plants"]["kinds"].duplicate(true)
+
+
+func _table_copy() -> Dictionary:
+	return _config()["decoy_gore"].duplicate(true)
+
+
+func _kind_in(kinds: Array, id: String) -> Dictionary:
+	for k in kinds:
+		if k["id"] == id:
+			return k
+	return {}
+
+
+func test_decoy_gore_data() -> void:
+	var table: Dictionary = _config()["decoy_gore"]
+	var kinds: Array = _config()["plants"]["kinds"]
+	check(table.has("face_swell_pop") and table.has("convulse_eyes_pop"), "the decoy_gore table has both gore ids")
+	for id in ["face_swell_pop", "convulse_eyes_pop"]:
+		check(float(table[id]["duration"]) > 0.0 and float(table[id]["pop_seconds"]) > 0.0 and float(table[id]["pop_seconds"]) <= float(table[id]["duration"]), "%s has a positive duration and a pop inside it" % id)
+	for pair in GORE_PAIRS:
+		check(_kind_in(kinds, pair[0]).get("gore", "") == pair[1], "%s carries gore id %s" % [pair[0], pair[1]])
+		check(int(_kind_in(kinds, pair[0])["damage_units"]) == 1, "%s still costs 1 half-unit" % pair[0])
+	for k in kinds:
+		check((k["kind"] == "decoy_harm") == k.has("gore"), "%s: only harm decoys have a gore field" % k["id"])
+	check(DecoyGoreScript.problem_with(kinds, table) == "", "the shipped data validates")
+	check(int(_config()["decoy_rewards"]["floating_label"]["render_priority"]) > 0, "the floating label has a render priority above the steam's 0")
+	# Bad data is a clear message, never a crash.
+	var bad := _kinds_copy()
+	_kind_in(bad, "butsunnamu")["gore"] = "no_such_gore"
+	var msg: String = DecoyGoreScript.problem_with(bad, table)
+	check(msg.contains("butsunnamu") and msg.contains("no_such_gore"), "an unknown gore id is rejected, naming plant and id (%s)" % msg)
+	bad = _kinds_copy()
+	_kind_in(bad, "keuncheonnamseong").erase("gore")
+	msg = DecoyGoreScript.problem_with(bad, table)
+	check(msg.contains("keuncheonnamseong") and msg.contains("no gore id"), "a missing gore id is rejected (%s)" % msg)
+	bad = _kinds_copy()
+	_kind_in(bad, "keuncheonnamseong")["gore"] = ""
+	check(DecoyGoreScript.problem_with(bad, table).contains("no gore id"), "an empty gore id is rejected")
+	for value in [0.0, -1.5]:
+		var t := _table_copy()
+		t["face_swell_pop"]["duration"] = value
+		msg = DecoyGoreScript.problem_with(_kinds_copy(), t)
+		check(msg.contains("face_swell_pop") and msg.contains("duration"), "a duration of %s is rejected (%s)" % [str(value), msg])
+	var t2 := _table_copy()
+	t2["convulse_eyes_pop"].erase("duration")
+	check(DecoyGoreScript.problem_with(_kinds_copy(), t2).contains("duration"), "a missing duration is rejected")
+	t2 = _table_copy()
+	t2["convulse_eyes_pop"]["pop_seconds"] = 9.0
+	check(DecoyGoreScript.problem_with(_kinds_copy(), t2).contains("pop_seconds"), "a pop after the end is rejected")
+	bad = _kinds_copy()
+	_kind_in(bad, "norugui")["gore"] = "face_swell_pop"
+	msg = DecoyGoreScript.problem_with(bad, table)
+	check(msg.contains("norugui") and msg.contains("gore field"), "a gore field on a reward decoy is rejected (%s)" % msg)
+	bad = _kinds_copy()
+	_kind_in(bad, "ma")["gore"] = "face_swell_pop"
+	check(DecoyGoreScript.problem_with(bad, table).contains("gore field"), "a gore field on a target is rejected too")
+	check(DecoyGoreScript.problem_with(_kinds_copy(), null).contains("decoy_gore") and DecoyGoreScript.problem_with(_kinds_copy(), []).contains("decoy_gore"), "a missing or non-table decoy_gore is rejected")
+	_section_done("test_decoy_gore_data")
+
+
+func test_decoy_gore_logic() -> void:
+	var table: Dictionary = _config()["decoy_gore"]
+	var entry: Dictionary = table["face_swell_pop"]
+	var g = DecoyGoreScript.new()
+	check(not g.active and g.tick(1.0).is_empty() and g.fraction() == 0.0, "idle: nothing happens")
+	check(g.start("face_swell_pop", "fernanda", entry) and g.active and g.who == "fernanda", "it starts on a harm pick")
+	check(not g.start("face_swell_pop", "nestor", entry) and g.who == "fernanda", "a second start while one runs is refused")
+	var pop_at := float(entry["pop_seconds"])
+	var dur := float(entry["duration"])
+	check(g.tick(pop_at - 0.05).is_empty() and g.active, "nothing fires before the pop")
+	check(g.build_up() < 1.0 and g.build_up() > 0.9, "the build-up is nearly full just before the pop")
+	check(g.tick(0.1) == ["pop"] and g.popped, "the pop fires once, when its time comes")
+	check(g.tick(0.1).is_empty() and g.build_up() == 1.0, "and not again")
+	check(g.tick(dur) == ["done"] and not g.active and g.finishes == 1, "it ends after its duration, once")
+	check(g.tick(1.0).is_empty(), "an ended beat ticks to nothing")
+	check(g.start("x", "nestor", {"duration": 0.0, "pop_seconds": 0.0}) == false, "a non-positive duration never starts")
+	g.start("convulse_eyes_pop", "nestor", table["convulse_eyes_pop"])
+	check(g.tick(100.0) == ["pop", "done"], "one long tick gives the pop then the end")
+	g.start("face_swell_pop", "nestor", entry)
+	g.tick(0.3)
+	g.cancel()
+	check(not g.active and g.who == "" and g.tick(5.0).is_empty() and g.finishes == 2, "cancel drops the beat without finishing it")
+	_section_done("test_decoy_gore_logic")
+
+
+## Picks the first harm decoy of `kind_id` on `map` and returns it.
+func _pick_harm(map: Node3D, kind_id: String) -> Node3D:
+	var plant: Node3D
+	for p in map.plants:
+		if p.kind_id == kind_id:
+			plant = p
+			break
+	map.pick_plant(plant)
+	return plant
+
+
+func _particle_count(map: Node3D) -> int:
+	return map.find_children("*", "CPUParticles3D", false, false).size()
+
+
+func test_decoy_gore_scene() -> void:
+	for pair in GORE_PAIRS:
+		var kind_id: String = pair[0]
+		var gore_id: String = pair[1]
+		var map: Node3D = await _decoy_map("fernanda", {"ddeok": 2})
+		var picker: Node3D = map.travelers["fernanda"]
+		var other: Node3D = map.travelers["nestor"]
+		var start := GameState.max_units()
+		var base_pos: Vector3 = picker.global_position
+		var base_rot: Vector3 = picker.rotation
+		var base_color: Color = picker.body_color()
+		var other_pos: Vector3 = other.global_position
+		var other_rot: Vector3 = other.rotation
+		var other_color: Color = other.body_color()
+		var entry: Dictionary = _config()["decoy_gore"][gore_id]
+		var plant := _pick_harm(map, kind_id)
+		var tag := kind_id + ": "
+		check(GameState.heart_units["fernanda"] == start - 1, tag + "the half-heart damage lands at the start of the beat")
+		check(map.decoy_gore.active and map.decoy_gore.gore_id == gore_id and map.decoy_gore.who == "fernanda", tag + "the beat starts on the picker with its gore id")
+		check(_particle_count(map) == 1, tag + "the steam plays and nothing else yet")
+		check(not map.is_death_beat_playing() and not map.restarting, tag + "no death beat and `restarting` is not used")
+		var fx := map.find_child("DecoyGoreFx", false, false) as Node3D
+		check(fx != null, tag + "the shapes exist")
+		var max_shift := 0.0
+		while map.decoy_gore.elapsed < float(entry["pop_seconds"]) * 0.5:
+			map.tick_gore(1.0 / 60.0)
+			max_shift = maxf(max_shift, picker.global_position.distance_to(base_pos))
+		if gore_id == "face_swell_pop":
+			var head: MeshInstance3D = fx._head
+			check(head.visible and head.scale.x > 1.3, tag + "halfway to the pop the head has swelled (scale %.2f)" % head.scale.x)
+			var c: Color = fx._head_material.albedo_color
+			var skin := Color(entry["head_color"][0], entry["head_color"][1], entry["head_color"][2])
+			check(c.r - c.g > skin.r - skin.g, tag + "and reddened")
+			check(head.global_position.distance_to(base_pos + Vector3(0, float(entry["head_height"]), 0)) < 0.2, tag + "it sits at the picker's head")
+		else:
+			check(max_shift > 0.01 and max_shift <= float(entry["jitter_amplitude"]) * 3.0, tag + "the picker jitters, within the data's amplitude (max %.3f)" % max_shift)
+		check(other.global_position == other_pos and other.rotation == other_rot and other.body_color() == other_color, tag + "the other traveler is untouched during the build-up")
+		var particles_before := _particle_count(map)
+		while not map.decoy_gore.popped:
+			map.tick_gore(1.0 / 60.0)
+		check(_particle_count(map) > particles_before, tag + "the pop sprays blood")
+		if gore_id == "face_swell_pop":
+			check(not fx._head.visible, tag + "the head is gone after the pop")
+		else:
+			var eyes := fx.find_children("Eye*", "Node3D", false, false)
+			check(eyes.size() == 2, tag + "two eyes fly out")
+			var eye_x: Array = eyes.map(func(e): return e.global_position.x)
+			for i in 40:
+				map.tick_gore(1.0 / 60.0)
+			var y_after: Array = eyes.map(func(e): return e.global_position.y)
+			check(eyes[0].global_position.x < eye_x[0] and eyes[1].global_position.x > eye_x[1], tag + "one flies left and one right")
+			check(y_after[0] >= base_pos.y and y_after[1] >= base_pos.y, tag + "they stay above the ground")
+			check(picker.global_position == base_pos, tag + "the jitter has stopped at the pop")
+		check(other.global_position == other_pos and other.rotation == other_rot and other.body_color() == other_color, tag + "the other traveler is untouched after the pop")
+		_finish_gore(map)
+		check(not map.decoy_gore.active and not map.is_gore_playing(), tag + "the beat ends")
+		check(map.find_child("DecoyGoreFx", false, false) == null, tag + "its shapes are gone")
+		check(_particle_count(map) == 1, tag + "no blood, chunks or other particles are left (only the steam)")
+		check(picker.global_position == base_pos and picker.rotation == base_rot and picker.scale == Vector3.ONE and picker.body_color() == base_color, tag + "the picker is exactly as before: position, rotation, scale, tint")
+		check(other.global_position == other_pos and other.rotation == other_rot and other.body_color() == other_color, tag + "the other traveler is untouched")
+		check(plant.letter == "" and plant.is_inside_tree() and plant.scale == Vector3.ONE, tag + "the plant is not changed by the gore")
+		check(map.picks_allowed() and not map.restarting, tag + "play resumes")
+		check(GameState.heart_units["fernanda"] == start - 1 and GameState.heart_units["nestor"] == start, tag + "no further damage")
+		map.free()
+		get_tree().paused = false
+	# A reward pick is unchanged: no gore, and the label sorts above the steam.
+	var map: Node3D = await _decoy_map()
+	var rng := ForcedRng.new()
+	rng.value = 5
+	map.reward_rng = rng
+	map.pick_plant(_plant_of(map, "decoy_reward", 0))
+	var label := map.find_child("FloatingLabel", false, false) as Label3D
+	check(not map.decoy_gore.active and not map.is_gore_playing() and map.picks_allowed(), "a reward pick plays no gore and blocks nothing")
+	check(label != null and label.text == "+1 DDEOK" and label.no_depth_test and label.billboard == BaseMaterial3D.BILLBOARD_ENABLED, "the label still reads '+1 DDEOK', billboarded, with no depth test")
+	check(label != null and label.render_priority == int(_config()["decoy_rewards"]["floating_label"]["render_priority"]) and label.render_priority > 0 and label.outline_render_priority < label.render_priority, "the label sorts in front of the steam; its outline stays behind its text")
+	map.free()
+	GameState.new_hike()
+	_section_done("test_decoy_gore_scene")
+
+
+func test_decoy_gore_gating() -> void:
+	for pair in GORE_PAIRS:
+		var map: Node3D = await _decoy_map("fernanda", {"ddeok": 1})
+		var tag: String = pair[0] + ": "
+		_pick_harm(map, pair[0])
+		var live := _plant_of(map, "target", 0)
+		var player_pos: Vector3 = map.player.global_position
+		var partner_pos: Vector3 = map.partner.global_position
+		check(not map.picks_allowed() and not map.pick_nearest(), tag + "no pick during the beat")
+		map.pick_plant(live)
+		check(live.letter != "" and map.picking.basket.is_empty(), tag + "pick_plant takes nothing")
+		check(not map.click(Vector2(640, 360)), tag + "a click starts no walk")
+		check(not map.open_spelling("ma") and not map.spelling_hud.is_open(), tag + "the spelling view does not open")
+		check(not map.open_pause_menu() and not map.pause_menu.is_open and not get_tree().paused, tag + "the pause menu does not open")
+		check(not map.open_backpack() and not map.backpack.is_open, tag + "the backpack does not open")
+		map.step(Vector2.RIGHT, 0.5)
+		map.step(Vector2(0.0, 1.0), 0.5)
+		check(map.player.global_position == player_pos and map.partner.global_position == partner_pos, tag + "nobody walks (neither traveler moved)")
+		_finish_gore(map)
+		check(map.picks_allowed(), tag + "picks are allowed again")
+		check(map.open_backpack() and map.close_backpack(), tag + "the backpack opens and closes again")
+		check(map.open_pause_menu() and map.pause_menu.is_open, tag + "the pause menu opens again")
+		map.pause_menu.close()
+		get_tree().paused = false
+		var x_before: float = map.player.global_position.x
+		for i in 30:
+			map.step(Vector2.RIGHT, 1.0 / 60.0)
+		check(map.player.global_position.x > x_before + 0.5, tag + "walking works again")
+		map.pick_plant(live)
+		check(map.picking.basket.size() == 1, tag + "and a pick works again")
+		map.free()
+		get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_decoy_gore_gating")
+
+
+func test_decoy_gore_countdown() -> void:
+	var map: Node3D = await _stuck_map({"nestor": 9, "fernanda": 7})
+	check(_fail_until_stuck(map) > 0 and map.countdown.running, "(setup) the scene is stuck with the countdown running")
+	var left: float = map.countdown.left
+	_run(map, 2.0)
+	check(absf(map.countdown.left - (left - 2.0)) < 0.05, "(setup) the countdown runs between beats")
+	_pick_harm(map, "keuncheonnamseong")
+	check(map.decoy_gore.active and map.countdown.running, "(setup) the beat plays with the countdown still running")
+	left = map.countdown.left
+	var vignette: float = map.stuck_hud._vignette.modulate.a
+	_run(map, 0.5)  # the map's own tick; the beat's tick is separate
+	check(map.countdown.paused and map.countdown.left == left, "the countdown stands still during the beat")
+	check(map.music_playing and map.music_silenced, "the countdown music is held, not stopped")
+	check(map.stuck_hud._vignette.modulate.a == vignette, "the vignette does not grow")
+	_finish_gore(map)
+	check(not map.countdown.paused and map.countdown.running and map.countdown.left == left and not map.music_silenced, "after the beat the countdown and music resume where they were")
+	_run(map, 1.0)
+	check(absf(map.countdown.left - (left - 1.0)) < 0.05, "and the clock goes on from there")
+	check(map.music_playing and map.music_stops == 0, "the music never stopped")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_decoy_gore_countdown")
+
+
+func test_decoy_gore_lethal() -> void:
+	for pair in GORE_PAIRS:
+		var map: Node3D = await _decoy_map("fernanda", {"ddeok": 1})
+		var tag: String = pair[0] + ": "
+		GameState.inventory.add("gongjindan")
+		GameState.heart_units["fernanda"] = 1
+		var deaths: Array = []
+		var on_death := func(dead, _survivor, _injury): deaths.append(dead)
+		GameState.travelers_died.connect(on_death)
+		var beats := [0]
+		var restarts := [0]
+		map.death_beat_started.connect(func(): beats[0] += 1)
+		map.restarted.connect(func(): restarts[0] += 1)
+		_pick_harm(map, pair[0])
+		check(deaths == ["fernanda"] and GameState.heart_units["fernanda"] == 0, tag + "the damage is applied at the pick and the death announced once")
+		check(map.decoy_gore.active and beats[0] == 0 and not map.is_death_beat_playing(), tag + "the gore starts first, the death sequence has not")
+		var tick_gore_end := -1
+		var tick_death := -1
+		var overlap := false
+		var n := 0
+		while tick_death < 0 and n < 1000:
+			n += 1
+			map.tick_gore(1.0 / 60.0)
+			if map.decoy_gore.active and map.is_death_beat_playing():
+				overlap = true
+			if tick_gore_end < 0 and not map.decoy_gore.active:
+				tick_gore_end = n
+				check(not map.is_death_beat_playing() and beats[0] == 0 and map.find_child("DecoyGoreFx", false, false) == null, tag + "on the tick the gore ends its shapes are gone and the death has not begun")
+			if map.is_death_beat_playing():
+				tick_death = n
+		check(not overlap, tag + "gore and death never overlap")
+		check(tick_gore_end > 0 and tick_death == tick_gore_end + 1, tag + "the death begins exactly one tick after the gore ends (gore ended tick %d, death tick %d)" % [tick_gore_end, tick_death])
+		var gore_seconds := float(_config()["decoy_gore"][pair[1]]["duration"])
+		check(absf((tick_gore_end / 60.0) - gore_seconds) < 0.05, tag + "the gore ran its full duration first (%.2f s)" % (tick_gore_end / 60.0))
+		for i in 30:
+			map.tick_gore(1.0 / 60.0)
+		check(beats[0] == 1 and map.restarting and map.is_death_beat_playing(), tag + "the death sequence began exactly once")
+		check(deaths == ["fernanda"] and not GameState.is_alive("fernanda"), tag + "no second death announcement")
+		map.tick_beat(100.0)
+		GameState.travelers_died.disconnect(on_death)
+		check(restarts[0] == 1 and not map.is_death_beat_playing() and not map.is_gore_playing(), tag + "the scene restarts once, nothing pending")
+		check(GameState.heart_units["fernanda"] == GameState.max_units() and GameState.heart_units["nestor"] == GameState.max_units(), tag + "both hearts are back (both died, restart rules unchanged)")
+		check(GameState.inventory.snapshot() == {"ddeok": 1}, tag + "the backpack is restored to its scene-start contents")
+		map.free()
+		get_tree().paused = false
+	# Bad gore data: the death starts at once, as before the gore existed.
+	var map: Node3D = await _decoy_map()
+	map.gore_table = {}
+	GameState.heart_units["fernanda"] = 1
+	_pick_harm(map, "butsunnamu")
+	check(not map.decoy_gore.active and map.is_death_beat_playing(), "without a usable gore table a lethal pick starts the death at once")
+	map.free()
+	map = await _decoy_map()
+	map.gore_table = {}
+	_pick_harm(map, "butsunnamu")
+	check(not map.decoy_gore.active and GameState.heart_units["fernanda"] == GameState.max_units() - 1 and map.picks_allowed(), "without a gore table a harm pick only costs the half heart")
+	map.free()
+	GameState.new_hike()
+	_section_done("test_decoy_gore_lethal")
+
+
+func test_decoy_gore_restart() -> void:
+	for pair in GORE_PAIRS:
+		var tag: String = pair[0] + ": "
+		# A scene restart in the middle of a beat.
+		var map: Node3D = await _decoy_map("fernanda", {"ddeok": 1})
+		var picker: Node3D = map.travelers["fernanda"]
+		var base_pos: Vector3 = picker.global_position
+		var base_color: Color = picker.body_color()
+		_pick_harm(map, pair[0])
+		for i in 60:  # past the pop for the convulsion (0.9 s), mid-swell for the face
+			map.tick_gore(1.0 / 60.0)
+		check(map.decoy_gore.active, tag + "(setup) a beat is mid-way")
+		map._restart()
+		check(not map.decoy_gore.active and not map.is_gore_playing() and map.find_child("DecoyGoreFx", false, false) == null, tag + "a restart mid-beat leaves no beat and no shapes")
+		check(_particle_count(map) == 1, tag + "and no blood (only the steam)")
+		check(picker.global_position == base_pos and picker.scale == Vector3.ONE and picker.body_color() == base_color, tag + "the picker is as before")
+		check(GameState.heart_units["fernanda"] == GameState.max_units() and GameState.inventory.snapshot() == {"ddeok": 1}, tag + "hearts and backpack are the scene-start ones")
+		map.tick_gore(1.0)
+		check(not map.is_death_beat_playing() and map.picks_allowed() and not map.countdown.paused, tag + "nothing starts later on its own")
+		map.free()
+		# A death sequence begun in the middle of a beat drops the gore.
+		map = await _decoy_map("fernanda", {})
+		picker = map.travelers["fernanda"]
+		base_pos = picker.global_position
+		base_color = picker.body_color()
+		_pick_harm(map, pair[0])
+		for i in 60:
+			map.tick_gore(1.0 / 60.0)
+		map.begin_death_beat()
+		check(not map.decoy_gore.active and map.find_child("DecoyGoreFx", false, false) == null and map.is_death_beat_playing(), tag + "a death in the middle of a beat drops the gore, and the death begins")
+		check(picker.global_position == base_pos and picker.body_color() == base_color, tag + "the picker is reset")
+		map.tick_gore(1.0)
+		check(map.is_death_beat_playing(), tag + "the death beat goes on once")
+		map.tick_beat(100.0)
+		check(not map.is_death_beat_playing() and GameState.heart_units["fernanda"] == GameState.max_units(), tag + "it restarts normally")
+		map.free()
+		get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_decoy_gore_restart")

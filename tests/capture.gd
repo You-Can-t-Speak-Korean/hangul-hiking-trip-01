@@ -19,7 +19,10 @@ extends Node
 ## pause_menu_confirm}.png, `-- --backpack-only` for the backpack shots
 ## {backpack_filled,backpack_empty}.png, `-- --reward-shots` for the decoy shots
 ## {reward_backpack_ddeok,reward_floating_label,harm_keuncheonnamseong,harm_butsunnamu}.png (the harm
-## shots show the steam and the hearts only: the gore is not built, see the 7b log).
+## shots show the steam and the hearts only: the gore is not built, see the 7b log), and
+## `-- --gore-shots` for the harm gore beats {gore_face_swell_pop_building,gore_face_swell_pop_after_pop,
+## gore_convulse_eyes_pop_building,gore_convulse_eyes_pop_after_pop}.png and the reward label over
+## the steam {gore_label_over_steam}.png.
 
 const SHOT_DIR := "res://tests/shots/"
 const DELTA := 1.0 / 60.0
@@ -65,6 +68,10 @@ func _ready() -> void:
 		return
 	if "--reward-shots" in OS.get_cmdline_user_args():
 		await _reward_shots()
+		get_tree().quit()
+		return
+	if "--gore-shots" in OS.get_cmdline_user_args():
+		await _gore_shots()
 		get_tree().quit()
 		return
 	if "--credits-only" in OS.get_cmdline_user_args():
@@ -945,3 +952,66 @@ func _fail_block(map: Node3D) -> void:
 					map.spelling_hud.tick(1.0)
 					return
 		return
+
+
+## The harm gore beats, each at two moments (building up, and just after the pop), and
+## the "+1 DDEOK" label while the steam is still up. The beat is ticked once per frame.
+func _gore_shots() -> void:
+	for child in get_children():
+		if child is CanvasLayer:
+			child.queue_free()
+	for kind_id in ["keuncheonnamseong", "butsunnamu"]:
+		GameState.new_hike()
+		var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+		add_child(map)
+		map.set_physics_process(false)
+		map.set_process(false)
+		await _frames(5)
+		var harm: Node3D
+		for plant in map.plants:
+			if plant.kind_id == kind_id:
+				harm = plant
+				break
+		_stand_by(map, harm)
+		await _frames(5)
+		map.pick_plant(harm)
+		var gore_id: String = map.decoy_gore.gore_id
+		var entry: Dictionary = Content.mountain(GameState.game_id)["foraging"]["decoy_gore"][gore_id]
+		var building := float(entry["pop_seconds"]) * 0.8
+		var shot_building := false
+		var after_pop := -1.0
+		while map.decoy_gore.active:
+			map.tick_gore(DELTA)
+			await get_tree().process_frame
+			if not shot_building and map.decoy_gore.elapsed >= building:
+				shot_building = true
+				_save("gore_%s_building" % gore_id)
+			if after_pop < 0.0 and map.decoy_gore.popped:
+				after_pop = map.decoy_gore.elapsed
+			if after_pop >= 0.0 and map.decoy_gore.elapsed >= after_pop + 0.3 and after_pop < 1000.0:
+				_save("gore_%s_after_pop" % gore_id)
+				after_pop = 1000.0
+		map.free()
+	GameState.new_hike()
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	map.set_physics_process(false)
+	map.set_process(false)
+	await _frames(5)
+	var forced := RefCounted.new()
+	forced.set_script(load("res://tests/forced_rng.gd"))
+	forced.value = 5  # DDEOK
+	map.reward_rng = forced
+	var reward: Node3D
+	for plant in map.plants:
+		if plant.kind == "decoy_reward":
+			reward = plant
+			break
+	_stand_by(map, reward)
+	await _frames(5)
+	map.pick_plant(reward)
+	await _frames(14)
+	_save("gore_label_over_steam")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()

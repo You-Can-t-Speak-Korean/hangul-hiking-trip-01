@@ -18,13 +18,18 @@
     "damage": {"_note": "What a failed spelling syllable costs. 'failure_damage_units' is in half-units (1 = half a heart) and hits BOTH travelers. Placeholder.", "failure_damage_units": 1},
     "gore_placeholder": {"_note": "Placeholder blood on the travelers (never plants or animals) until the art pass. 'burst_duration' seconds of spray; the second traveler's burst starts 'stagger' seconds after the first; 'tint_color' flashes on a hit traveler's body for 'tint_duration' seconds; 'death_beat' seconds pass between a death and the scene restart while the screen dims to 'death_dim_alpha' black.", "burst_duration": 0.6, "stagger": 0.15, "blood_color": [0.45, 0.02, 0.04], "tint_color": [0.9, 0.1, 0.1], "tint_duration": 0.3, "death_beat": 1.5, "death_dim_alpha": 0.75},
     "decoy_rewards": {
-      "_note": "What a reward decoy (노루귀, 들쭉나무) gives when picked: one entry rolled by weight (chance = weight / total), 'count' of that item into the backpack. Every item must exist in items.json, weight > 0, count >= 1. PLACEHOLDER weights. spelling_hint and slow_time_charm are not in the table yet. 'floating_label' is the text that rises from the picked plant: it rises 'rise' m and fades over 'seconds'; 'font_size' is Label3D pixels, 'pixel_size' metres per pixel, colour r, g, b.",
+      "_note": "What a reward decoy (노루귀, 들쭉나무) gives when picked: one entry rolled by weight (chance = weight / total), 'count' of that item into the backpack. Every item must exist in items.json, weight > 0, count >= 1. PLACEHOLDER weights. spelling_hint and slow_time_charm are not in the table yet. 'floating_label' is the text that rises from the picked plant: it rises 'rise' m and fades over 'seconds'; 'font_size' is Label3D pixels, 'pixel_size' metres per pixel, colour r, g, b; 'render_priority' (Label3D sort order among transparent things, above the steam puff's 0) keeps it drawn in front of the steam.",
       "table": [
         {"item": "ssanghwatang", "weight": 3, "count": 1},
         {"item": "gongjindan", "weight": 1, "count": 1},
         {"item": "ddeok", "weight": 4, "count": 1}
       ],
-      "floating_label": {"rise": 1.6, "seconds": 1.4, "font_size": 48, "pixel_size": 0.012, "color": [1.0, 0.95, 0.6]}
+      "floating_label": {"rise": 1.6, "seconds": 1.4, "font_size": 48, "pixel_size": 0.012, "color": [1.0, 0.95, 0.6], "render_priority": 10}
+    },
+    "decoy_gore": {
+      "_note": "The gore beat on the traveler who picked a harm decoy (travelers only, never the plant). Every harm decoy names one entry here in its 'gore' field; reward decoys have none. 'duration' is the whole beat in seconds, 'pop_seconds' (>0, <= duration) when it pops; the beat gates picks, the spelling view, both menus and walking, and pauses the stuck countdown and its music. A lethal pick's death sequence starts on the tick after the beat ends. Colours are r, g, b. PLACEHOLDER numbers and shapes. face_swell_pop: a head blob (radius 'head_radius' m at 'head_height' m) swells to 'swell_scale' times, reddening from 'head_color' to 'swollen_color' and shaking by 'shake_amplitude' m at 'shake_hz', then pops into a blood burst of 'pop_blood_strength' (1 = the normal hit) and 'pop_chunks' flesh chunks. convulse_eyes_pop: the traveler jitters by 'jitter_amplitude' m (and tilts 'tilt_degrees') at 'jitter_hz' until 'pop_seconds', then two eyes (radius 'eye_radius', 'eye_color') with a 'tail_color' tail 'tail_length' m long fly out sideways ('eye_speed_side' m/s), up ('eye_speed_up') and toward the camera ('eye_speed_toward') and fall under 'gravity', with a blood burst of 'pop_blood_strength' at the head.",
+      "face_swell_pop": {"duration": 1.6, "pop_seconds": 1.0, "head_radius": 0.3, "head_height": 1.45, "head_color": [0.93, 0.74, 0.62], "swollen_color": [0.78, 0.06, 0.08], "swell_scale": 3.4, "shake_amplitude": 0.03, "shake_hz": 30.0, "pop_blood_strength": 3.0, "pop_chunks": 14},
+      "convulse_eyes_pop": {"duration": 1.6, "pop_seconds": 0.9, "jitter_amplitude": 0.09, "jitter_hz": 40.0, "tilt_degrees": 12.0, "eye_radius": 0.12, "eye_color": [1.0, 1.0, 1.0], "tail_color": [0.7, 0.03, 0.06], "tail_length": 0.4, "eye_speed_side": 2.4, "eye_speed_up": 3.6, "eye_speed_toward": 1.6, "gravity": 9.0, "pop_blood_strength": 1.5}
     },
     "hearts_hud": {"_note": "The heart readout at the top right, one row per traveler. 'heart_size', 'gap' and 'margin' are pixels; a half heart is half filled, an empty one only an outline.", "heart_size": 26.0, "gap": 4.0, "margin": 16.0, "fill_color": [0.85, 0.12, 0.18], "outline_color": [0.95, 0.9, 0.9]},
     "spares": {"_note": "Every completed word earns one credit (once). A completion that leaves a jamo short spends its own credit at once on a spare plant of that word's kind, carrying the jamo the unfinished words are most short of; otherwise the credit is banked. A failed syllable spends the oldest banked credits, one spare each, while a shortage is left. Credits banked plus spares spawned never pass 'cap'. 'grow_seconds' is the grow-in (scale 0 to 1), during which the spare cannot be picked. 'slots' maps a word (target kind) id to the fixed [x, z] where its spare appears, in the word's own zone: at least 2 m from every plant and slot, 4 m from other plants of its kind, 6 m from the starts, clear of props. Slots are invisible until used. Positions come from a one-off script, as the first 36 plants did.", "cap": 6, "grow_seconds": 0.5, "slots": {"ma": [15.0, -8.5], "meoru": [13.0, -1.0], "minari": [22.5, -10.0], "gosari": [16.5, -1.0], "gobi": [12.0, 6.5], "simiro": [57.5, 10.0]}},
@@ -151,7 +156,8 @@
           "letter_style": "sprouting",
           "color": [0.35, 0.28, 0.38],
           "injury": "poison_swell",
-          "damage_units": 1
+          "damage_units": 1,
+          "gore": "face_swell_pop"
         },
         {
           "id": "butsunnamu",
@@ -163,7 +169,8 @@
           "color": [0.18, 0.36, 0.24],
           "fruit_color": [0.72, 0.4, 0.15],
           "injury": "poison_burst",
-          "damage_units": 1
+          "damage_units": 1,
+          "gore": "convulse_eyes_pop"
         },
         {
           "id": "norugui",

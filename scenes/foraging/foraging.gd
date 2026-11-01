@@ -28,6 +28,8 @@ const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
 const Backpack := preload("res://scenes/foraging/backpack.gd")
 const BackpackHud := preload("res://scenes/foraging/backpack_hud.gd")
 const RewardTable := preload("res://scripts/reward_table.gd")
+const DecoyGore := preload("res://scenes/foraging/decoy_gore.gd")
+const DecoyGoreFx := preload("res://scenes/foraging/decoy_gore_fx.gd")
 const PLANT_FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
@@ -108,6 +110,16 @@ var backpack_hud: CanvasLayer
 var reward_table
 var reward_rng = RandomNumberGenerator.new()
 var reward_label_config: Dictionary = {}
+## The gore beat after a harm decoy (data: foraging.decoy_gore): its table, the
+## node-free state, and the picker's shape-drawing node while it plays. While a
+## beat runs (or the death after a lethal one is due on the next tick) picks, the
+## spelling view, both menus and walking are refused and the stuck countdown and
+## its music stand still. `restarting` is not used for this.
+var gore_table: Dictionary = {}
+var decoy_gore
+var _gore_fx: Node3D
+var _gore_lethal := false     # the pick that started the beat killed the picker (and so both)
+var _death_pending := false   # the beat is over; begin_death_beat() runs on the next tick_gore()
 ## Data: foraging.stuck_music.
 var music_config: Dictionary = {}
 ## The stuck countdown (see Stuck, Countdown), its HUD and the verdict of the
@@ -252,6 +264,12 @@ func _ready() -> void:
 	if not reward_table.is_valid():
 		push_error("%s in foraging.decoy_rewards of %s: reward decoys will give nothing" % [reward_table.problem, GameState.game_id])
 	reward_label_config = rewards["floating_label"]
+	decoy_gore = DecoyGore.new()
+	var gore_problem: String = DecoyGore.problem_with(config["plants"]["kinds"], config.get("decoy_gore"))
+	if gore_problem == "":
+		gore_table = config["decoy_gore"]
+	else:
+		push_error("%s in foraging.decoy_gore of %s: harm decoys will play no gore" % [gore_problem, GameState.game_id])
 	reward_rng.randomize()
 	GameState.begin_scene("foraging")  # a death restores the hearts held now
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
@@ -280,6 +298,7 @@ func _exit_tree() -> void:
 
 
 func _process(delta: float) -> void:
+	tick_gore(delta)
 	tick_beat(delta)
 	if DisplayServer.get_name() != "headless":
 		update_hover(get_viewport().get_mouse_position(), delta)
@@ -309,7 +328,7 @@ func step(input: Vector2, delta: float) -> void:
 		picking.cancel_walk()  # the keys take over
 	elif picking.walk_target >= 0:
 		walk = _walk_step(delta)
-	if not restarting and not pause_menu.is_open and not backpack.is_open:  # the last second, the kill, the death beat and the menus: nobody walks
+	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing():  # the last second, the kill, the gore, the death beat and the menus: nobody walks
 		player.drive(walk, delta)
 		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
@@ -325,10 +344,11 @@ func step(input: Vector2, delta: float) -> void:
 	_tick_stuck(delta)
 
 
-## False while restarting, while the pause menu or the backpack is open, or once
-## the travelers are dead (no one can pick).
+## False while restarting, while the pause menu or the backpack is open, while a
+## gore beat plays, or once the travelers are dead (no one can pick). The spelling
+## view, both menus and the click-walk ask this too.
 func picks_allowed() -> bool:
-	if restarting or pause_menu.is_open or backpack.is_open:
+	if restarting or pause_menu.is_open or backpack.is_open or is_gore_playing():
 		return false
 	for id in GameState.TRAVELERS:
 		if not GameState.is_alive(id):
@@ -438,6 +458,7 @@ func _blood(at: Vector3, strength: float = 1.0) -> CPUParticles3D:
 func begin_death_beat() -> void:
 	if _dim != null:  # the beat has begun (restarting may be set before, by the monster)
 		return
+	_cancel_gore()  # (a lethal pick waits for its gore to end first, so this only drops a stray beat)
 	restarting = true
 	_abandon_stuck()
 	_beat_left = float(gore["death_beat"])
@@ -475,6 +496,7 @@ func tick_beat(delta: float) -> void:
 ## and the spelling progress. (A map that is not the current scene, as in the
 ## tests, only restores GameState and announces `restarted`.)
 func _restart() -> void:
+	_cancel_gore()
 	_abandon_stuck()
 	GameState.restart_scene()
 	restarted.emit()
@@ -615,6 +637,8 @@ func _float_label(text: String, at: Vector3) -> Label3D:
 	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	label.shaded = false
 	label.no_depth_test = true  # never hidden by the plant it rose from
+	label.render_priority = int(cfg["render_priority"])  # sorted in front of the steam puff
+	label.outline_render_priority = int(cfg["render_priority"]) - 1  # the outline stays behind its own text
 	label.outline_size = 16
 	label.outline_modulate = Color(0.08, 0.06, 0.1)
 	var c: Array = cfg["color"]
@@ -629,12 +653,81 @@ func _float_label(text: String, at: Vector3) -> Label3D:
 
 
 ## A harm decoy was picked: the picker (and only the picker) loses the plant's
-## damage_units half-units. If that kills them both the death beat starts. The
-## gore for the two harm decoys is not built (word bank v0.1 is not in the repo).
+## damage_units half-units, the hearts HUD updates, then the plant's gore beat
+## plays on the picker. A lethal pick does not start the death beat here: it waits
+## until the gore has ended (tick_gore). Without a usable gore beat (bad data) the
+## death starts at once, as before.
 func _harm_picker(plant: Node3D) -> void:
-	var units := int(_kinds[plant.kind_id].get("damage_units", 0))
-	if units > 0 and GameState.damage_units(GameState.controlled, units, String(_kinds[plant.kind_id].get("injury", ""))):
+	var kind: Dictionary = _kinds[plant.kind_id]
+	var units := int(kind.get("damage_units", 0))
+	var lethal := units > 0 and GameState.damage_units(GameState.controlled, units, String(kind.get("injury", "")))
+	var id := String(kind.get("gore", ""))
+	if gore_table.has(id) and decoy_gore.start(id, GameState.controlled, gore_table[id]):
+		_begin_gore(id, lethal)
+	elif lethal:
 		begin_death_beat()
+
+
+## The gore beat starts on the picker: the countdown and its music stand still,
+## a click-walk is dropped and the shapes are built.
+func _begin_gore(id: String, lethal: bool) -> void:
+	_gore_lethal = lethal
+	picking.cancel_walk()
+	_tip_plant = null  # a hover name would stay frozen on screen
+	_tooltip.visible = false
+	countdown.paused = true
+	_silence_music(true)
+	_gore_fx = DecoyGoreFx.new()
+	add_child(_gore_fx)
+	_gore_fx.setup(travelers[decoy_gore.who], id, gore_table[id], _blood, _gore_color("tint_color"))
+
+
+func is_gore_playing() -> bool:
+	return decoy_gore != null and (decoy_gore.active or _death_pending)
+
+
+## Advances the gore beat (a no-op otherwise); public so tests and the capture
+## scene can drive it. When the beat ends its shapes go and the picker is as before;
+## a lethal pick's death beat then starts on the NEXT call, never on the same tick.
+func tick_gore(delta: float) -> void:
+	if _death_pending:
+		_death_pending = false
+		begin_death_beat()
+		return
+	if decoy_gore == null or not decoy_gore.active:
+		return
+	_gore_fx.advance(delta, decoy_gore.build_up())
+	for event in decoy_gore.tick(delta):
+		match event:
+			"pop":
+				_gore_fx.pop()
+			"done":
+				_end_gore()
+				_death_pending = _gore_lethal
+				_gore_lethal = false
+				if not _death_pending:
+					countdown.paused = spelling_hud.is_open() or pause_menu.is_open or backpack.is_open
+					_silence_music(false)
+
+
+## Drops the shapes and puts the picker back exactly as it was.
+func _end_gore() -> void:
+	if _gore_fx != null and is_instance_valid(_gore_fx):
+		_gore_fx.finish()
+	_gore_fx = null
+
+
+## The scene is dying or restarting: whatever beat is playing leaves nothing behind.
+func _cancel_gore() -> void:
+	var was_playing: bool = decoy_gore != null and decoy_gore.active
+	if decoy_gore != null:
+		decoy_gore.cancel()
+	_end_gore()
+	_gore_lethal = false
+	_death_pending = false
+	if was_playing:
+		countdown.paused = false
+		_silence_music(false)
 
 
 ## A one-shot puff of grey-white steam at a world position.
@@ -1179,7 +1272,7 @@ func _log_stuck(event: String, verdict: Dictionary, note: String) -> void:
 ## one place besides begin_death_beat), so picks, walks, hover names and the
 ## spelling view are rejected through the checks that flag already has.
 func _tick_stuck(delta: float) -> void:
-	countdown.paused = spelling_hud.is_open() or pause_menu.is_open or backpack.is_open
+	countdown.paused = spelling_hud.is_open() or pause_menu.is_open or backpack.is_open or is_gore_playing()
 	if countdown.tick(delta):
 		_begin_monster()  # the kill's clock starts at the next tick, not with what is left of this one
 	else:

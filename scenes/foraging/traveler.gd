@@ -68,6 +68,13 @@ func flash(tint: Color, time: float) -> void:
 	_flash.tween_property(_body_material, "albedo_color", _body_color, time)
 
 
+## Ends a flash at once: the body is its own colour again.
+func reset_flash() -> void:
+	if _flash != null and _flash.is_valid():
+		_flash.kill()
+	_body_material.albedo_color = _body_color
+
+
 ## Placeholder kill: the traveler is thrown `away` (a world offset) and falls on
 ## its side over `time` seconds. It stays down; nothing drives it afterwards.
 func knock_down(away: Vector3, time: float, tilt_degrees: float = 90.0) -> void:
