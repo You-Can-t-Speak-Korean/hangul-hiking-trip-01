@@ -3,6 +3,8 @@ extends Node
 ##   godot --headless --path . res://tests/test_runner.tscn
 ## Exits with code 0 if everything passes, 1 otherwise.
 
+const Foraging := preload("res://scenes/foraging/foraging.gd")
+
 var passed := 0
 var failed := 0
 ## Each test section ends with _section_done("<its name>"). A script error stops a
@@ -99,11 +101,18 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_drink_scene",
 	"test_drink_input",
 	"test_drink_restart",
+	"test_placement_data",
+	"test_placement_logic",
+	"test_chaos_piles_logic",
+	"test_placement_timing",
+	"test_decoys_at_any_position",
+	"test_pile_pickup",
+	"test_pile_restart",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 2208
+const MIN_CHECKS := 2463
 
 
 func check(condition: bool, label: String) -> void:
@@ -119,6 +128,10 @@ func _section_done(section: String) -> void:
 
 
 func _ready() -> void:
+	# The sections written before random decoys and chaos piles (Prompt 7d) expect the
+	# decoys at the fixed positions of the data and no piles; they run in the legacy
+	# layout. The 7d sections switch it off and build maps with pinned seeds.
+	Foraging.legacy_layout = true
 	print("== Hangul engine ==")
 	test_compose()
 	print("== Curriculum ==")
@@ -232,6 +245,15 @@ func _ready() -> void:
 	await test_drink_scene()
 	await test_drink_input()
 	await test_drink_restart()
+	print("== Random decoys and chaos DDEOK piles ==")
+	Foraging.legacy_layout = false
+	await test_placement_data()
+	test_placement_logic()
+	test_chaos_piles_logic()
+	await test_placement_timing()
+	await test_decoys_at_any_position()
+	await test_pile_pickup()
+	await test_pile_restart()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -6630,3 +6652,917 @@ func test_drink_restart() -> void:
 	get_tree().paused = false
 	GameState.new_hike()
 	_section_done("test_drink_restart")
+
+
+# ---- Prompt 7d: random decoy placement and chaos DDEOK piles ----
+
+const DecoyPlacementScript := preload("res://scenes/foraging/decoy_placement.gd")
+const ChaosPilesScript := preload("res://scenes/foraging/chaos_piles.gd")
+const DECOY_KIND_IDS: Array[String] = ["keuncheonnamseong", "butsunnamu", "norugui", "deulchuknamu"]
+const LAYOUT_SEEDS := 1500       # pinned seeds the layout tests run over
+const PROP_FOOTPRINT := 0.6      # metres of clear ground a plant or pile keeps from a prop's box
+const LETTER_HEIGHT := 1.5       # the height the camera must see a plant's letter at
+const SAMPLE_STARTS := 20000     # scene starts the proportion tests roll
+const PROPORTION_TOLERANCE := 0.015  # absolute, on a probability (about 4 standard deviations at this sample size)
+
+
+func _vec(pair: Array) -> Vector2:
+	return Vector2(float(pair[0]), float(pair[1]))
+
+
+func _target_spots() -> Array[Vector2]:
+	var targets := {}
+	for kind in _hangul_plants():
+		if kind["kind"] == "target":
+			targets[kind["id"]] = true
+	var spots: Array[Vector2] = []
+	for entry in _placed():
+		if targets.has(entry["kind"]):
+			spots.append(Vector2(float(entry["x"]), float(entry["z"])))
+	return spots
+
+
+func _spare_spots() -> Array[Vector2]:
+	var spots: Array[Vector2] = []
+	for id in _config()["spares"]["slots"]:
+		spots.append(_vec(_config()["spares"]["slots"][id]))
+	return spots
+
+
+func _tree_spots() -> Array[Vector2]:
+	var spots: Array[Vector2] = []
+	for pos in _config()["scenery"]["gusangnamu"]["positions"]:
+		spots.append(_vec(pos))
+	return spots
+
+
+func _start_spots() -> Array[Vector2]:
+	var spots: Array[Vector2] = []
+	for id in _config()["start"]:
+		spots.append(_vec(_config()["start"][id]))
+	return spots
+
+
+func _fixed_spots() -> Array[Vector2]:
+	var spots := _target_spots()
+	spots.append_array(_spare_spots())
+	return spots
+
+
+func _new_placement(config: Dictionary = {}) -> RefCounted:
+	var cfg := _config()
+	return DecoyPlacementScript.new(cfg["decoy_placement"] if config.is_empty() else config, cfg["plants"]["kinds"], cfg["plants"]["placed"], cfg["zones"], _fixed_spots(), _tree_spots(), _start_spots(), float(cfg["stage"]["depth"]) / 2.0)
+
+
+func _new_piles(config: Dictionary = {}, placement: RefCounted = null) -> RefCounted:
+	var cfg := _config()
+	var decoy_slots: Array[Vector2] = []
+	var source: RefCounted = _new_placement() if placement == null else placement
+	for id in source.pools:
+		decoy_slots.append_array(source.pools[id])
+	return ChaosPilesScript.new(cfg["chaos_piles"] if config.is_empty() else config, _target_spots(), _fixed_spots(), decoy_slots, _tree_spots(), _start_spots(), cfg["zones"], float(cfg["stage"]["depth"]) / 2.0, Content.items)
+
+
+## What a scene start with this seed rolls, worked out without a scene: the decoy layout, foraging.plants
+## with the decoys moved, every plant's (x, z) and the piles.
+func _offline_roll(seed_value: int, placement: RefCounted, piles: RefCounted) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value
+	var layout: Dictionary = placement.choose(rng)
+	var pile_rng := RandomNumberGenerator.new()
+	pile_rng.seed = DecoyPlacementScript.derive_seed(seed_value, 1)
+	var resolved: Dictionary = placement.apply(_config()["plants"], layout["positions"])
+	var spots: Array[Vector2] = []
+	for entry in resolved["placed"]:
+		spots.append(Vector2(float(entry["x"]), float(entry["z"])))
+	return {"layout": layout, "resolved": resolved, "spots": spots, "piles": piles.roll(pile_rng, spots, _start_spots())}
+
+
+## The decoys' layout as one comparable value.
+func _layout_key(positions: Dictionary) -> String:
+	var parts: Array[String] = []
+	for id in DECOY_KIND_IDS:
+		parts.append("%s=%s" % [id, str(positions[id])])
+	return "|".join(parts)
+
+
+## A map built with a pinned placement seed (the 7d sections run with the legacy layout off).
+func _seeded_map(seed_value: int, held := {}, controlled := "fernanda") -> Node3D:
+	GameState.new_hike()
+	for id in held:
+		GameState.inventory.add(id, held[id])
+	GameState.controlled = controlled
+	Foraging.legacy_layout = false
+	Foraging.seed_override = seed_value
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	Foraging.seed_override = -1
+	map.set_physics_process(false)
+	map.set_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	return map
+
+
+func _prop_boxes(map: Node3D) -> Array:
+	var boxes := []
+	for holder in ["Props", "Scenery"]:
+		for node in map.get_node(holder).get_children():
+			boxes.append(node.bounds)
+	return boxes
+
+
+func _footprint_hit(spot: Vector2, boxes: Array) -> bool:
+	for box: AABB in boxes:
+		if Rect2(box.position.x, box.position.z, box.size.x, box.size.z).grow(PROP_FOOTPRINT).has_point(spot):
+			return true
+	return false
+
+
+func _nearest_distance(spot: Vector2, others: Array) -> float:
+	var best := INF
+	for other: Vector2 in others:
+		best = minf(best, spot.distance_to(other))
+	return best
+
+
+func test_placement_data() -> void:
+	var cfg := _config()
+	var place: Dictionary = cfg.get("decoy_placement", {})
+	var chaos: Dictionary = cfg.get("chaos_piles", {})
+	check(not place.is_empty() and not chaos.is_empty(), "hallasan.json has decoy_placement and chaos_piles")
+	var placement := _new_placement()
+	check(placement.is_valid(), "the decoy pools pass their own validation (%s)" % placement.problem)
+	check(place["same_kind_min"] == 4.0 and place["any_min"] == 2.0 and place["start_min"] == 6.0, "the spacing rules are the existing ones: 4 m same kind, 2 m any two, 6 m from the starts")
+	check(place["pools"].keys().size() == 4 and DECOY_KIND_IDS.all(func(id): return place["pools"].has(id)), "there is a pool for each of the four decoy kinds, and no other")
+	var zone_by_kind := {}
+	for kind in _hangul_plants():
+		zone_by_kind[kind["id"]] = kind["zone"]
+	check(zone_by_kind["keuncheonnamseong"] == "lower_forest" and zone_by_kind["butsunnamu"] == "lower_forest" and zone_by_kind["norugui"] == "mid_slope" and zone_by_kind["deulchuknamu"] == "alpine", "the zones are lower forest (큰천남성, 붓순나무), mid slope (노루귀), alpine (들쭉나무)")
+	var map: Node3D = await _seeded_map(1)
+	var boxes := _prop_boxes(map)
+	var half_depth: float = map.stage_depth / 2.0
+	var bounds: Rect2 = map.walk_bounds()
+	var all_pool: Array[Vector2] = []
+	var counts := _expected_counts()
+	for id in DECOY_KIND_IDS:
+		var zone_x := _zone_range(zone_by_kind[id])
+		var pool: Array = place["pools"][id]
+		check(pool.size() == 6 and pool.size() >= int(counts[id]), "%s: a pool of 6 slots, at least its %d plants" % [id, counts[id]])
+		var spots: Array[Vector2] = []
+		for slot in pool:
+			spots.append(_vec(slot))
+		var distinct := {}
+		for spot in spots:
+			distinct[spot] = true
+		check(distinct.size() == spots.size(), "%s: no slot appears twice" % id)
+		var in_zone := true
+		var walkable := true
+		var clear := true
+		var far := true
+		var props_ok := true
+		var seen_ok := true
+		var hidden := []
+		for spot in spots:
+			in_zone = in_zone and spot.x >= float(zone_x[0]) + 1.0 and spot.x <= float(zone_x[1]) - 1.0 and absf(spot.y) <= half_depth - 1.0
+			walkable = walkable and bounds.has_point(spot) and spot.y <= map.near_limit_at(spot.x) - 0.5
+			clear = clear and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, _tree_spots()) >= 2.5
+			far = far and _nearest_distance(spot, _start_spots()) >= 6.0
+			props_ok = props_ok and not _footprint_hit(spot, boxes)
+			if DecoyPlacementScript.blocked_by_prop(spot, map.terrain.height_at(spot.x), boxes, map.CAMERA_PITCH_DEG, PROP_FOOTPRINT, LETTER_HEIGHT, map.FADE_REACH):
+				seen_ok = false
+				hidden.append(spot)
+		check(in_zone, "%s: every slot is inside its zone and on the stage" % id)
+		check(walkable, "%s: every slot is on walkable ground, inside the walk limits and the camera clamp" % id)
+		check(clear, "%s: every slot is 2 m from every target plant and spare slot and 2.5 m from every tree" % id)
+		check(far, "%s: every slot is 6 m from the starts" % id)
+		check(props_ok, "%s: no slot is inside or under a prop (box plus %.1f m)" % [id, PROP_FOOTPRINT])
+		check(seen_ok, "%s: no prop box stands between the camera and a slot's letter %s" % [id, str(hidden)])
+		var spread := 0.0
+		for a in spots:
+			for b in spots:
+				spread = maxf(spread, a.distance_to(b))
+		check(spread >= 0.4 * (float(zone_x[1]) - float(zone_x[0])), "%s: the pool is spread over the zone (%.1f m across)" % [id, spread])
+		var pairs_ok := true
+		for i in spots.size():
+			for j in range(i + 1, spots.size()):
+				pairs_ok = pairs_ok and spots[i].distance_to(spots[j]) >= 4.0
+		check(pairs_ok, "%s: the pool's slots are at least 4 m apart" % id)
+		for other_id in DECOY_KIND_IDS:
+			if other_id == id:
+				continue
+			var cross_ok := true
+			for spot in spots:
+				for other in place["pools"][other_id]:
+					cross_ok = cross_ok and spot.distance_to(_vec(other)) >= 2.0
+			check(cross_ok, "%s and %s: no two slots of different pools are within 2 m" % [id, other_id])
+		all_pool.append_array(spots)
+	# The fallback (the decoys' own x, z in 'placed') is itself a valid layout.
+	check(placement.layout_problem(placement.fallback) == "", "the fallback positions obey the spacing rules (%s)" % placement.layout_problem(placement.fallback))
+	var fallback_ok := true
+	for id in placement.fallback:
+		for spot in placement.fallback[id]:
+			fallback_ok = fallback_ok and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, _start_spots()) >= 6.0
+	check(fallback_ok, "the fallback positions are clear of the fixed plants, spare slots and starts")
+
+	# Chaos pile slots.
+	var piles := _new_piles()
+	check(piles.is_valid(), "the chaos pile data passes its own validation (%s)" % piles.problem)
+	var slots: Array[Vector2] = []
+	for slot in chaos["slots"]:
+		slots.append(_vec(slot))
+	check(slots.size() == 12, "12 candidate pile slots")
+	var zone_hit := {}
+	var pile_walkable := true
+	var pile_clear := true
+	var pile_props := true
+	var pile_seen := true
+	var pile_hidden := []
+	var off_path := 0
+	for spot in slots:
+		zone_hit[map.zone_at(spot.x)["id"]] = true
+		pile_walkable = pile_walkable and bounds.has_point(spot) and spot.y <= map.near_limit_at(spot.x) - 0.5 and absf(spot.y) <= half_depth - 1.0
+		pile_clear = pile_clear and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, all_pool) >= 2.0 and _nearest_distance(spot, _start_spots()) >= 6.0 and _nearest_distance(spot, _tree_spots()) >= 2.5
+		pile_props = pile_props and not _footprint_hit(spot, boxes)
+		if DecoyPlacementScript.blocked_by_prop(spot, map.terrain.height_at(spot.x), boxes, map.CAMERA_PITCH_DEG, PROP_FOOTPRINT, LETTER_HEIGHT, map.FADE_REACH):
+			pile_seen = false
+			pile_hidden.append(spot)
+		if _nearest_distance(spot, _target_spots()) >= 8.0:
+			off_path += 1
+	check(zone_hit.size() == 3, "the pile slots cover all three zones (%s)" % str(zone_hit.keys()))
+	check(pile_walkable, "every pile slot is on walkable ground inside the walk limits and the camera clamp")
+	check(pile_clear, "every pile slot is 2 m from every target, spare slot and decoy slot, 6 m from the starts and 2.5 m from trees")
+	check(pile_props, "no pile slot is inside or under a prop (box plus %.1f m)" % PROP_FOOTPRINT)
+	check(pile_seen, "no prop box stands between the camera and a pile slot %s" % str(pile_hidden))
+	check(off_path >= 4, "at least 4 pile slots are 8 m from every target plant (%d)" % off_path)
+	var apart_ok := true
+	for i in slots.size():
+		for j in range(i + 1, slots.size()):
+			apart_ok = apart_ok and slots[i].distance_to(slots[j]) >= 2.0
+	check(apart_ok, "pile slots are at least 2 m apart")
+	var counts_got: Array = chaos["count_table"].map(func(e): return [int(e["count"]), int(e["weight"])])
+	var amounts_got: Array = chaos["amount_table"].map(func(e): return [int(e["amount"]), int(e["weight"])])
+	check(counts_got == [[0, 3], [1, 4], [2, 2], [3, 1]], "count_table is 0:3, 1:4, 2:2, 3:1")
+	check(amounts_got == [[1, 10], [2, 4], [3, 2], [10, 1]], "amount_table is 1:10, 2:4, 3:2, 10:1")
+	check(chaos["item"] == "ddeok" and Content.has_item("ddeok"), "piles hold the ddeok item")
+	map.free()
+	GameState.new_hike()
+	_section_done("test_placement_data")
+
+
+func test_placement_logic() -> void:
+	var placement := _new_placement()
+	var piles := _new_piles()
+	check(placement.is_valid() and piles.is_valid(), "(setup) the data is valid")
+	var counts := _expected_counts()
+	var all_ok := true
+	var count_ok := true
+	var in_pool_ok := true
+	var source_ok := true
+	var distinct := {}
+	var repeat_ok := true
+	var starts := _start_spots()
+	for seed_value in LAYOUT_SEEDS:
+		var roll := _offline_roll(seed_value, placement, piles)
+		var layout: Dictionary = roll["layout"]
+		var positions: Dictionary = layout["positions"]
+		source_ok = source_ok and layout["source"] == "random"
+		all_ok = all_ok and placement.layout_problem(positions) == ""
+		for id in DECOY_KIND_IDS:
+			count_ok = count_ok and positions[id].size() == int(counts[id])
+			for spot in positions[id]:
+				in_pool_ok = in_pool_ok and placement.pools[id].has(spot) and _nearest_distance(spot, starts) >= 6.0 and _nearest_distance(spot, _fixed_spots()) >= 2.0
+		distinct[_layout_key(positions)] = true
+		var again := _offline_roll(seed_value, placement, piles)
+		repeat_ok = repeat_ok and _layout_key(again["layout"]["positions"]) == _layout_key(positions) and str(again["piles"]) == str(roll["piles"])
+	check(all_ok, "%d pinned seeds: every layout obeys the spacing rules" % LAYOUT_SEEDS)
+	check(count_ok and in_pool_ok and source_ok, "%d pinned seeds: each kind gets its plant count, from its own pool, clear of fixed plants and starts, without the fallback" % LAYOUT_SEEDS)
+	check(repeat_ok, "the same seed gives the same layout and the same piles")
+	print("  %d distinct decoy layouts in %d pinned seeds" % [distinct.size(), LAYOUT_SEEDS])
+	check(distinct.size() >= int(LAYOUT_SEEDS * 0.9), "different seeds give different layouts (%d distinct of %d)" % [distinct.size(), LAYOUT_SEEDS])
+	var uses := {}
+	for seed_value in 400:
+		for id in DECOY_KIND_IDS:
+			for spot in _offline_roll(seed_value, placement, piles)["layout"]["positions"][id]:
+				uses[spot] = true
+	check(uses.size() == 24, "every one of the 24 pool slots gets used (%d)" % uses.size())
+
+	# The assembled plants: letters, order and kinds are exactly the data's; only decoy x, z move.
+	var roll := _offline_roll(7, placement, piles)
+	var data_placed: Array = _placed()
+	var shape_ok: bool = roll["resolved"]["placed"].size() == data_placed.size()
+	var moved := 0
+	for i in data_placed.size():
+		var a: Dictionary = data_placed[i]
+		var b: Dictionary = roll["resolved"]["placed"][i]
+		shape_ok = shape_ok and a["kind"] == b["kind"] and a.get("letter", "") == b.get("letter", "")
+		if a["x"] != b["x"] or a["z"] != b["z"]:
+			moved += 1
+			shape_ok = shape_ok and DECOY_KIND_IDS.has(a["kind"])
+	check(shape_ok and moved >= 4, "apply() keeps every kind and letter in order and moves only decoys (%d moved)" % moved)
+	check(_placed()[22]["kind"] == "keuncheonnamseong" and _placed()[22]["x"] == 13.0, "the data itself is not changed by apply()")
+
+	# The fallback.
+	var forced_layout: Dictionary = placement.choose(ForcedRng.new())
+	check(forced_layout["source"] == "random" and placement.layout_problem(forced_layout["positions"]) == "", "a source that always answers 1 still gives a valid pick")
+	var tight: Dictionary = _config()["decoy_placement"].duplicate(true)
+	tight["same_kind_min"] = 500.0
+	tight["max_retries"] = 7
+	var stubborn := _new_placement(tight)
+	var stuck_layout: Dictionary = stubborn.choose(RandomNumberGenerator.new())
+	check(stubborn.is_valid() and stuck_layout["source"] == "fallback" and stuck_layout["attempts"] == 7, "when no pick passes, it stops after max_retries tries (%d) and answers with the fallback" % stuck_layout["attempts"])
+	check(_layout_key(stuck_layout["positions"]) == _layout_key(placement.fallback) and placement.layout_problem(stuck_layout["positions"]) == "", "the fallback it answers with is the data's fixed, valid layout")
+
+	# Bad pools: an error and the fallback, never a crash.
+	var bads := {}
+	var bad: Dictionary = _config()["decoy_placement"].duplicate(true)
+	bad["pools"]["norugui"] = [bad["pools"]["norugui"][0]]
+	bads["too few slots"] = bad
+	bad = _config()["decoy_placement"].duplicate(true)
+	bad["pools"]["butsunnamu"][1] = bad["pools"]["butsunnamu"][0]
+	bads["a duplicate slot"] = bad
+	bad = _config()["decoy_placement"].duplicate(true)
+	bad["pools"]["deulchuknamu"][2] = [10.0, 0.0]
+	bads["a slot outside the zone"] = bad
+	bad = _config()["decoy_placement"].duplicate(true)
+	bad["pools"].erase("keuncheonnamseong")
+	bads["a missing pool"] = bad
+	bad = _config()["decoy_placement"].duplicate(true)
+	bad["pools"]["deulchuknamu"][3] = [_target_spots()[22].x + 0.5, _target_spots()[22].y]
+	bads["a slot on a target plant"] = bad
+	bad = _config()["decoy_placement"].duplicate(true)
+	bad["pools"]["norugui"][0] = "x"
+	bads["a slot that is not [x, z]"] = bad
+	bad = _config()["decoy_placement"].duplicate(true)
+	bad["pools"]["mystery"] = [[1.0, 1.0]]
+	bads["a pool for a non-decoy"] = bad
+	for label in bads:
+		var broken := _new_placement(bads[label])
+		var got: Dictionary = broken.choose(RandomNumberGenerator.new())
+		check(not broken.is_valid() and broken.problem != "" and got["source"] == "bad pools" and _layout_key(got["positions"]) == _layout_key(placement.fallback), "%s: an error (%s) and the fixed positions" % [label, broken.problem])
+	var empty := _new_placement({"pools": 5})
+	check(not empty.is_valid() and empty.choose(RandomNumberGenerator.new())["source"] == "bad pools", "pools that are not a dictionary are an error too")
+	var missing := DecoyPlacementScript.new({}, _config()["plants"]["kinds"], _placed(), _config()["zones"], _fixed_spots(), _tree_spots(), _start_spots(), 12.0)
+	check(not missing.is_valid() and missing.choose(RandomNumberGenerator.new())["source"] == "bad pools", "missing decoy_placement data is an error and the fallback")
+
+	# The command-line seed.
+	var found: Dictionary = DecoyPlacementScript.seed_from_args(PackedStringArray(["--other", "--placement-seed=123", "x"]))
+	check(found["found"] and found["seed"] == 123 and found["problem"] == "", "--placement-seed=123 is read")
+	found = DecoyPlacementScript.seed_from_args(PackedStringArray(["--placement-seed=-4318887386563497403"]))
+	check(found["found"] and found["seed"] == -4318887386563497403, "a negative seed (the randomized ones can be) is read as printed")
+	check(not DecoyPlacementScript.seed_from_args(PackedStringArray())["found"], "no argument, no seed")
+	found = DecoyPlacementScript.seed_from_args(PackedStringArray(["--placement-seed=abc"]))
+	check(not found["found"] and found["problem"] != "", "a bad seed is reported and ignored")
+	var rng_a := RandomNumberGenerator.new()
+	rng_a.randomize()
+	var printed := rng_a.seed
+	var rng_b := RandomNumberGenerator.new()
+	rng_b.seed = printed
+	check(rng_a.randi_range(0, 1000000) == rng_b.randi_range(0, 1000000), "a randomized generator's printed seed reproduces its draws")
+	_section_done("test_placement_logic")
+
+
+func test_chaos_piles_logic() -> void:
+	var cfg: Dictionary = _config()["chaos_piles"]
+	var placement := _new_placement()
+	var good := _new_piles()
+	check(good.is_valid() and good.slots.size() == 12, "(setup) the real table is valid with 12 slots")
+	# Validation: every bad table is an error and no piles, never a crash.
+	var variants := {}
+	var v: Dictionary = cfg.duplicate(true)
+	v["count_table"] = []
+	variants["an empty count table"] = v
+	v = cfg.duplicate(true)
+	v["amount_table"] = []
+	variants["an empty amount table"] = v
+	v = cfg.duplicate(true)
+	v["count_table"][1]["weight"] = 0
+	variants["a count weight of 0"] = v
+	v = cfg.duplicate(true)
+	v["amount_table"][0]["weight"] = -2
+	variants["a negative amount weight"] = v
+	v = cfg.duplicate(true)
+	v["amount_table"][2]["weight"] = 1.5
+	variants["a fractional weight"] = v
+	v = cfg.duplicate(true)
+	v["amount_table"][1]["amount"] = 0
+	variants["an amount of 0"] = v
+	v = cfg.duplicate(true)
+	v["count_table"][0]["count"] = -1
+	variants["a count below 0"] = v
+	v = cfg.duplicate(true)
+	v["count_table"][2]["count"] = "two"
+	variants["a count that is not a number"] = v
+	v = cfg.duplicate(true)
+	v["slots"] = [v["slots"][0], v["slots"][1]]
+	variants["too few slots for the largest count"] = v
+	v = cfg.duplicate(true)
+	v["slots"] = []
+	variants["no slots"] = v
+	v = cfg.duplicate(true)
+	v["slots"][3] = v["slots"][2]
+	variants["a duplicate slot"] = v
+	v = cfg.duplicate(true)
+	v["slots"][0] = [_start_spots()[0].x + 1.0, _start_spots()[0].y]
+	variants["a slot at a traveler's start"] = v
+	v = cfg.duplicate(true)
+	v["slots"][0] = [_target_spots()[0].x + 0.5, _target_spots()[0].y]
+	variants["a slot on a target plant"] = v
+	v = cfg.duplicate(true)
+	v["off_path"]["min_slots"] = 12
+	variants["too few slots far from every target"] = v
+	v = cfg.duplicate(true)
+	v["item"] = "no_such_item"
+	variants["an unknown item"] = v
+	v = cfg.duplicate(true)
+	v["count_table"] = "nope"
+	variants["a table that is not an array"] = v
+	for label in variants:
+		var bad := _new_piles(variants[label], placement)
+		var drawn: Array = bad.roll(RandomNumberGenerator.new(), _target_spots(), _start_spots())
+		check(not bad.is_valid() and bad.problem != "" and drawn.is_empty(), "%s: an error (%s) and no piles" % [label, bad.problem])
+	check(_new_piles({"item": "ddeok"}, placement).problem != "", "chaos_piles data without tables or slots is an error")
+	v = cfg.duplicate(true)
+	v["count_table"] = [{"count": 0, "weight": 1}]
+	check(_new_piles(v, placement).is_valid(), "a table that only ever rolls 0 is valid")
+
+	# Proportions over many scene starts.
+	var count_hits := {0: 0, 1: 0, 2: 0, 3: 0}
+	var amount_hits := {1: 0, 2: 0, 3: 0, 10: 0}
+	var piles_total := 0
+	var spacing_ok := true
+	var start_ok := true
+	var apart_ok := true
+	var slot_ok := true
+	var counts_ok := true
+	for seed_value in SAMPLE_STARTS:
+		var roll := _offline_roll(seed_value, placement, good)
+		var drawn: Array = roll["piles"]
+		counts_ok = counts_ok and drawn.size() <= 3
+		count_hits[drawn.size()] = int(count_hits.get(drawn.size(), 0)) + 1
+		for i in drawn.size():
+			var spot: Vector2 = drawn[i]["spot"]
+			amount_hits[drawn[i]["amount"]] = int(amount_hits.get(drawn[i]["amount"], 0)) + 1
+			piles_total += 1
+			slot_ok = slot_ok and good.slots.has(spot)
+			spacing_ok = spacing_ok and _nearest_distance(spot, roll["spots"]) >= 2.0
+			start_ok = start_ok and _nearest_distance(spot, _start_spots()) >= 6.0
+			for j in range(i + 1, drawn.size()):
+				apart_ok = apart_ok and spot.distance_to(drawn[j]["spot"]) >= 2.0 and spot != drawn[j]["spot"]
+	check(counts_ok and slot_ok, "%d scene starts: at most 3 piles, each on a data slot" % SAMPLE_STARTS)
+	check(spacing_ok, "%d scene starts: every pile is 2 m from every plant and decoy" % SAMPLE_STARTS)
+	check(start_ok and apart_ok, "%d scene starts: every pile is 6 m from the starts, and piles are 2 m apart" % SAMPLE_STARTS)
+	var want_counts := {0: 0.3, 1: 0.4, 2: 0.2, 3: 0.1}
+	for n in want_counts:
+		var got := float(count_hits[n]) / SAMPLE_STARTS
+		print("  piles per start = %d: %.4f (want %.2f)" % [n, got, want_counts[n]])
+		check(absf(got - want_counts[n]) <= PROPORTION_TOLERANCE, "%d piles per start: %.4f within %.3f of %.2f (sample %d starts)" % [n, got, PROPORTION_TOLERANCE, want_counts[n], SAMPLE_STARTS])
+	var want_amounts := {1: 10.0 / 17.0, 2: 4.0 / 17.0, 3: 2.0 / 17.0, 10: 1.0 / 17.0}
+	for n in want_amounts:
+		var got := float(amount_hits[n]) / piles_total
+		print("  pile amount %d: %.4f (want %.4f)" % [n, got, want_amounts[n]])
+		check(absf(got - want_amounts[n]) <= PROPORTION_TOLERANCE, "amount %d: %.4f within %.3f of %.4f (sample %d piles)" % [n, got, PROPORTION_TOLERANCE, want_amounts[n], piles_total])
+	# Blocked slots only thin the piles out; a roll never loops or fails.
+	var crowded: Array[Vector2] = []
+	for spot in good.slots:
+		crowded.append(spot)
+	var forced := ForcedRng.new()
+	forced.value = 100000  # the largest count and amount
+	check(good.roll(forced, crowded, _start_spots()).is_empty(), "with every slot taken by a plant, a roll gives no piles and ends")
+	check(good.roll(forced, _target_spots(), _start_spots()).size() <= 3, "a forced largest roll gives at most 3 piles")
+	_section_done("test_chaos_piles_logic")
+
+
+## Where every plant and pile stands, as one comparable value.
+func _world_snapshot(map: Node3D) -> String:
+	var parts: Array[String] = []
+	for plant in map.plants:
+		parts.append("%s@%.3f,%.3f" % [plant.kind_id, plant.position.x, plant.position.z])
+	for pile in map.piles:
+		parts.append("pile@%.3f,%.3f" % [pile.position.x, pile.position.z] if pile != null else "pile-gone")
+	return ";".join(parts)
+
+
+## A map reloaded the way a restart does it: the map becomes the current scene.
+func _current_map(seed_value: int) -> Node3D:
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	Foraging.legacy_layout = false
+	Foraging.seed_override = seed_value
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	get_tree().root.add_child(map)
+	get_tree().current_scene = map
+	Foraging.seed_override = -1
+	await get_tree().physics_frame
+	return map
+
+
+func test_placement_timing() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var placement := _new_placement()
+	var piles := _new_piles()
+	# The scene's roll is the offline roll of its seed.
+	var map: Node3D = await _seeded_map(31337)
+	var roll := _offline_roll(31337, placement, piles)
+	check(map.placement_seed == 31337 and map.placement_rolls == 1, "the seed override fixes the seed and the roll happens once")
+	check(_layout_key(map.layout["positions"]) == _layout_key(roll["layout"]["positions"]) and map.layout["source"] == "random", "the scene's decoy layout is the roll of its seed")
+	check(str(map.pile_roll) == str(roll["piles"]), "the scene's piles are the roll of its seed")
+	var spots_ok := true
+	for i in map.plants.size():
+		var plant: Node3D = map.plants[i]
+		spots_ok = spots_ok and Vector2(plant.position.x, plant.position.z).is_equal_approx(roll["spots"][i])
+	check(spots_ok, "every plant node stands where the roll says (targets where the data says)")
+	var snapshot := _world_snapshot(map)
+	# Pause, resume, the backpack, walking and a pick never roll again.
+	check(map.open_pause_menu() and map.pause_menu.is_open, "(setup) the pause menu opens")
+	map.pause_menu.close()
+	map._on_pause_chosen("resume")
+	check(map.open_backpack(), "(setup) the backpack opens")
+	map.close_backpack()
+	for i in 120:
+		map.step(Vector2.RIGHT if i < 60 else Vector2.LEFT, 1.0 / 60.0)
+	check(map.placement_rolls == 1 and map.placement_seed == 31337, "pausing, resuming, the backpack and walking do not roll again")
+	check(_world_snapshot(map) == snapshot, "and nothing moved: decoys and piles stand as they did")
+	map.free()
+	get_tree().paused = false
+
+	# Without an override every scene start picks its own seed.
+	GameState.new_hike()
+	Foraging.legacy_layout = false
+	var seeds := {}
+	for n in 6:
+		var m: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+		add_child(m)
+		seeds[m.placement_seed] = true
+		var expected := _offline_roll(m.placement_seed, placement, piles)
+		check(_layout_key(m.layout["positions"]) == _layout_key(expected["layout"]["positions"]) and str(m.pile_roll) == str(expected["piles"]), "random start %d: the layout is the roll of the seed it printed (%d)" % [n, m.placement_seed])
+		m.free()
+	check(seeds.size() == 6, "six scene starts without an override used six different seeds")
+
+	# Death restart and Restart scene reload the scene, and the new scene rolls anew.
+	var original_scene := get_tree().current_scene
+	for path in ["death", "menu"]:
+		var doomed: Node3D = await _current_map(-1)
+		var first_seed: int = doomed.placement_seed
+		var restarts := []
+		doomed.restarted.connect(func(): restarts.append(true))
+		if path == "death":
+			doomed.begin_death_beat()
+			doomed.tick_beat(100.0)
+		else:
+			check(doomed.open_pause_menu(), "(setup) the menu opens")
+			doomed.pause_menu.close()
+			doomed._on_pause_chosen("restart")
+		check(restarts.size() == 1, "%s: the scene restarts once" % path)
+		for i in 4:
+			await get_tree().process_frame
+		var fresh: Node = get_tree().current_scene
+		check(fresh != doomed and not is_instance_valid(doomed), "%s: the scene was reloaded" % path)
+		if fresh != doomed and is_instance_valid(fresh) and fresh.has_method("picks_allowed"):
+			check(fresh.placement_rolls == 1 and fresh.placement_seed != first_seed, "%s: the new scene rolled once, with a new seed" % path)
+			var again := _offline_roll(fresh.placement_seed, placement, piles)
+			check(_layout_key(fresh.layout["positions"]) == _layout_key(again["layout"]["positions"]) and str(fresh.pile_roll) == str(again["piles"]), "%s: and its layout is the roll of that seed" % path)
+			fresh.set_process(false)
+			fresh.free()
+		get_tree().current_scene = original_scene
+		get_tree().paused = false
+
+	# With an override, every start (restarts included) is the same.
+	for path in ["death", "menu"]:
+		Foraging.legacy_layout = false
+		Foraging.seed_override = 2024
+		var doomed: Node3D = await _current_map(2024)
+		var first_key := _layout_key(doomed.layout["positions"])
+		var first_piles := str(doomed.pile_roll)
+		check(doomed.placement_seed == 2024, "(setup) %s: the override is in force" % path)
+		Foraging.seed_override = 2024  # a reload reads it again
+		if path == "death":
+			doomed.begin_death_beat()
+			doomed.tick_beat(100.0)
+		else:
+			doomed.open_pause_menu()
+			doomed.pause_menu.close()
+			doomed._on_pause_chosen("restart")
+		for i in 4:
+			await get_tree().process_frame
+		Foraging.seed_override = -1
+		var fresh: Node = get_tree().current_scene
+		check(fresh != doomed and fresh.has_method("picks_allowed"), "(setup) %s: reloaded with the override on" % path)
+		if fresh != doomed and fresh.has_method("picks_allowed"):
+			check(fresh.placement_seed == 2024 and _layout_key(fresh.layout["positions"]) == first_key and str(fresh.pile_roll) == first_piles, "%s: with --placement-seed the restarted scene has the same layout and piles" % path)
+			fresh.set_process(false)
+			fresh.free()
+		get_tree().current_scene = original_scene
+		get_tree().paused = false
+
+	# Bad data in the scene: an error and the old fixed positions, no crash, no piles.
+	var live: Dictionary = Content.mountain("hallasan")["foraging"]
+	var saved_place = live["decoy_placement"]
+	var saved_chaos = live["chaos_piles"]
+	live["decoy_placement"] = {"pools": {}}
+	live["chaos_piles"] = {"slots": []}
+	var broken: Node3D = await _seeded_map(5)
+	var same := true
+	for i in broken.plants.size():
+		same = same and Vector2(broken.plants[i].position.x, broken.plants[i].position.z).is_equal_approx(Vector2(float(_placed()[i]["x"]), float(_placed()[i]["z"])))
+	check(same and broken.layout["source"] == "bad pools", "bad pools in the scene: every plant stands at its data position")
+	check(broken.piles.is_empty() and broken.pile_roll.is_empty(), "bad pile data in the scene: no piles, no crash")
+	broken.free()
+	live["decoy_placement"] = saved_place
+	live["chaos_piles"] = saved_chaos
+	get_tree().current_scene = original_scene
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_placement_timing")
+
+
+func test_decoys_at_any_position() -> void:
+	var data_placed: Array = _placed()
+	var kinds := {}
+	for kind in _hangul_plants():
+		kinds[kind["id"]] = kind
+	for seed_value in [3, 11, 4242]:
+		var map: Node3D = await _seeded_map(seed_value, {"ddeok": 1})
+		var tag := "seed %d: " % seed_value
+		var letters_ok: bool = map.plants.size() == data_placed.size()
+		var names_ok := true
+		var targets_ok := true
+		for i in data_placed.size():
+			var plant: Node3D = map.plants[i]
+			letters_ok = letters_ok and plant.letter == String(data_placed[i].get("letter", "")) and plant.kind_id == data_placed[i]["kind"]
+			if plant.kind == "target":
+				names_ok = names_ok and plant.tooltip_text() == kinds[plant.kind_id]["hover_name"]
+				targets_ok = targets_ok and Vector2(plant.position.x, plant.position.z).is_equal_approx(Vector2(float(data_placed[i]["x"]), float(data_placed[i]["z"])))
+			else:
+				names_ok = names_ok and plant.tooltip_text() == "???"
+		check(letters_ok, tag + "every plant keeps its kind and letter, in data order")
+		check(names_ok and targets_ok, tag + "decoys hover as ???, targets by name and at their data positions")
+		check(map.picking.plant_count() == 36 and map.picking.letters_left() == 36, tag + "Picking has the same 36 letter plants")
+		var decoy_ok := true
+		for i in data_placed.size():
+			if map.plants[i].kind != "target":
+				decoy_ok = decoy_ok and map.picking.nearest_pickable(Vector2(map.plants[i].position.x, map.plants[i].position.z)) >= 0
+		check(decoy_ok, tag + "Picking knows each decoy at its rolled position")
+		# Reward decoy: the weighted roll, the backpack, the label, the steam.
+		var rng := ForcedRng.new()
+		rng.value = 4  # gongjindan
+		map.reward_rng = rng
+		var reward := _plant_of(map, "decoy_reward", 0)
+		var puffs := _particle_count(map)
+		map.pick_plant(reward)
+		check(GameState.inventory.snapshot() == {"ddeok": 1, "gongjindan": 1} and reward.letter == "" and _particle_count(map) == puffs + 1, tag + "a reward decoy still gives its rolled item, loses its letter and steams")
+		check((map.find_child("FloatingLabel", false, false) as Label3D) != null and map.picking.basket.is_empty(), tag + "with its floating label and nothing in the basket")
+		# Harm decoy: half a heart off the picker, the gore beat, the steam.
+		var hearts: int = GameState.heart_units["fernanda"]
+		var harm := _plant_of(map, "decoy_harm", 0)
+		puffs = _particle_count(map)
+		map.pick_plant(harm)
+		check(GameState.heart_units["fernanda"] == hearts - 1 and GameState.heart_units["nestor"] == hearts, tag + "a harm decoy still costs the picker half a heart")
+		check(map.is_gore_playing() and _particle_count(map) == puffs + 1 and harm.letter == "", tag + "and plays its gore and steam")
+		_finish_gore(map)
+		map.free()
+		get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_decoys_at_any_position")
+
+
+## The first seed whose roll has at least `least` piles, or -1.
+func _seed_with_piles(least: int) -> int:
+	var placement := _new_placement()
+	var piles := _new_piles()
+	for seed_value in range(1, 5000):
+		if _offline_roll(seed_value, placement, piles)["piles"].size() >= least:
+			return seed_value
+	return -1
+
+
+func _stand_by_pile(map: Node3D, index: int, offset := Vector2(0.4, 0.2)) -> void:
+	var spot: Vector2 = map.picking.pile_spot(index) + offset
+	map.player.global_position = Vector3(spot.x, map.terrain.height_at(spot.x), spot.y)
+	map.update_camera(0.0, true)
+
+
+## What a pile pick must not touch, at a glance. `with_discovery` is left out where walking changes it.
+func _bookkeeping(map: Node3D, with_discovery := true) -> Array:
+	var state := [map.picking.basket.duplicate(), map.picking.letters_left(), map.spares.credit_total(), map.spare_plants.size(), map.stuck_log.size(), map.stuck_verdict["stuck"], map.stuck_verdict["reason"], map.spelling.solved("ma").size(), map.countdown.running, GameState.heart_units.duplicate()]
+	if with_discovery:
+		state.append(map.discovery.entries.size())
+	return state
+
+
+func test_pile_pickup() -> void:
+	var seed_value := _seed_with_piles(2)
+	check(seed_value > 0, "(setup) a seed with two or more piles exists (%d)" % seed_value)
+	var map: Node3D = await _seeded_map(seed_value)
+	var roll := _offline_roll(seed_value, _new_placement(), _new_piles())
+	check(map.piles.size() == roll["piles"].size() and map.picking.pile_count() == map.piles.size() and map.picking.piles_left() == map.piles.size(), "(setup) the map has the rolled piles (%d)" % map.piles.size())
+	var pile: Node3D = map.piles[0]
+	var amount: int = map.picking.pile_amount(0)
+	check(amount == roll["piles"][0]["amount"] and pile.amount == amount, "the pile holds the rolled amount (%d)" % amount)
+	check(Vector2(pile.position.x, pile.position.z).is_equal_approx(roll["piles"][0]["spot"]) and is_equal_approx(pile.position.y, map.terrain.height_at(pile.position.x)), "it lies on the ground at its slot")
+	# Looks: the icon, small, no letter or name, no glint.
+	check(pile.find_children("*", "Label3D", true, false).is_empty(), "a pile has no letter and no label")
+	check(pile.find_children("*", "Light3D", true, false).is_empty() and pile.find_children("*", "CPUParticles3D", true, false).is_empty() and pile.find_children("*", "GPUParticles3D", true, false).is_empty(), "no light, glint or particles on it")
+	var sprite := pile.find_child("Sprite", true, false) as Sprite3D
+	check(sprite != null and not sprite.shaded and sprite.texture is ViewportTexture, "it shows the code-drawn icon on an unshaded sprite")
+	check(sprite != null and sprite.texture.get_size().x * sprite.pixel_size <= 0.7, "the icon is small (%.2f m)" % (sprite.texture.get_size().x * sprite.pixel_size))
+	var drawn := pile.find_children("*", "Control", true, false)
+	check(drawn.size() == 1 and drawn[0].icon_id == "baekseolgi", "the picture is the baekseolgi icon of items.json")
+	check(not pile.has_method("tooltip_text") and not pile.has_method("take_letter"), "a pile is not a plant")
+	check(not map.plants.has(pile) and map.plants.size() == 36, "it is not among the plants")
+	# The ring: identical for a pile and for a plant.
+	_stand_by_pile(map, 0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	var pile_ring: Vector3 = map._ring.mesh.get_aabb().size
+	check(map._ring.visible and map._ring.global_position.is_equal_approx(pile.global_position), "standing in reach of a pile shows the reach ring on it")
+	check(not map._tooltip.visible and map._tip_plant == null, "and no name appears")
+	var lone := _lone_plant(map, "target")
+	if lone == null:
+		lone = map.plants[0]
+	_stand_near(map, lone)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	var plant_ring: Vector3 = map._ring.mesh.get_aabb().size
+	check(map._ring.visible and map._ring.global_position.is_equal_approx(lone.global_position), "(control) the ring shows on a plant in reach")
+	check(is_equal_approx(pile_ring.x, plant_ring.x) and is_equal_approx(pile_ring.z, plant_ring.z), "the ring around a pile is the same size as around a plant")
+	_stand_by_pile(map, 0)
+	map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(is_equal_approx(map._ring_material.albedo_color.a, map.picking.ring_alpha_at(map._ring_time)), "and pulses the same way")
+	# Space picks it.
+	var before := _bookkeeping(map)
+	var puffs := _particle_count(map)
+	var labels := map.find_children("*", "Label3D", false, false).size()
+	check(map.pick_nearest(), "Space picks the pile")
+	check(GameState.inventory.snapshot() == {"ddeok": amount}, "the backpack gains exactly the pile's amount (%d)" % amount)
+	check(map.piles[0] == null and (pile.is_queued_for_deletion() or pile.get_parent() == null), "the pile is removed from the world")
+	check(map.picking.piles_left() == map.piles.size() - 1 and map.picking.nearest_pile(map.picking.pile_spot(0)) < 0, "and from Picking: it cannot be picked again")
+	var floating := map.find_children("*", "Label3D", false, false)
+	check(floating.size() == labels + 1 and floating[floating.size() - 1].text == "+%d DDEOK" % amount, "a '+%d DDEOK' label appears" % amount)
+	check(floating[floating.size() - 1].render_priority == int(_config()["decoy_rewards"]["floating_label"]["render_priority"]), "drawn in front, with the existing label's render priority")
+	check(_particle_count(map) == puffs, "no steam")
+	check(_bookkeeping(map) == before, "nothing else changed: no hearts, basket, letters, discovery, spares, stuck check or spelling")
+	check(not map.pick_nearest(), "a second Space finds nothing")
+	await get_tree().create_timer(float(map.reward_label_config["seconds"]) + 0.3).timeout
+	check(map.find_children("*", "Label3D", false, false).size() == labels, "the label rises, fades and frees itself")
+
+	# The partner never picks.
+	var second: Node3D = map.piles[1]
+	var second_amount: int = map.picking.pile_amount(1)
+	var start: Vector2 = _start_spots()[0]  # 6 m from every plant and pile
+	map.player.global_position = Vector3(start.x, map.terrain.height_at(start.x), start.y)
+	map.partner.global_position = Vector3(second.position.x + 0.3, second.position.y, second.position.z)
+	map.update_camera(0.0, true)
+	check(not map.pick_nearest(), "with only the partner beside the pile, Space picks nothing")
+	check(map.picking.nearest_pile(Vector2(map.partner.global_position.x, map.partner.global_position.z)) == 1 and GameState.inventory.snapshot() == {"ddeok": amount}, "(the pile is within the partner's reach; the backpack is as it was)")
+	for i in 5:
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+	check(map.piles[1] == second and map.picking.piles_left() == 1, "the partner walking by never takes it")
+
+	# Blocked states.
+	_stand_by_pile(map, 1)
+	var held := GameState.inventory.snapshot()
+	var blocked := func(label: String) -> void:
+		var screen_at: Vector2 = map.camera.unproject_position(second.global_position + Vector3(0.0, 0.3, 0.0))
+		check(not map.pick_nearest() and not map.click(screen_at) and map.piles[1] == second and GameState.inventory.snapshot() == held, "%s: Space and a click take nothing" % label)
+	check(map.open_pause_menu(), "(setup) the pause menu opens")
+	blocked.call("pause menu")
+	map.pause_menu.close()
+	map._on_pause_chosen("resume")
+	check(map.open_backpack(), "(setup) the backpack opens")
+	blocked.call("backpack")
+	map.close_backpack()
+	map.restarting = true
+	blocked.call("restarting")
+	map.restarting = false
+	map.pick_plant(_plant_of(map, "decoy_harm", 0))
+	check(map.is_gore_playing(), "(setup) a gore beat plays")
+	blocked.call("gore beat")
+	_finish_gore(map)
+	_stand_by_pile(map, 1)
+	check(map.pick_nearest(), "(control) after the beat the pile can be picked")
+	check(GameState.inventory.snapshot() == {"ddeok": amount + second_amount}, "(control) and it adds its amount (%d + %d)" % [amount, second_amount])
+	map.free()
+	get_tree().paused = false
+
+	# Dead travelers, the death beat, the monster, the spelling view.
+	for state in ["a dead traveler", "the death beat", "the monster", "the spelling view"]:
+		var m: Node3D = await _seeded_map(seed_value)
+		var target: Node3D = m.piles[0]
+		_stand_by_pile(m, 0)
+		var screen_at: Vector2 = m.camera.unproject_position(target.global_position + Vector3(0.0, 0.3, 0.0))
+		match state:
+			"a dead traveler":
+				GameState.heart_units["nestor"] = 0
+			"the death beat":
+				m.begin_death_beat()
+			"the monster":
+				m._begin_monster()
+			"the spelling view":
+				m.discovery.update([_spot_of("ma")], 0.0)
+				m.discovery_hud.refresh()
+				check(m.open_spelling("ma") and get_tree().paused, "(setup) the spelling view opens")
+				Input.parse_input_event(_key_event(KEY_SPACE))
+				Input.parse_input_event(_key_event(KEY_SPACE, false))
+				await get_tree().process_frame
+		var refused := true
+		if state != "the spelling view":  # the open view stops the map, so only the key can reach it
+			refused = not m.pick_nearest() and not m.click(screen_at)
+		check(refused and m.piles[0] == target and GameState.inventory.is_empty() and m.picking.piles_left() == m.piles.size(), "%s: a pile cannot be picked" % state)
+		m.free()
+		get_tree().paused = false
+		GameState.new_hike()
+
+	# A click walks the human traveler to the pile and picks it on arrival.
+	map = await _seeded_map(seed_value)
+	var goal: Node3D = map.piles[0]
+	amount = map.picking.pile_amount(0)
+	var spot := Vector2(goal.position.x, goal.position.z)
+	var from := Vector2(clampf(spot.x - 4.0, 1.0, 62.0), clampf(spot.y, -9.0, 9.0))
+	map.player.global_position = Vector3(from.x, map.terrain.height_at(from.x), from.y)
+	map.partner.global_position = map.player.global_position + Vector3(-1.0, 0.0, 0.0)
+	map.update_camera(0.0, true)
+	var screen: Vector2 = map.camera.unproject_position(goal.global_position + Vector3(0.0, 0.3, 0.0))
+	check(map.pile_at(screen) == goal and map.plant_at(screen) == null, "the hover ray finds the pile on its own layer, not as a plant")
+	var before_walk := _bookkeeping(map, false)
+	check(map.click(screen) and map.picking.walk_pile == 0 and map.picking.walk_target == -1, "a left click on a pile starts a walk to it")
+	var ticks := 0
+	while map.picking.is_walking() and ticks < 900:
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+		ticks += 1
+	check(GameState.inventory.snapshot() == {"ddeok": amount} and map.piles[0] == null, "the walk ends with the pile picked (%d DDEOK, %d ticks)" % [amount, ticks])
+	check(_bookkeeping(map, false) == before_walk, "walking to and picking a pile changed no letters, spares, hearts or stuck state")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+
+	# Piles change neither the word flow nor the stuck verdict.
+	map = await _seeded_map(seed_value)
+	var verdict_before: Dictionary = map.evaluate_stuck("before piles")
+	var total := 0
+	for i in map.piles.size():
+		_stand_by_pile(map, i)
+		check(map.pick_nearest(), "(setup) pile %d is picked" % i)
+		total += map.picking.pile_amount(i)
+	var verdict_after: Dictionary = map.evaluate_stuck("after piles")
+	check(verdict_before["stuck"] == verdict_after["stuck"] and verdict_before["reason"] == verdict_after["reason"], "the stuck verdict is the same with every pile taken")
+	check(map.spares.credit_total() == 0 and map.spare_plants.is_empty() and map.picking.basket.is_empty() and map.picking.letters_left() == 36, "no spares, credits or basket letters came from piles")
+	check(map._available_letters().size() == 28, "the letters still to find are only the 28 target letters")
+	check(GameState.inventory.count("ddeok") == total and total > 0, "all piles together gave exactly their amounts (%d)" % total)
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_pile_pickup")
+
+
+func test_pile_restart() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var seed_value := _seed_with_piles(1)
+	var original_scene := get_tree().current_scene
+	for path in ["death", "menu"]:
+		var doomed: Node3D = await _current_map(seed_value)
+		GameState.inventory.add("ddeok", 4)  # held at the scene start, as if carried in
+		GameState.begin_scene("foraging")
+		_stand_by_pile(doomed, 0)
+		var gained: int = doomed.picking.pile_amount(0)
+		check(doomed.pick_nearest() and GameState.inventory.count("ddeok") == 4 + gained, "%s: the pile's DDEOK is in the backpack (4 + %d)" % [path, gained])
+		Foraging.seed_override = seed_value  # a reload reads it again
+		if path == "death":
+			doomed.begin_death_beat()
+			doomed.tick_beat(100.0)
+		else:
+			doomed.open_pause_menu()
+			doomed.pause_menu.close()
+			doomed._on_pause_chosen("restart")
+		check(GameState.inventory.count("ddeok") == 4, "%s: after the restart the backpack is its scene-start contents: the pile's DDEOK is gone" % path)
+		for i in 4:
+			await get_tree().process_frame
+		Foraging.seed_override = -1
+		var fresh: Node = get_tree().current_scene
+		check(fresh != doomed and fresh.has_method("picks_allowed"), "(setup) %s: reloaded" % path)
+		if fresh != doomed and fresh.has_method("picks_allowed"):
+			check(fresh.piles.size() == fresh.pile_roll.size() and fresh.piles.size() >= 1 and fresh.piles[0] != null, "%s: the new scene has its piles back, the picked one too" % path)
+			fresh.set_process(false)
+			fresh.free()
+		get_tree().current_scene = original_scene
+		get_tree().paused = false
+	# Piles re-roll at every scene start: random starts do not all lay the same piles.
+	var keys := {}
+	var placement := _new_placement()
+	var piles := _new_piles()
+	GameState.new_hike()
+	Foraging.legacy_layout = false
+	for n in 8:
+		var m: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+		add_child(m)
+		keys[str(m.pile_roll)] = true
+		check(str(m.pile_roll) == str(_offline_roll(m.placement_seed, placement, piles)["piles"]), "random start %d: the piles are the roll of its seed" % n)
+		m.free()
+	print("  %d distinct pile layouts in 8 random scene starts" % keys.size())
+	check(keys.size() >= 3, "piles re-roll at every scene start (%d distinct of 8)" % keys.size())
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_pile_restart")

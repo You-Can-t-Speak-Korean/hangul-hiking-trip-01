@@ -14,6 +14,8 @@ var steam_color := Color(0.86, 0.88, 0.9)
 var basket: Array[String] = []
 ## The plant being walked to, or -1.
 var walk_target := -1
+## The chaos pile being walked to, or -1. Never both this and walk_target.
+var walk_pile := -1
 
 ## The reach ring (data: foraging.reach_ring). The same for every plant.
 var ring_color := Color(0.95, 0.95, 0.85)
@@ -26,6 +28,7 @@ var ring_pulse_depth := 0.4
 const PROGRESS := 0.02  # metres closer that count as moving toward the target
 
 var _slots: Array[Dictionary] = []  # per plant: {"letter", "decoy", "spot", "locked"}
+var _piles: Array[Dictionary] = []  # per chaos pile: {"spot", "amount", "taken"}
 var _best_distance := INF
 var _stalled := 0.0
 var _inside := {}  # plant index -> true, while the walker is within pick_radius
@@ -107,6 +110,7 @@ func start_walk(index: int) -> bool:
 	if not is_pickable(index):
 		return false
 	walk_target = index
+	walk_pile = -1
 	_best_distance = INF
 	_stalled = 0.0
 	return true
@@ -114,13 +118,18 @@ func start_walk(index: int) -> bool:
 
 func cancel_walk() -> void:
 	walk_target = -1
+	walk_pile = -1
+
+
+func is_walking() -> bool:
+	return walk_target >= 0 or walk_pile >= 0
 
 
 ## One tick of the walk, given the horizontal distance to the target.
 ## Returns "arrived" (within pick_radius), "stuck" (no progress for
 ## stuck_timeout seconds) or "walking". Arriving and getting stuck end the walk.
 func walk_update(distance: float, delta: float) -> String:
-	if walk_target < 0:
+	if not is_walking():
 		return "idle"
 	if distance <= pick_radius:
 		cancel_walk()
@@ -165,6 +174,84 @@ func entered_reach(spot: Vector2) -> Array[int]:
 	entered.sort_custom(func(a: int, b: int) -> bool:
 		return spot.distance_to(_slots[a]["spot"]) > spot.distance_to(_slots[b]["spot"]))
 	return entered
+
+
+## ---- Chaos DDEOK piles: pickups with no letter. A pile is named by its index in
+## the order they were added. They share the pick radius, the walk and the ring
+## with the plants but are never in the basket, the letters or the stuck check. ----
+
+## Adds a pile and returns its index.
+func add_pile(spot: Vector2, amount: int) -> int:
+	_piles.append({"spot": spot, "amount": amount, "taken": false})
+	return _piles.size() - 1
+
+
+func pile_count() -> int:
+	return _piles.size()
+
+
+func is_pile_pickable(index: int) -> bool:
+	return index >= 0 and index < _piles.size() and not _piles[index]["taken"]
+
+
+func piles_left() -> int:
+	var count := 0
+	for i in _piles.size():
+		if is_pile_pickable(i):
+			count += 1
+	return count
+
+
+## Takes a pile. {"result": "pile" | "none", "amount"}: "none" if it is gone or `allowed` is false.
+func pick_pile(index: int, allowed: bool = true) -> Dictionary:
+	if not allowed or not is_pile_pickable(index):
+		return {"result": "none", "amount": 0}
+	_piles[index]["taken"] = true
+	return {"result": "pile", "amount": int(_piles[index]["amount"])}
+
+
+## Starts (or changes) the walk to a pile. False if it is gone.
+func start_walk_pile(index: int) -> bool:
+	if not is_pile_pickable(index):
+		return false
+	walk_pile = index
+	walk_target = -1
+	_best_distance = INF
+	_stalled = 0.0
+	return true
+
+
+## The pile not yet taken nearest to `spot` within pick_radius, or -1.
+func nearest_pile(spot: Vector2) -> int:
+	var best := -1
+	var best_distance := INF
+	for i in _piles.size():
+		var distance := spot.distance_to(_piles[i]["spot"])
+		if is_pile_pickable(i) and distance <= pick_radius and distance < best_distance:
+			best = i
+			best_distance = distance
+	return best
+
+
+## What Space takes: the plant or the pile nearest to `spot` within pick_radius (a plant
+## on a tie). {"type": "plant" | "pile" | "", "index"}.
+func nearest_target(spot: Vector2) -> Dictionary:
+	var plant := nearest_pickable(spot)
+	var pile := nearest_pile(spot)
+	if plant < 0 and pile < 0:
+		return {"type": "", "index": -1}
+	if pile >= 0 and (plant < 0 or spot.distance_to(_piles[pile]["spot"]) < spot.distance_to(_slots[plant]["spot"])):
+		return {"type": "pile", "index": pile}
+	return {"type": "plant", "index": plant}
+
+
+## The (x, z) of a pile, and its amount.
+func pile_spot(index: int) -> Vector2:
+	return _piles[index]["spot"]
+
+
+func pile_amount(index: int) -> int:
+	return int(_piles[index]["amount"])
 
 
 ## The ring's outer radius, and its alpha at `time` seconds (pulses between

@@ -28,6 +28,9 @@ const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
 const Backpack := preload("res://scenes/foraging/backpack.gd")
 const BackpackHud := preload("res://scenes/foraging/backpack_hud.gd")
 const RewardTable := preload("res://scripts/reward_table.gd")
+const DecoyPlacement := preload("res://scenes/foraging/decoy_placement.gd")
+const ChaosPiles := preload("res://scenes/foraging/chaos_piles.gd")
+const Pile := preload("res://scenes/foraging/pile.gd")
 const DecoyGore := preload("res://scenes/foraging/decoy_gore.gd")
 const DecoyGoreFx := preload("res://scenes/foraging/decoy_gore_fx.gd")
 const PLANT_FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
@@ -45,6 +48,7 @@ const FADE_SAMPLE_HEIGHTS := [0.3, 0.85, 1.5]  # feet, waist and head of a trave
 const NEAR_SAMPLES := 8        # heights sampled across the view when finding how far the near edge must pull back
 const GROUND_STEP := 1.0       # metres between ground mesh vertices along x
 const KEEP_OUT := 1.8           # props are pushed this far from plants, trees and starts
+const SLOT_KEEP_OUT := 2.6      # ...and this far from every spot a decoy or a chaos pile can be rolled to
 const NUDGE_PASSES := 12         # a pushed prop can land near another point, so repeat
 const TOOLTIP_OFFSET := Vector2(16.0, 18.0)
 const WALK_UP_TIP_LIFT := 1.2   # metres above a plant where its walk-up name is anchored
@@ -54,6 +58,13 @@ const GROW_MIN_SCALE := 0.001   # a spare starts here, not at 0, which a transfo
 
 const NESTOR_COLOR := Color(0.36, 0.45, 0.65)    # slate blue
 const FERNANDA_COLOR := Color(0.95, 0.55, 0.70)  # pink
+
+## Set by tests (and nothing else) before a map is built. `seed_override` >= 0 fixes
+## the placement seed (a --placement-seed=N user argument does the same when this is
+## -1); `legacy_layout` puts the decoys back at the fixed positions of
+## foraging.plants.placed and rolls no chaos piles, for tests written for that layout.
+static var seed_override := -1
+static var legacy_layout := false
 
 var stage_width: float = 0.0
 var stage_depth: float = 0.0
@@ -72,6 +83,7 @@ var zones: Array = []
 ## as Vector2s over (x, z).
 var plants: Array[Node3D] = []
 var keep_out: Array[Vector2] = []
+var slot_keep_out: Array[Vector2] = []
 ## Which target kinds the travelers have walked up to, and the HUD that lists them.
 var discovery
 var discovery_hud: CanvasLayer
@@ -99,6 +111,21 @@ var restarting := false
 var pause_menu
 var pause_hud: CanvasLayer
 var music_silenced := false
+## Where the decoys stand and where the chaos DDEOK piles lie (data:
+## foraging.decoy_placement, foraging.chaos_piles). Both are rolled once, in _ready,
+## from `placement_seed`: the decoys with `placement_rng`, the piles with `pile_rng`
+## (seeded from the same seed). Nothing rolls again until the scene is built anew
+## (first load, death restart, Restart scene). `layout` is {"positions", "source",
+## "attempts"}; `piles` are the pile nodes in picking order (null once picked).
+var placement_seed := 0
+var placement_rng := RandomNumberGenerator.new()
+var pile_rng := RandomNumberGenerator.new()
+var decoy_placement
+var layout: Dictionary = {}
+var chaos_piles
+var pile_roll: Array[Dictionary] = []
+var piles: Array[Node3D] = []
+var placement_rolls := 0
 ## Fernanda's backpack (Tab, right Shift or right Ctrl): its rules and its HUD. It
 ## pauses the map exactly as the pause menu does and is never open together with
 ## it or with the spelling view. `restarting` is not set while it is open.
@@ -212,20 +239,22 @@ func _ready() -> void:
 	zones = config["zones"]
 	for id in GameState.TRAVELERS:
 		keep_out.append(Vector2(float(config["start"][id][0]), float(config["start"][id][1])))
-	_build_plants(config["plants"])
+	var plants_cfg: Dictionary = _roll_decoys(config)
+	_build_plants(plants_cfg, config["plants"])
 	_build_scenery(config["scenery"])
 	_build_ground()
 	_build_backdrop(config["backdrop"]["pieces"])
 	_build_props(config["props"])
 	_build_tooltip()
-	discovery = Discovery.new(config["discovery"], config["plants"])
+	discovery = Discovery.new(config["discovery"], plants_cfg)
 	discovery_hud = DiscoveryHud.new()
 	add_child(discovery_hud)
-	picking = Picking.new(config["picking"], config["plants"], config["reach_ring"])
-	spelling = Spelling.new(config["spelling_view"], config["plants"], picking.basket)
+	picking = Picking.new(config["picking"], plants_cfg, config["reach_ring"])
+	spelling = Spelling.new(config["spelling_view"], plants_cfg, picking.basket)
 	discovery_hud.setup(discovery, spelling)
 	discovery_hud.entry_pressed.connect(open_spelling)
 	_build_ring()
+	_build_piles(config, plants_cfg)
 	basket_hud = BasketHud.new()
 	add_child(basket_hud)
 	basket_hud.setup(picking, config["basket_hud"])
@@ -237,7 +266,7 @@ func _ready() -> void:
 	damage = Damage.new(config["damage"])
 	gore = config["gore_placeholder"]
 	spelling.syllable_failed.connect(_on_syllable_failed)
-	spares = Spares.new(config["spares"], config["plants"])
+	spares = Spares.new(config["spares"], plants_cfg)
 	spelling.word_completed.connect(spares.queue)
 	hearts_hud = HeartsHud.new()
 	add_child(hearts_hud)
@@ -326,7 +355,7 @@ func step(input: Vector2, delta: float) -> void:
 	var walk := input
 	if not input.is_zero_approx() or not picks_allowed():
 		picking.cancel_walk()  # the keys take over
-	elif picking.walk_target >= 0:
+	elif picking.is_walking():
 		walk = _walk_step(delta)
 	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing():  # the last second, the kill, the gore, the death beat and the menus: nobody walks
 		player.drive(walk, delta)
@@ -514,7 +543,10 @@ func click(screen_pos: Vector2) -> bool:
 	if not picks_allowed():
 		return false
 	var plant := plant_at(screen_pos)
-	return plant != null and picking.start_walk(plants.find(plant))
+	if plant != null:
+		return picking.start_walk(plants.find(plant))
+	var pile := pile_at(screen_pos)
+	return pile != null and picking.start_walk_pile(piles.find(pile))
 
 
 ## Space: picks the nearest plant in reach that still has its letter, at once,
@@ -523,10 +555,13 @@ func pick_nearest() -> bool:
 	picking.cancel_walk()
 	if not picks_allowed():
 		return false
-	var index: int = picking.nearest_pickable(Vector2(player.global_position.x, player.global_position.z))
-	if index < 0:
+	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
+	if target["type"] == "":
 		return false
-	pick_plant(plants[index])
+	if target["type"] == "pile":
+		pick_pile(piles[target["index"]])
+	else:
+		pick_plant(plants[target["index"]])
 	return true
 
 
@@ -538,10 +573,10 @@ func _update_reach(delta: float) -> void:
 	if not entered.is_empty():
 		_start_tooltip(plants[entered[entered.size() - 1]], false)
 	_ring_time += delta
-	var index: int = picking.nearest_pickable(spot)
-	_ring.visible = index >= 0
-	if index >= 0:
-		var plant := plants[index]
+	var target: Dictionary = picking.nearest_target(spot)
+	_ring.visible = target["type"] != ""
+	if target["type"] != "":
+		var plant: Node3D = piles[target["index"]] if target["type"] == "pile" else plants[target["index"]]
 		if plant != _ring_plant:
 			_ring_plant = plant
 			_ring.mesh = _ring_mesh(plant.global_position)
@@ -583,11 +618,15 @@ func _build_ring() -> void:
 
 ## One tick of a click-to-walk: the direction to walk, and the pick on arrival.
 func _walk_step(delta: float) -> Vector2:
-	var plant := plants[picking.walk_target]
+	var to_pile: bool = picking.walk_pile >= 0
+	var plant: Node3D = piles[picking.walk_pile] if to_pile else plants[picking.walk_target]
 	var to := Vector2(plant.global_position.x - player.global_position.x, plant.global_position.z - player.global_position.z)
 	match picking.walk_update(to.length(), delta):
 		"arrived":
-			pick_plant(plant)
+			if to_pile:
+				pick_pile(plant)
+			else:
+				pick_plant(plant)
 		"walking":
 			return to.normalized()
 	return Vector2.ZERO
@@ -929,14 +968,23 @@ func _build_ground() -> void:
 
 ## The plants: each entry of "placed" is one plant at a fixed position (height
 ## from the terrain). A target carries one letter of its name, a decoy none.
-func _build_plants(plants_data: Dictionary) -> void:
+func _build_plants(plants_data: Dictionary, data_placed: Dictionary) -> void:
 	for kind in plants_data["kinds"]:
 		_kinds[kind["id"]] = kind
 	for entry in plants_data["placed"]:
-		var x := float(entry["x"])
-		var z := float(entry["z"])
-		_add_plant(_kinds[entry["kind"]], String(entry.get("letter", "")), x, z)
-		keep_out.append(Vector2(x, z))
+		_add_plant(_kinds[entry["kind"]], String(entry.get("letter", "")), float(entry["x"]), float(entry["z"]))
+	# Props are dressed around the plants as the data places them, whatever the roll
+	# gave the decoys, so the rocks and trees are the same at every start.
+	for entry in data_placed["placed"]:
+		keep_out.append(Vector2(float(entry["x"]), float(entry["z"])))
+	# ...and around every spot a decoy or a chaos pile can be rolled to, so no prop
+	# ever stands on one (the pools are in the data, not in the roll).
+	var config: Dictionary = Content.mountain(GameState.game_id).get("foraging", {})
+	for id in config.get("decoy_placement", {}).get("pools", {}):
+		for slot in config["decoy_placement"]["pools"][id]:
+			slot_keep_out.append(Vector2(float(slot[0]), float(slot[1])))
+	for slot in config.get("chaos_piles", {}).get("slots", []):
+		slot_keep_out.append(Vector2(float(slot[0]), float(slot[1])))
 
 
 ## One plant of a kind at (x, z), on the ground; also used for the spares.
@@ -947,6 +995,133 @@ func _add_plant(kind: Dictionary, letter: String, x: float, z: float) -> Node3D:
 	$Plants.add_child(plant)
 	plants.append(plant)
 	return plant
+
+
+## The placement seed of this scene start: `seed_override` (tests), else the
+## --placement-seed=N user argument, else a new random one. Prints it in one line.
+func _choose_seed() -> void:
+	var found := false
+	if seed_override >= 0:
+		placement_seed = seed_override
+		found = true
+	else:
+		var arg := DecoyPlacement.seed_from_args(OS.get_cmdline_user_args())
+		if arg["problem"] != "":
+			push_error("%s: --placement-seed ignored, the layout is random" % arg["problem"])
+		if arg["found"]:
+			placement_seed = arg["seed"]
+			found = true
+	if not found:
+		placement_rng.randomize()
+		placement_seed = placement_rng.seed
+	placement_rng.seed = placement_seed
+	pile_rng.seed = DecoyPlacement.derive_seed(placement_seed, 1)
+	placement_rolls += 1
+	print("placement_seed=%d" % placement_seed)
+
+
+## Rolls where the decoys stand and returns foraging.plants with them moved there.
+## Bad pools are reported and the data's own positions (the fallback) are used.
+func _roll_decoys(config: Dictionary) -> Dictionary:
+	_choose_seed()
+	var plants_data: Dictionary = config["plants"]
+	decoy_placement = DecoyPlacement.new(config.get("decoy_placement", {}), plants_data["kinds"], plants_data["placed"], zones, _fixed_points(config, plants_data), _scenery(config), _starts(config), stage_depth / 2.0)
+	if not decoy_placement.is_valid():
+		push_error("%s in foraging.decoy_placement of %s: the decoys stand at their fixed positions" % [decoy_placement.problem, GameState.game_id])
+	if legacy_layout:
+		layout = {"positions": decoy_placement.fallback, "source": "legacy", "attempts": 0}
+	else:
+		layout = decoy_placement.choose(placement_rng)
+	return decoy_placement.apply(plants_data, layout["positions"])
+
+
+func _is_target(plants_data: Dictionary, kind_id: String) -> bool:
+	for kind in plants_data["kinds"]:
+		if kind["id"] == kind_id:
+			return kind["kind"] == "target"
+	return false
+
+
+func _starts(config: Dictionary) -> Array[Vector2]:
+	var starts: Array[Vector2] = []
+	for id in GameState.TRAVELERS:
+		starts.append(Vector2(float(config["start"][id][0]), float(config["start"][id][1])))
+	return starts
+
+
+func _scenery(config: Dictionary) -> Array[Vector2]:
+	var trees: Array[Vector2] = []
+	for pos in config["scenery"]["gusangnamu"]["positions"]:
+		trees.append(Vector2(float(pos[0]), float(pos[1])))
+	return trees
+
+
+## The target plants, then the spare slots: the points that never move.
+func _target_points(plants_data: Dictionary) -> Array[Vector2]:
+	var targets: Array[Vector2] = []
+	for entry in plants_data["placed"]:
+		if _is_target(plants_data, entry["kind"]):
+			targets.append(Vector2(float(entry["x"]), float(entry["z"])))
+	return targets
+
+
+func _fixed_points(config: Dictionary, plants_data: Dictionary) -> Array[Vector2]:
+	var fixed := _target_points(plants_data)
+	for id in config["spares"]["slots"]:
+		fixed.append(Vector2(float(config["spares"]["slots"][id][0]), float(config["spares"]["slots"][id][1])))
+	return fixed
+
+
+## The chaos DDEOK piles of this scene start, from pile_rng: one node per pile and an
+## entry in Picking. A bad table or slot list is reported and no pile appears.
+func _build_piles(config: Dictionary, plants_data: Dictionary) -> void:
+	var root := Node3D.new()
+	root.name = "Piles"
+	add_child(root)
+	var decoy_slots: Array[Vector2] = []
+	for id in decoy_placement.pools:
+		decoy_slots.append_array(decoy_placement.pools[id])
+	chaos_piles = ChaosPiles.new(config.get("chaos_piles", {}), _target_points(plants_data), _fixed_points(config, plants_data), decoy_slots, _scenery(config), _starts(config), zones, stage_depth / 2.0, Content.items)
+	if not chaos_piles.is_valid():
+		push_error("%s in foraging.chaos_piles of %s: no piles will appear" % [chaos_piles.problem, GameState.game_id])
+	if legacy_layout:
+		return
+	var plant_spots: Array[Vector2] = []
+	for entry in plants_data["placed"]:
+		plant_spots.append(Vector2(float(entry["x"]), float(entry["z"])))
+	pile_roll = chaos_piles.roll(pile_rng, plant_spots, _starts(config))
+	var icon := String(Content.item(chaos_piles.item_id).get("icon", ""))
+	for order in pile_roll:
+		var spot: Vector2 = order["spot"]
+		var pile := Pile.new()
+		pile.setup(int(order["amount"]), icon)
+		pile.position = Vector3(spot.x, terrain.height_at(spot.x), spot.y)
+		root.add_child(pile)
+		piles.append(pile)
+		picking.add_pile(spot, int(order["amount"]))
+
+
+## Takes a chaos pile: its DDEOK goes into the backpack, the pile is gone and
+## "+3 DDEOK" floats up from it. No steam, no damage. Does nothing if it is gone
+## already or picks are not allowed.
+func pick_pile(pile: Node3D) -> void:
+	var index := piles.find(pile)
+	var result: Dictionary = picking.pick_pile(index, picks_allowed())
+	if result["result"] == "none":
+		return
+	var at: Vector3 = pile.global_position
+	piles[index] = null
+	pile.get_parent().remove_child(pile)
+	pile.queue_free()
+	var id: String = chaos_piles.item_id
+	if GameState.inventory.add(id, int(result["amount"])):
+		_float_label("+%d %s" % [result["amount"], Content.item(id)["name_en"]], at + Vector3(0.0, 0.5, 0.0))
+
+
+## The chaos pile under a screen point, or null (its own physics layer).
+func pile_at(screen_pos: Vector2) -> Node3D:
+	var hit := _ray_hit(screen_pos, Pile.PICK_LAYER)
+	return null if hit.is_empty() else (hit["collider"] as Node).get_parent() as Node3D
 
 
 ## Every jamo the player can still get: the basket and the letters still on
@@ -1019,15 +1194,20 @@ func _build_scenery(scenery: Dictionary) -> void:
 ## The plant under a screen point, or null. Casts a ray from the camera at the
 ## plants' pick areas only.
 func plant_at(screen_pos: Vector2) -> Node3D:
-	var origin := camera.project_ray_origin(screen_pos)
-	var end := origin + camera.project_ray_normal(screen_pos) * (CAMERA_DISTANCE * 3.0)
-	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 << (Plant.PICK_LAYER - 1))
-	query.collide_with_areas = true
-	query.collide_with_bodies = false
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	var hit := _ray_hit(screen_pos, Plant.PICK_LAYER)
 	if hit.is_empty():
 		return null
 	return (hit["collider"] as Node).get_parent() as Node3D
+
+
+## The first Area3D on physics layer `layer` that a ray from the camera through a screen point meets.
+func _ray_hit(screen_pos: Vector2, layer: int) -> Dictionary:
+	var origin := camera.project_ray_origin(screen_pos)
+	var end := origin + camera.project_ray_normal(screen_pos) * (CAMERA_DISTANCE * 3.0)
+	var query := PhysicsRayQueryParameters3D.create(origin, end, 1 << (layer - 1))
+	query.collide_with_areas = true
+	query.collide_with_bodies = false
+	return get_world_3d().direct_space_state.intersect_ray(query)
 
 
 ## Drives the tooltip. `delta` is the time since the last call, so tests can use
@@ -1179,10 +1359,14 @@ func update_prop_fade(delta: float) -> void:
 			_fading.erase(prop)
 
 
-## Pushes a prop out of the way of plants, scenery and the travelers' starts,
-## so the count (and every random draw) stays the same.
+## Pushes a prop out of the way of plants, scenery, the travelers' starts and
+## every spot a decoy or a pile can be rolled to, so the count (and every random draw) stays the same.
 func _clear_of_keep_out(spot: Vector2) -> Vector2:
 	for pass_index in NUDGE_PASSES:
+		for point in slot_keep_out:  # (the plants' clearance is applied last, so it always holds)
+			var away := spot - point
+			if away.length() < SLOT_KEEP_OUT:
+				spot = point + (away.normalized() if away.length() > 0.001 else Vector2.RIGHT) * SLOT_KEEP_OUT
 		for point in keep_out:
 			var away := spot - point
 			if away.length() < KEEP_OUT:
