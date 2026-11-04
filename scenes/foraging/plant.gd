@@ -16,7 +16,10 @@ var hover_name := ""
 var kind := ""
 var zone := ""
 var letter_style := ""
-var letter := ""  # the one letter this plant carries; empty on a decoy
+var letter := ""  # the one letter this plant carries
+## What picking a decoy does, rolled at the scene start: "harm" or "reward" (empty for
+## a target). Never shown: nothing drawn or named here depends on it.
+var outcome := ""
 
 var _color := Color.WHITE
 var _letter_label: Label3D
@@ -24,11 +27,17 @@ var _letter_spot := Vector3.ZERO  # where the letter floats, local to the plant
 var _fruit_color := Color.WHITE
 
 
-func setup(data: Dictionary, plant_letter: String) -> void:
+## `data` is a plant kind; `plant_outcome` is a decoy's rolled outcome. `kind` is
+## "target", or "decoy_harm" / "decoy_reward" after the outcome (a decoy kind has no role of its own).
+func setup(data: Dictionary, plant_letter: String, plant_outcome: String = "") -> void:
 	kind_id = data["id"]
 	plant_name = data["name"]
 	hover_name = data["hover_name"]
 	kind = data["kind"]
+	if kind == "decoy":
+		outcome = plant_outcome
+		if outcome == "harm" or outcome == "reward":
+			kind = "decoy_" + outcome
 	zone = data["zone"]
 	letter_style = data["letter_style"]
 	letter = plant_letter

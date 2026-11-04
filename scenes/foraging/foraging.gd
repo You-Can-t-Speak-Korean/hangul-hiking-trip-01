@@ -63,8 +63,11 @@ const FERNANDA_COLOR := Color(0.95, 0.55, 0.70)  # pink
 ## the placement seed (a --placement-seed=N user argument does the same when this is
 ## -1); `legacy_layout` puts the decoys back at the fixed positions of
 ## foraging.plants.placed and rolls no chaos piles, for tests written for that layout.
+## It is false in the game and set by nothing but the tests. `LEGACY_OUTCOMES` are the
+## fixed harm/reward roles those older tests expect of each decoy kind, used only then.
 static var seed_override := -1
 static var legacy_layout := false
+const LEGACY_OUTCOMES := {"keuncheonnamseong": "harm", "butsunnamu": "harm", "norugui": "reward", "deulchuknamu": "reward"}
 
 var stage_width: float = 0.0
 var stage_depth: float = 0.0
@@ -111,12 +114,13 @@ var restarting := false
 var pause_menu
 var pause_hud: CanvasLayer
 var music_silenced := false
-## Where the decoys stand and where the chaos DDEOK piles lie (data:
-## foraging.decoy_placement, foraging.chaos_piles). Both are rolled once, in _ready,
-## from `placement_seed`: the decoys with `placement_rng`, the piles with `pile_rng`
-## (seeded from the same seed). Nothing rolls again until the scene is built anew
-## (first load, death restart, Restart scene). `layout` is {"positions", "source",
-## "attempts"}; `piles` are the pile nodes in picking order (null once picked).
+## The decoys (how many, which kind, where, harm or reward, which letter) and where the
+## chaos DDEOK piles lie (data: foraging.decoy_placement, foraging.chaos_piles). Both are
+## rolled once, in _ready, from `placement_seed`: the decoys with `placement_rng`, the
+## piles with `pile_rng` (seeded from the same seed). Nothing rolls again until the scene
+## is built anew (first load, death restart, Restart scene). `layout` is {"decoys",
+## "source", "attempts"}; `piles` are the pile nodes in picking order (null once picked).
+## `harm_units` is what one harm outcome costs the picker, in half-units.
 var placement_seed := 0
 var placement_rng := RandomNumberGenerator.new()
 var pile_rng := RandomNumberGenerator.new()
@@ -126,6 +130,7 @@ var chaos_piles
 var pile_roll: Array[Dictionary] = []
 var piles: Array[Node3D] = []
 var placement_rolls := 0
+var harm_units := 1
 ## Fernanda's backpack (Tab, right Shift or right Ctrl): its rules and its HUD. It
 ## pauses the map exactly as the pause menu does and is never open together with
 ## it or with the spelling view. `restarting` is not set while it is open.
@@ -694,14 +699,14 @@ func _float_label(text: String, at: Vector3) -> Label3D:
 	return label
 
 
-## A harm decoy was picked: the picker (and only the picker) loses the plant's
-## damage_units half-units, the hearts HUD updates, then the plant's gore beat
-## plays on the picker. A lethal pick does not start the death beat here: it waits
+## A harm decoy was picked: the picker (and only the picker) loses `harm_units`
+## half-units (the same for every kind), the hearts HUD updates, then the kind's gore
+## beat plays on the picker. A lethal pick does not start the death beat here: it waits
 ## until the gore has ended (tick_gore). Without a usable gore beat (bad data) the
 ## death starts at once, as before.
 func _harm_picker(plant: Node3D) -> void:
 	var kind: Dictionary = _kinds[plant.kind_id]
-	var units := int(kind.get("damage_units", 0))
+	var units := harm_units
 	var lethal := units > 0 and GameState.damage_units(GameState.controlled, units, String(kind.get("injury", "")))
 	var id := String(kind.get("gore", ""))
 	if gore_table.has(id) and decoy_gore.start(id, GameState.controlled, gore_table[id]):
@@ -721,7 +726,24 @@ func _begin_gore(id: String, lethal: bool) -> void:
 	_silence_music(true)
 	_gore_fx = DecoyGoreFx.new()
 	add_child(_gore_fx)
-	_gore_fx.setup(travelers[decoy_gore.who], id, gore_table[id], _blood, _gore_color("tint_color"))
+	var extras := {
+		"caption": DecoyGore.caption(gore_table, id), "caption_style": gore_table.get("caption_style", {}),
+		"bounds": walk_bounds(), "walkable": _gore_walkable, "ground": terrain.height_at,
+	}
+	_gore_fx.setup(travelers[decoy_gore.who], id, gore_table[id], _blood, _gore_color("tint_color"), extras)
+
+
+## True if a traveler may stand at (x, z) in a gore beat: inside the walk limits and clear of
+## every prop and tree (their boxes plus the traveler's radius).
+func _gore_walkable(spot: Vector2) -> bool:
+	if not walk_bounds().has_point(spot) or spot.y > near_limit_at(spot.x):
+		return false
+	for neighbour in range(floori(spot.x / FADE_CELL) - 1, floori(spot.x / FADE_CELL) + 2):
+		for prop in _props_by_cell.get(neighbour, []):
+			var box: AABB = prop.bounds
+			if Rect2(box.position.x, box.position.z, box.size.x, box.size.z).grow(Traveler.RADIUS).has_point(spot):
+				return false
+	return true
 
 
 func is_gore_playing() -> bool:
@@ -972,7 +994,7 @@ func _build_plants(plants_data: Dictionary, data_placed: Dictionary) -> void:
 	for kind in plants_data["kinds"]:
 		_kinds[kind["id"]] = kind
 	for entry in plants_data["placed"]:
-		_add_plant(_kinds[entry["kind"]], String(entry.get("letter", "")), float(entry["x"]), float(entry["z"]))
+		_add_plant(_kinds[entry["kind"]], String(entry.get("letter", "")), float(entry["x"]), float(entry["z"]), String(entry.get("outcome", "")))
 	# Props are dressed around the plants as the data places them, whatever the roll
 	# gave the decoys, so the rocks and trees are the same at every start.
 	for entry in data_placed["placed"]:
@@ -980,17 +1002,16 @@ func _build_plants(plants_data: Dictionary, data_placed: Dictionary) -> void:
 	# ...and around every spot a decoy or a chaos pile can be rolled to, so no prop
 	# ever stands on one (the pools are in the data, not in the roll).
 	var config: Dictionary = Content.mountain(GameState.game_id).get("foraging", {})
-	for id in config.get("decoy_placement", {}).get("pools", {}):
-		for slot in config["decoy_placement"]["pools"][id]:
-			slot_keep_out.append(Vector2(float(slot[0]), float(slot[1])))
+	for slot in config.get("decoy_placement", {}).get("slots", []):
+		slot_keep_out.append(Vector2(float(slot[0]), float(slot[1])))
 	for slot in config.get("chaos_piles", {}).get("slots", []):
 		slot_keep_out.append(Vector2(float(slot[0]), float(slot[1])))
 
 
 ## One plant of a kind at (x, z), on the ground; also used for the spares.
-func _add_plant(kind: Dictionary, letter: String, x: float, z: float) -> Node3D:
+func _add_plant(kind: Dictionary, letter: String, x: float, z: float, outcome: String = "") -> Node3D:
 	var plant := Plant.new()
-	plant.setup(kind, letter)
+	plant.setup(kind, letter, outcome)
 	plant.position = Vector3(x, terrain.height_at(x), z)
 	$Plants.add_child(plant)
 	plants.append(plant)
@@ -1020,19 +1041,20 @@ func _choose_seed() -> void:
 	print("placement_seed=%d" % placement_seed)
 
 
-## Rolls where the decoys stand and returns foraging.plants with them moved there.
-## Bad pools are reported and the data's own positions (the fallback) are used.
+## Rolls the decoys (count, kinds, slots, outcomes, letters) and returns foraging.plants
+## with them in place. Bad data is reported and the data's own decoys (the fallback) are used.
 func _roll_decoys(config: Dictionary) -> Dictionary:
 	_choose_seed()
 	var plants_data: Dictionary = config["plants"]
-	decoy_placement = DecoyPlacement.new(config.get("decoy_placement", {}), plants_data["kinds"], plants_data["placed"], zones, _fixed_points(config, plants_data), _scenery(config), _starts(config), stage_depth / 2.0)
+	decoy_placement = DecoyPlacement.new(config.get("decoy_placement", {}), plants_data["kinds"], plants_data["placed"], _fixed_points(config, plants_data), _scenery(config), _starts(config), stage_depth / 2.0, stage_width, DecoyPlacement.target_jamo(plants_data["kinds"]))
+	harm_units = decoy_placement.damage_units
 	if not decoy_placement.is_valid():
 		push_error("%s in foraging.decoy_placement of %s: the decoys stand at their fixed positions" % [decoy_placement.problem, GameState.game_id])
 	if legacy_layout:
-		layout = {"positions": decoy_placement.fallback, "source": "legacy", "attempts": 0}
+		layout = {"decoys": decoy_placement.fallback_decoys(LEGACY_OUTCOMES), "source": "legacy", "attempts": 0}
 	else:
 		layout = decoy_placement.choose(placement_rng)
-	return decoy_placement.apply(plants_data, layout["positions"])
+	return decoy_placement.apply(plants_data, layout["decoys"])
 
 
 func _is_target(plants_data: Dictionary, kind_id: String) -> bool:
@@ -1078,10 +1100,7 @@ func _build_piles(config: Dictionary, plants_data: Dictionary) -> void:
 	var root := Node3D.new()
 	root.name = "Piles"
 	add_child(root)
-	var decoy_slots: Array[Vector2] = []
-	for id in decoy_placement.pools:
-		decoy_slots.append_array(decoy_placement.pools[id])
-	chaos_piles = ChaosPiles.new(config.get("chaos_piles", {}), _target_points(plants_data), _fixed_points(config, plants_data), decoy_slots, _scenery(config), _starts(config), zones, stage_depth / 2.0, Content.items)
+	chaos_piles = ChaosPiles.new(config.get("chaos_piles", {}), _target_points(plants_data), _fixed_points(config, plants_data), decoy_placement.slots, _scenery(config), _starts(config), zones, stage_depth / 2.0, Content.items)
 	if not chaos_piles.is_valid():
 		push_error("%s in foraging.chaos_piles of %s: no piles will appear" % [chaos_piles.problem, GameState.game_id])
 	if legacy_layout:

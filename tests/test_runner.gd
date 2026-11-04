@@ -104,15 +104,24 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_placement_data",
 	"test_placement_logic",
 	"test_chaos_piles_logic",
+	"test_decoy_roll_stats",
 	"test_placement_timing",
+	"test_legacy_default",
 	"test_decoys_at_any_position",
+	"test_decoy_outcome_picks",
+	"test_new_gore_data",
+	"test_new_gore_scene",
+	"test_new_gore_flow",
+	"test_gore_captions",
+	"test_hidden_outcome",
+	"test_slot_generator",
 	"test_pile_pickup",
 	"test_pile_restart",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 2463
+const MIN_CHECKS := 2712
 
 
 func check(condition: bool, label: String) -> void:
@@ -250,8 +259,18 @@ func _ready() -> void:
 	await test_placement_data()
 	test_placement_logic()
 	test_chaos_piles_logic()
+	test_decoy_roll_stats()
 	await test_placement_timing()
+	await test_legacy_default()
 	await test_decoys_at_any_position()
+	print("== Full chaos decoys: outcomes, new gore beats, captions ==")
+	await test_decoy_outcome_picks()
+	test_new_gore_data()
+	await test_new_gore_scene()
+	await test_new_gore_flow()
+	await test_gore_captions()
+	await test_hidden_outcome()
+	await test_slot_generator()
 	await test_pile_pickup()
 	await test_pile_restart()
 	for section in EXPECTED_SECTIONS:
@@ -731,17 +750,17 @@ func test_plants_data() -> void:
 	for kind in kinds:
 		by_id[kind["id"]] = kind
 		check(not kind.has("count") and not kind.has("required") and not kind.has("positions"), "%s has no count/required/positions (plants are in 'placed')" % kind["name"])
-		check(["target", "decoy_harm", "decoy_reward"].has(kind["kind"]), "%s has a valid kind" % kind["name"])
+		check(["target", "decoy"].has(kind["kind"]), "%s has a valid kind (target or decoy; a decoy's harm or reward is rolled)" % kind["name"])
 		check(["hanging", "sprouting", "unfurling", "on_top"].has(kind["letter_style"]), "%s has a letter_style" % kind["name"])
-		if kind["kind"] == "decoy_harm":
-			kind_ok = kind_ok and kind.has("injury") and not kind.has("reward") and int(kind.get("damage_units", 0)) >= 1
-		if kind["kind"] == "decoy_reward":
-			kind_ok = kind_ok and not kind.has("reward") and not kind.has("charm") and not kind.has("hint") and not kind.has("injury") and not kind.has("damage_units")
+		if kind["kind"] == "decoy":
+			kind_ok = kind_ok and kind.has("injury") and kind.has("gore") and not kind.has("reward") and not kind.has("charm") and not kind.has("hint") and not kind.has("damage_units")
+		else:
+			kind_ok = kind_ok and not kind.has("injury") and not kind.has("gore") and not kind.has("damage_units")
 		check(_zone_range(kind["zone"]).size() == 2, "%s names a real zone" % kind["name"])
 		if kind["kind"] == "target":
 			var unknown := Hangul.unknown_letters(kind["name"], known)
 			check(unknown.size() <= 2, "%s needs at most 2 unknown letters" % kind["name"])
-	check(kind_ok, "decoy_harm have an injury id and damage_units, decoy_reward carry no old reward field")
+	check(kind_ok, "a decoy kind has an injury id and a gore id and no per-kind damage_units or old reward field; a target has none of them")
 
 	# Counts: one plant per letter token for a target, 2 for a decoy, 36 in all.
 	var expected := {"ma": 2, "meoru": 4, "minari": 6, "gosari": 6, "gobi": 4, "simiro": 6,
@@ -830,9 +849,9 @@ func test_plants_data() -> void:
 			var b := Vector2(float(placed[j]["x"]), float(placed[j]["z"]))
 			if a.distance_to(b) < 2.0:
 				all_ok = false
-			if placed[i]["kind"] == placed[j]["kind"] and a.distance_to(b) < 4.0:
+			if placed[i]["kind"] == placed[j]["kind"] and by_id[placed[i]["kind"]]["kind"] == "target" and a.distance_to(b) < 4.0:
 				same_ok = false
-	check(same_ok, "two plants of the same kind are at least 4 m apart")
+	check(same_ok, "two target plants of the same kind are at least 4 m apart (decoys may stand side by side)")
 	check(all_ok, "no two plants are closer than 2 m")
 	check(start_ok, "no plant is within 6 m of a traveler's start")
 	var spread_ok := true
@@ -1099,13 +1118,10 @@ func test_decoy_letters() -> void:
 		per_kind[entry["kind"]].append(letter)
 	check(decoys == 8, "8 decoy plants (%d)" % decoys)
 	check(one_each, "each decoy has exactly one letter, from the target words' letters")
-	var differ := per_kind.size() == 4
 	var seen := {}
 	for id in per_kind:
-		differ = differ and per_kind[id].size() == 2 and per_kind[id][0] != per_kind[id][1]
 		for letter in per_kind[id]:
 			seen[letter] = true
-	check(differ, "the two plants of a decoy kind carry different letters")
 	check(seen.size() >= 6, "the decoys do not all repeat one letter (%d different)" % seen.size())
 	_section_done("test_decoy_letters")
 
@@ -5788,10 +5804,7 @@ func test_harm_pick() -> void:
 		var start := GameState.max_units()
 		var cost := 0
 		for kind_id in ["keuncheonnamseong", "butsunnamu"]:
-			var units := 0
-			for k in _config()["plants"]["kinds"]:
-				if k["id"] == kind_id:
-					units = int(k["damage_units"])
+			var units := int(_config()["decoy_placement"]["damage_units"])
 			var plant: Node3D
 			for p in map.plants:
 				if p.kind_id == kind_id:
@@ -5888,9 +5901,9 @@ func test_decoy_gore_data() -> void:
 		check(float(table[id]["duration"]) > 0.0 and float(table[id]["pop_seconds"]) > 0.0 and float(table[id]["pop_seconds"]) <= float(table[id]["duration"]), "%s has a positive duration and a pop inside it" % id)
 	for pair in GORE_PAIRS:
 		check(_kind_in(kinds, pair[0]).get("gore", "") == pair[1], "%s carries gore id %s" % [pair[0], pair[1]])
-		check(int(_kind_in(kinds, pair[0])["damage_units"]) == 1, "%s still costs 1 half-unit" % pair[0])
+		check(not _kind_in(kinds, pair[0]).has("damage_units") and int(_config()["decoy_placement"]["damage_units"]) == 1, "%s still costs 1 half-unit, now one value (decoy_placement.damage_units) for every harm outcome" % pair[0])
 	for k in kinds:
-		check((k["kind"] == "decoy_harm") == k.has("gore"), "%s: only harm decoys have a gore field" % k["id"])
+		check((k["kind"] == "decoy") == k.has("gore"), "%s: only decoy kinds have a gore field" % k["id"])
 	check(DecoyGoreScript.problem_with(kinds, table) == "", "the shipped data validates")
 	check(int(_config()["decoy_rewards"]["floating_label"]["render_priority"]) > 0, "the floating label has a render priority above the steam's 0")
 	# Bad data is a clear message, never a crash.
@@ -5917,9 +5930,9 @@ func test_decoy_gore_data() -> void:
 	t2["convulse_eyes_pop"]["pop_seconds"] = 9.0
 	check(DecoyGoreScript.problem_with(_kinds_copy(), t2).contains("pop_seconds"), "a pop after the end is rejected")
 	bad = _kinds_copy()
-	_kind_in(bad, "norugui")["gore"] = "face_swell_pop"
+	_kind_in(bad, "norugui").erase("gore")
 	msg = DecoyGoreScript.problem_with(bad, table)
-	check(msg.contains("norugui") and msg.contains("gore field"), "a gore field on a reward decoy is rejected (%s)" % msg)
+	check(msg.contains("norugui") and msg.contains("no gore id"), "a decoy kind without a gore id is rejected, whatever its outcome rolls (%s)" % msg)
 	bad = _kinds_copy()
 	_kind_in(bad, "ma")["gore"] = "face_swell_pop"
 	check(DecoyGoreScript.problem_with(bad, table).contains("gore field"), "a gore field on a target is rejected too")
@@ -6711,38 +6724,35 @@ func _fixed_spots() -> Array[Vector2]:
 
 func _new_placement(config: Dictionary = {}) -> RefCounted:
 	var cfg := _config()
-	return DecoyPlacementScript.new(cfg["decoy_placement"] if config.is_empty() else config, cfg["plants"]["kinds"], cfg["plants"]["placed"], cfg["zones"], _fixed_spots(), _tree_spots(), _start_spots(), float(cfg["stage"]["depth"]) / 2.0)
+	return DecoyPlacementScript.new(cfg["decoy_placement"] if config.is_empty() else config, cfg["plants"]["kinds"], cfg["plants"]["placed"], _fixed_spots(), _tree_spots(), _start_spots(), float(cfg["stage"]["depth"]) / 2.0, float(cfg["stage"]["width"]), _allowed_letters())
 
 
 func _new_piles(config: Dictionary = {}, placement: RefCounted = null) -> RefCounted:
 	var cfg := _config()
-	var decoy_slots: Array[Vector2] = []
 	var source: RefCounted = _new_placement() if placement == null else placement
-	for id in source.pools:
-		decoy_slots.append_array(source.pools[id])
-	return ChaosPilesScript.new(cfg["chaos_piles"] if config.is_empty() else config, _target_spots(), _fixed_spots(), decoy_slots, _tree_spots(), _start_spots(), cfg["zones"], float(cfg["stage"]["depth"]) / 2.0, Content.items)
+	return ChaosPilesScript.new(cfg["chaos_piles"] if config.is_empty() else config, _target_spots(), _fixed_spots(), source.slots, _tree_spots(), _start_spots(), cfg["zones"], float(cfg["stage"]["depth"]) / 2.0, Content.items)
 
 
 ## What a scene start with this seed rolls, worked out without a scene: the decoy layout, foraging.plants
-## with the decoys moved, every plant's (x, z) and the piles.
+## with the decoys in place, every plant's (x, z) and the piles.
 func _offline_roll(seed_value: int, placement: RefCounted, piles: RefCounted) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed_value
 	var layout: Dictionary = placement.choose(rng)
 	var pile_rng := RandomNumberGenerator.new()
 	pile_rng.seed = DecoyPlacementScript.derive_seed(seed_value, 1)
-	var resolved: Dictionary = placement.apply(_config()["plants"], layout["positions"])
+	var resolved: Dictionary = placement.apply(_config()["plants"], layout["decoys"])
 	var spots: Array[Vector2] = []
 	for entry in resolved["placed"]:
 		spots.append(Vector2(float(entry["x"]), float(entry["z"])))
 	return {"layout": layout, "resolved": resolved, "spots": spots, "piles": piles.roll(pile_rng, spots, _start_spots())}
 
 
-## The decoys' layout as one comparable value.
-func _layout_key(positions: Dictionary) -> String:
+## The decoys of a layout as one comparable value: kind, spot, outcome and letter, in order.
+func _layout_key(decoys: Array) -> String:
 	var parts: Array[String] = []
-	for id in DECOY_KIND_IDS:
-		parts.append("%s=%s" % [id, str(positions[id])])
+	for d in decoys:
+		parts.append("%s@%.2f,%.2f:%s:%s" % [d["kind"], d["spot"].x, d["spot"].y, d["outcome"], d["letter"]])
 	return "|".join(parts)
 
 
@@ -6786,92 +6796,113 @@ func _nearest_distance(spot: Vector2, others: Array) -> float:
 	return best
 
 
+## The first plant of `kind_id` whose rolled outcome is `outcome`, or null.
+func _decoy_of(map: Node3D, kind_id: String, outcome: String) -> Node3D:
+	for plant in map.plants:
+		if plant.kind_id == kind_id and plant.outcome == outcome:
+			return plant
+	return null
+
+
+## The first seed whose roll has a decoy of `kind_id` with `outcome`, or -1.
+func _seed_with_decoy(kind_id: String, outcome: String) -> int:
+	var placement := _new_placement()
+	var rng := RandomNumberGenerator.new()
+	for seed_value in range(1, 3000):
+		rng.seed = seed_value
+		for d in placement.choose(rng)["decoys"]:
+			if d["kind"] == kind_id and d["outcome"] == outcome:
+				return seed_value
+	return -1
+
+
 func test_placement_data() -> void:
 	var cfg := _config()
 	var place: Dictionary = cfg.get("decoy_placement", {})
 	var chaos: Dictionary = cfg.get("chaos_piles", {})
 	check(not place.is_empty() and not chaos.is_empty(), "hallasan.json has decoy_placement and chaos_piles")
 	var placement := _new_placement()
-	check(placement.is_valid(), "the decoy pools pass their own validation (%s)" % placement.problem)
-	check(place["same_kind_min"] == 4.0 and place["any_min"] == 2.0 and place["start_min"] == 6.0, "the spacing rules are the existing ones: 4 m same kind, 2 m any two, 6 m from the starts")
-	check(place["pools"].keys().size() == 4 and DECOY_KIND_IDS.all(func(id): return place["pools"].has(id)), "there is a pool for each of the four decoy kinds, and no other")
-	var zone_by_kind := {}
+	check(placement.is_valid(), "the decoy placement data passes its own validation (%s)" % placement.problem)
+	check(not place.has("pools") and not place.has("same_kind_min"), "the per-kind pools and the same-kind spacing rule are gone from the data")
+	check(place["any_min"] == 2.0 and place["start_min"] == 6.0 and place["scenery_min"] == 2.5, "the spacing rules: 2 m from any plant or decoy, 6 m from the starts, 2.5 m from trees")
+	check(place["slots"].size() == 24 and placement.slots.size() == 24, "one shared pool of 24 slots (the four old pools of 6, merged)")
+	check(int(place["count_min"]) == 2 and int(place["count_max"]) == 16 and int(place["count_max"]) <= place["slots"].size(), "count_min 2, count_max 16, and not more than the slots")
+	check(place["kind_weights"].size() == 4 and DECOY_KIND_IDS.all(func(id): return int(place["kind_weights"].get(id, 0)) == 1), "kind_weights: 1 for each of the four decoy kinds, and no other")
+	check(place["outcome_weights"].size() == 2 and int(place["outcome_weights"]["harm"]) == 1 and int(place["outcome_weights"]["reward"]) == 1, "outcome_weights: harm 1, reward 1")
+	check(int(place["damage_units"]) == 1, "one damage_units value for every harm outcome: 1 (half a heart)")
+	# The decoy kinds: one role, one gore id each, no per-kind damage.
+	var gore_of := {"keuncheonnamseong": "face_swell_pop", "butsunnamu": "convulse_eyes_pop", "norugui": "deer_ears_rip", "deulchuknamu": "deulssuk_drunk"}
+	var kinds_ok := true
 	for kind in _hangul_plants():
-		zone_by_kind[kind["id"]] = kind["zone"]
-	check(zone_by_kind["keuncheonnamseong"] == "lower_forest" and zone_by_kind["butsunnamu"] == "lower_forest" and zone_by_kind["norugui"] == "mid_slope" and zone_by_kind["deulchuknamu"] == "alpine", "the zones are lower forest (큰천남성, 붓순나무), mid slope (노루귀), alpine (들쭉나무)")
+		if gore_of.has(kind["id"]):
+			kinds_ok = kinds_ok and kind["kind"] == "decoy" and kind["gore"] == gore_of[kind["id"]] and kind.has("injury") and not kind.has("damage_units")
+	check(kinds_ok, "the four decoy kinds are kind 'decoy' with their own gore id and no fixed harm or reward role")
+	check(cfg["zones"].size() == 3 and _hangul_plants().all(func(k): return k["kind"] != "decoy" or k.has("zone")), "the zone data is kept (and the decoy kinds' zone fields), though placement reads none of it")
+	# Every pair of slots in the merged pool is at least 2 m apart.
+	var spots: Array[Vector2] = []
+	for slot in place["slots"]:
+		spots.append(_vec(slot))
+	var closest := INF
+	var distinct := {}
+	for i in spots.size():
+		distinct[spots[i]] = true
+		for j in range(i + 1, spots.size()):
+			closest = minf(closest, spots[i].distance_to(spots[j]))
+	print("  closest pair of the %d merged slots: %.2f m, none dropped" % [spots.size(), closest])
+	check(distinct.size() == spots.size(), "no slot appears twice")
+	check(closest >= 2.0, "every pair of slots is at least 2 m apart (the closest pair is %.2f m)" % closest)
+	# Every slot against the live scene.
 	var map: Node3D = await _seeded_map(1)
 	var boxes := _prop_boxes(map)
 	var half_depth: float = map.stage_depth / 2.0
 	var bounds: Rect2 = map.walk_bounds()
-	var all_pool: Array[Vector2] = []
-	var counts := _expected_counts()
-	for id in DECOY_KIND_IDS:
-		var zone_x := _zone_range(zone_by_kind[id])
-		var pool: Array = place["pools"][id]
-		check(pool.size() == 6 and pool.size() >= int(counts[id]), "%s: a pool of 6 slots, at least its %d plants" % [id, counts[id]])
-		var spots: Array[Vector2] = []
-		for slot in pool:
-			spots.append(_vec(slot))
-		var distinct := {}
-		for spot in spots:
-			distinct[spot] = true
-		check(distinct.size() == spots.size(), "%s: no slot appears twice" % id)
-		var in_zone := true
-		var walkable := true
-		var clear := true
-		var far := true
-		var props_ok := true
-		var seen_ok := true
-		var hidden := []
-		for spot in spots:
-			in_zone = in_zone and spot.x >= float(zone_x[0]) + 1.0 and spot.x <= float(zone_x[1]) - 1.0 and absf(spot.y) <= half_depth - 1.0
-			walkable = walkable and bounds.has_point(spot) and spot.y <= map.near_limit_at(spot.x) - 0.5
-			clear = clear and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, _tree_spots()) >= 2.5
-			far = far and _nearest_distance(spot, _start_spots()) >= 6.0
-			props_ok = props_ok and not _footprint_hit(spot, boxes)
-			if DecoyPlacementScript.blocked_by_prop(spot, map.terrain.height_at(spot.x), boxes, map.CAMERA_PITCH_DEG, PROP_FOOTPRINT, LETTER_HEIGHT, map.FADE_REACH):
-				seen_ok = false
-				hidden.append(spot)
-		check(in_zone, "%s: every slot is inside its zone and on the stage" % id)
-		check(walkable, "%s: every slot is on walkable ground, inside the walk limits and the camera clamp" % id)
-		check(clear, "%s: every slot is 2 m from every target plant and spare slot and 2.5 m from every tree" % id)
-		check(far, "%s: every slot is 6 m from the starts" % id)
-		check(props_ok, "%s: no slot is inside or under a prop (box plus %.1f m)" % [id, PROP_FOOTPRINT])
-		check(seen_ok, "%s: no prop box stands between the camera and a slot's letter %s" % [id, str(hidden)])
-		var spread := 0.0
-		for a in spots:
-			for b in spots:
-				spread = maxf(spread, a.distance_to(b))
-		check(spread >= 0.4 * (float(zone_x[1]) - float(zone_x[0])), "%s: the pool is spread over the zone (%.1f m across)" % [id, spread])
-		var pairs_ok := true
-		for i in spots.size():
-			for j in range(i + 1, spots.size()):
-				pairs_ok = pairs_ok and spots[i].distance_to(spots[j]) >= 4.0
-		check(pairs_ok, "%s: the pool's slots are at least 4 m apart" % id)
-		for other_id in DECOY_KIND_IDS:
-			if other_id == id:
-				continue
-			var cross_ok := true
-			for spot in spots:
-				for other in place["pools"][other_id]:
-					cross_ok = cross_ok and spot.distance_to(_vec(other)) >= 2.0
-			check(cross_ok, "%s and %s: no two slots of different pools are within 2 m" % [id, other_id])
-		all_pool.append_array(spots)
-	# The fallback (the decoys' own x, z in 'placed') is itself a valid layout.
-	check(placement.layout_problem(placement.fallback) == "", "the fallback positions obey the spacing rules (%s)" % placement.layout_problem(placement.fallback))
+	var on_stage := true
+	var walkable := true
+	var clear := true
+	var far := true
+	var props_ok := true
+	var seen_ok := true
+	var hidden := []
+	var low := INF
+	var high := -INF
+	var in_zone := {}
+	for spot in spots:
+		on_stage = on_stage and spot.x >= 1.0 and spot.x <= map.stage_width - 1.0 and absf(spot.y) <= half_depth - 1.0
+		walkable = walkable and bounds.has_point(spot) and spot.y <= map.near_limit_at(spot.x) - 0.5
+		clear = clear and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, _tree_spots()) >= 2.5
+		far = far and _nearest_distance(spot, _start_spots()) >= 6.0
+		props_ok = props_ok and not _footprint_hit(spot, boxes)
+		if DecoyPlacementScript.blocked_by_prop(spot, map.terrain.height_at(spot.x), boxes, map.CAMERA_PITCH_DEG, PROP_FOOTPRINT, LETTER_HEIGHT, map.FADE_REACH):
+			seen_ok = false
+			hidden.append(spot)
+		low = minf(low, spot.x)
+		high = maxf(high, spot.x)
+		var zone_id: String = map.zone_at(spot.x)["id"]
+		in_zone[zone_id] = int(in_zone.get(zone_id, 0)) + 1
+	check(on_stage, "every slot is on the stage, 1 m from its edges")
+	check(walkable, "every slot is on walkable ground, inside the walk limits and the camera clamp")
+	check(clear, "every slot is 2 m from every target plant and spare slot and 2.5 m from every tree")
+	check(far, "every slot is 6 m from the starts")
+	check(props_ok, "no slot is inside or under a prop (box plus %.1f m)" % PROP_FOOTPRINT)
+	check(seen_ok, "no prop box stands between the camera and a slot's letter %s" % str(hidden))
+	check(high - low >= 0.6 * map.stage_width, "the shared pool is spread over the stage (%.1f m across)" % (high - low))
+	print("  slots per old zone: %s" % str(in_zone))
+	check(in_zone.size() == 3 and in_zone.values().all(func(n): return n >= 6), "all three zones have at least 6 slots, so any kind can stand anywhere")
+	# The fallback (the decoys' own kinds, letters and x, z in 'placed') is itself a valid layout.
+	var fallback: Array = placement.fallback_decoys({}, ForcedRng.new())
+	check(fallback.size() == 8 and placement.layout_problem(fallback) == "", "the fallback layout (8 decoys) obeys the spacing rules (%s)" % placement.layout_problem(fallback))
 	var fallback_ok := true
-	for id in placement.fallback:
-		for spot in placement.fallback[id]:
-			fallback_ok = fallback_ok and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, _start_spots()) >= 6.0
+	for d in fallback:
+		fallback_ok = fallback_ok and _nearest_distance(d["spot"], _fixed_spots()) >= 2.0 and _nearest_distance(d["spot"], _start_spots()) >= 6.0
 	check(fallback_ok, "the fallback positions are clear of the fixed plants, spare slots and starts")
 
-	# Chaos pile slots.
+	# Chaos pile slots (their own 12, unchanged), now against the merged decoy slots.
 	var piles := _new_piles()
 	check(piles.is_valid(), "the chaos pile data passes its own validation (%s)" % piles.problem)
-	var slots: Array[Vector2] = []
+	var pile_slots: Array[Vector2] = []
 	for slot in chaos["slots"]:
-		slots.append(_vec(slot))
-	check(slots.size() == 12, "12 candidate pile slots")
+		pile_slots.append(_vec(slot))
+	check(pile_slots.size() == 12, "12 candidate pile slots")
 	var zone_hit := {}
 	var pile_walkable := true
 	var pile_clear := true
@@ -6879,10 +6910,10 @@ func test_placement_data() -> void:
 	var pile_seen := true
 	var pile_hidden := []
 	var off_path := 0
-	for spot in slots:
+	for spot in pile_slots:
 		zone_hit[map.zone_at(spot.x)["id"]] = true
 		pile_walkable = pile_walkable and bounds.has_point(spot) and spot.y <= map.near_limit_at(spot.x) - 0.5 and absf(spot.y) <= half_depth - 1.0
-		pile_clear = pile_clear and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, all_pool) >= 2.0 and _nearest_distance(spot, _start_spots()) >= 6.0 and _nearest_distance(spot, _tree_spots()) >= 2.5
+		pile_clear = pile_clear and _nearest_distance(spot, _fixed_spots()) >= 2.0 and _nearest_distance(spot, spots) >= 2.0 and _nearest_distance(spot, _start_spots()) >= 6.0 and _nearest_distance(spot, _tree_spots()) >= 2.5
 		pile_props = pile_props and not _footprint_hit(spot, boxes)
 		if DecoyPlacementScript.blocked_by_prop(spot, map.terrain.height_at(spot.x), boxes, map.CAMERA_PITCH_DEG, PROP_FOOTPRINT, LETTER_HEIGHT, map.FADE_REACH):
 			pile_seen = false
@@ -6891,14 +6922,14 @@ func test_placement_data() -> void:
 			off_path += 1
 	check(zone_hit.size() == 3, "the pile slots cover all three zones (%s)" % str(zone_hit.keys()))
 	check(pile_walkable, "every pile slot is on walkable ground inside the walk limits and the camera clamp")
-	check(pile_clear, "every pile slot is 2 m from every target, spare slot and decoy slot, 6 m from the starts and 2.5 m from trees")
+	check(pile_clear, "every pile slot is 2 m from every target, spare slot and (merged) decoy slot, 6 m from the starts and 2.5 m from trees")
 	check(pile_props, "no pile slot is inside or under a prop (box plus %.1f m)" % PROP_FOOTPRINT)
 	check(pile_seen, "no prop box stands between the camera and a pile slot %s" % str(pile_hidden))
 	check(off_path >= 4, "at least 4 pile slots are 8 m from every target plant (%d)" % off_path)
 	var apart_ok := true
-	for i in slots.size():
-		for j in range(i + 1, slots.size()):
-			apart_ok = apart_ok and slots[i].distance_to(slots[j]) >= 2.0
+	for i in pile_slots.size():
+		for j in range(i + 1, pile_slots.size()):
+			apart_ok = apart_ok and pile_slots[i].distance_to(pile_slots[j]) >= 2.0
 	check(apart_ok, "pile slots are at least 2 m apart")
 	var counts_got: Array = chaos["count_table"].map(func(e): return [int(e["count"]), int(e["weight"])])
 	var amounts_got: Array = chaos["amount_table"].map(func(e): return [int(e["amount"]), int(e["weight"])])
@@ -6914,95 +6945,130 @@ func test_placement_logic() -> void:
 	var placement := _new_placement()
 	var piles := _new_piles()
 	check(placement.is_valid() and piles.is_valid(), "(setup) the data is valid")
-	var counts := _expected_counts()
+	var jamo := _allowed_letters()
 	var all_ok := true
 	var count_ok := true
 	var in_pool_ok := true
 	var source_ok := true
+	var fields_ok := true
+	var piles_clear := true
 	var distinct := {}
 	var repeat_ok := true
 	var starts := _start_spots()
 	for seed_value in LAYOUT_SEEDS:
 		var roll := _offline_roll(seed_value, placement, piles)
 		var layout: Dictionary = roll["layout"]
-		var positions: Dictionary = layout["positions"]
+		var decoys: Array = layout["decoys"]
 		source_ok = source_ok and layout["source"] == "random"
-		all_ok = all_ok and placement.layout_problem(positions) == ""
-		for id in DECOY_KIND_IDS:
-			count_ok = count_ok and positions[id].size() == int(counts[id])
-			for spot in positions[id]:
-				in_pool_ok = in_pool_ok and placement.pools[id].has(spot) and _nearest_distance(spot, starts) >= 6.0 and _nearest_distance(spot, _fixed_spots()) >= 2.0
-		distinct[_layout_key(positions)] = true
+		all_ok = all_ok and placement.layout_problem(decoys) == ""
+		count_ok = count_ok and decoys.size() >= 2 and decoys.size() <= 16
+		for d in decoys:
+			in_pool_ok = in_pool_ok and placement.slots.has(d["spot"]) and _nearest_distance(d["spot"], starts) >= 6.0 and _nearest_distance(d["spot"], _fixed_spots()) >= 2.0
+			fields_ok = fields_ok and DECOY_KIND_IDS.has(d["kind"]) and ["harm", "reward"].has(d["outcome"]) and jamo.has(d["letter"])
+		for pile in roll["piles"]:
+			piles_clear = piles_clear and _nearest_distance(pile["spot"], roll["spots"]) >= 2.0
+		distinct[_layout_key(decoys)] = true
 		var again := _offline_roll(seed_value, placement, piles)
-		repeat_ok = repeat_ok and _layout_key(again["layout"]["positions"]) == _layout_key(positions) and str(again["piles"]) == str(roll["piles"])
+		repeat_ok = repeat_ok and _layout_key(again["layout"]["decoys"]) == _layout_key(decoys) and str(again["piles"]) == str(roll["piles"])
 	check(all_ok, "%d pinned seeds: every layout obeys the spacing rules" % LAYOUT_SEEDS)
-	check(count_ok and in_pool_ok and source_ok, "%d pinned seeds: each kind gets its plant count, from its own pool, clear of fixed plants and starts, without the fallback" % LAYOUT_SEEDS)
-	check(repeat_ok, "the same seed gives the same layout and the same piles")
+	check(count_ok and in_pool_ok and source_ok, "%d pinned seeds: 2 to 16 decoys, on distinct shared slots, clear of fixed plants and starts, without the fallback" % LAYOUT_SEEDS)
+	check(fields_ok, "%d pinned seeds: every decoy has a decoy kind, an outcome of harm or reward and a letter from the target words" % LAYOUT_SEEDS)
+	check(piles_clear, "%d pinned seeds: every pile keeps 2 m from every chosen decoy" % LAYOUT_SEEDS)
+	check(repeat_ok, "the same seed gives the same count, kinds, slots, outcomes, letters and piles")
 	print("  %d distinct decoy layouts in %d pinned seeds" % [distinct.size(), LAYOUT_SEEDS])
 	check(distinct.size() >= int(LAYOUT_SEEDS * 0.9), "different seeds give different layouts (%d distinct of %d)" % [distinct.size(), LAYOUT_SEEDS])
 	var uses := {}
+	var rng := RandomNumberGenerator.new()
 	for seed_value in 400:
-		for id in DECOY_KIND_IDS:
-			for spot in _offline_roll(seed_value, placement, piles)["layout"]["positions"][id]:
-				uses[spot] = true
-	check(uses.size() == 24, "every one of the 24 pool slots gets used (%d)" % uses.size())
+		rng.seed = seed_value
+		for d in placement.choose(rng)["decoys"]:
+			uses[d["spot"]] = true
+	check(uses.size() == 24, "every one of the 24 shared slots gets used (%d)" % uses.size())
 
-	# The assembled plants: letters, order and kinds are exactly the data's; only decoy x, z move.
-	var roll := _offline_roll(7, placement, piles)
+	# The assembled plants: targets exactly as the data has them, decoys filling the data's decoy entries in order.
+	var kinds := {}
+	for kind in _hangul_plants():
+		kinds[kind["id"]] = kind
 	var data_placed: Array = _placed()
-	var shape_ok: bool = roll["resolved"]["placed"].size() == data_placed.size()
-	var moved := 0
+	var data_targets: Array = data_placed.filter(func(e): return kinds[e["kind"]]["kind"] == "target")
+	var decoy_index: Array = []
 	for i in data_placed.size():
-		var a: Dictionary = data_placed[i]
-		var b: Dictionary = roll["resolved"]["placed"][i]
-		shape_ok = shape_ok and a["kind"] == b["kind"] and a.get("letter", "") == b.get("letter", "")
-		if a["x"] != b["x"] or a["z"] != b["z"]:
-			moved += 1
-			shape_ok = shape_ok and DECOY_KIND_IDS.has(a["kind"])
-	check(shape_ok and moved >= 4, "apply() keeps every kind and letter in order and moves only decoys (%d moved)" % moved)
-	check(_placed()[22]["kind"] == "keuncheonnamseong" and _placed()[22]["x"] == 13.0, "the data itself is not changed by apply()")
+		if kinds[data_placed[i]["kind"]]["kind"] == "decoy":
+			decoy_index.append(i)
+	check(data_targets.size() == 28 and decoy_index.size() == 8, "(setup) the data has 28 targets and 8 fallback decoys")
+	var some: Array = _offline_roll(7, placement, piles)["layout"]["decoys"]
+	for n in [3, 8, 11]:
+		var decoys: Array = some.slice(0, n) if n <= some.size() else some + some.slice(0, n - some.size())
+		var resolved: Dictionary = placement.apply(_config()["plants"], decoys)
+		var got_targets: Array = resolved["placed"].filter(func(e): return kinds[e["kind"]]["kind"] == "target")
+		var got_decoys: Array = resolved["placed"].filter(func(e): return kinds[e["kind"]]["kind"] == "decoy")
+		var shape_ok: bool = got_targets == data_targets and got_decoys.size() == n and resolved["placed"].size() == 28 + n
+		for i in n:
+			shape_ok = shape_ok and got_decoys[i]["kind"] == decoys[i]["kind"] and got_decoys[i]["letter"] == decoys[i]["letter"] and got_decoys[i]["outcome"] == decoys[i]["outcome"] and is_equal_approx(got_decoys[i]["x"], decoys[i]["spot"].x)
+		check(shape_ok, "apply() with %d decoys: the 28 targets are untouched and in order, and the %d decoys are there with their rolled kind, letter, outcome and place" % [n, n])
+		if n <= 8:
+			var in_order := true
+			for i in n:
+				in_order = in_order and resolved["placed"][decoy_index[i]]["outcome"] == decoys[i]["outcome"]
+			check(in_order, "apply() with %d decoys: they fill the data's decoy entries in order" % n)
+	check(_placed().size() == 36 and _placed()[22]["kind"] == "keuncheonnamseong" and _placed()[22]["x"] == 13.0 and not _placed()[22].has("outcome"), "the data itself is not changed by apply()")
 
 	# The fallback.
 	var forced_layout: Dictionary = placement.choose(ForcedRng.new())
-	check(forced_layout["source"] == "random" and placement.layout_problem(forced_layout["positions"]) == "", "a source that always answers 1 still gives a valid pick")
-	var tight: Dictionary = _config()["decoy_placement"].duplicate(true)
-	tight["same_kind_min"] = 500.0
-	tight["max_retries"] = 7
-	var stubborn := _new_placement(tight)
+	check(forced_layout["source"] == "random" and placement.layout_problem(forced_layout["decoys"]) == "" and forced_layout["decoys"].size() == 2, "a source that always answers 1 still gives a valid pick (the smallest count)")
+	var stubborn := _new_placement()
+	stubborn.any_min = 500.0  # no layout of two or more decoys can pass
+	stubborn.max_retries = 7
 	var stuck_layout: Dictionary = stubborn.choose(RandomNumberGenerator.new())
+	var fallback_key := func(decoys: Array) -> String:
+		return "|".join(decoys.map(func(d): return "%s@%.2f,%.2f:%s" % [d["kind"], d["spot"].x, d["spot"].y, d["letter"]]))
 	check(stubborn.is_valid() and stuck_layout["source"] == "fallback" and stuck_layout["attempts"] == 7, "when no pick passes, it stops after max_retries tries (%d) and answers with the fallback" % stuck_layout["attempts"])
-	check(_layout_key(stuck_layout["positions"]) == _layout_key(placement.fallback) and placement.layout_problem(stuck_layout["positions"]) == "", "the fallback it answers with is the data's fixed, valid layout")
+	check(fallback_key.call(stuck_layout["decoys"]) == fallback_key.call(placement.fallback_decoys({})) and stuck_layout["decoys"].all(func(d): return ["harm", "reward"].has(d["outcome"])), "the fallback is the data's 8 decoys (kind, place, letter) with their outcomes rolled")
+	var legacy: Array = placement.fallback_decoys(Foraging.LEGACY_OUTCOMES)
+	check(legacy.size() == 8 and legacy[0]["outcome"] == "harm" and legacy[7]["outcome"] == "reward", "the test-only legacy outcomes give the older fixed roles")
 
-	# Bad pools: an error and the fallback, never a crash.
+	# Bad data: an error and the fallback, never a crash.
+	var base: Dictionary = _config()["decoy_placement"]
 	var bads := {}
-	var bad: Dictionary = _config()["decoy_placement"].duplicate(true)
-	bad["pools"]["norugui"] = [bad["pools"]["norugui"][0]]
-	bads["too few slots"] = bad
-	bad = _config()["decoy_placement"].duplicate(true)
-	bad["pools"]["butsunnamu"][1] = bad["pools"]["butsunnamu"][0]
-	bads["a duplicate slot"] = bad
-	bad = _config()["decoy_placement"].duplicate(true)
-	bad["pools"]["deulchuknamu"][2] = [10.0, 0.0]
-	bads["a slot outside the zone"] = bad
-	bad = _config()["decoy_placement"].duplicate(true)
-	bad["pools"].erase("keuncheonnamseong")
-	bads["a missing pool"] = bad
-	bad = _config()["decoy_placement"].duplicate(true)
-	bad["pools"]["deulchuknamu"][3] = [_target_spots()[22].x + 0.5, _target_spots()[22].y]
-	bads["a slot on a target plant"] = bad
-	bad = _config()["decoy_placement"].duplicate(true)
-	bad["pools"]["norugui"][0] = "x"
-	bads["a slot that is not [x, z]"] = bad
-	bad = _config()["decoy_placement"].duplicate(true)
-	bad["pools"]["mystery"] = [[1.0, 1.0]]
-	bads["a pool for a non-decoy"] = bad
+	var bad: Dictionary
+	var edits := {
+		"count_max above the slots": func(b): b["count_max"] = 25,
+		"count_min above count_max": func(b): b["count_min"] = 17,
+		"count_min of 0": func(b): b["count_min"] = 0,
+		"a duplicate slot": func(b): b["slots"][1] = b["slots"][0],
+		"a slot off the stage": func(b): b["slots"][2] = [70.0, 0.0],
+		"a slot on a target plant": func(b): b["slots"][3] = [_target_spots()[22].x + 0.5, _target_spots()[22].y],
+		"a slot at a traveler's start": func(b): b["slots"][0] = [_start_spots()[0].x + 1.0, _start_spots()[0].y],
+		"two slots 1 m apart": func(b): b["slots"][4] = [b["slots"][5][0] + 1.0, b["slots"][5][1]],
+		"a slot that is not [x, z]": func(b): b["slots"][6] = "x",
+		"no slots": func(b): b["slots"] = [],
+		"the old pools instead of slots": func(b): b.erase("slots"),
+		"a missing kind weight": func(b): b["kind_weights"].erase("norugui"),
+		"a zero kind weight": func(b): b["kind_weights"]["butsunnamu"] = 0,
+		"a fractional kind weight": func(b): b["kind_weights"]["norugui"] = 1.5,
+		"a kind weight for a non-decoy": func(b): b["kind_weights"]["ma"] = 1,
+		"no kind_weights": func(b): b.erase("kind_weights"),
+		"a missing outcome weight": func(b): b["outcome_weights"].erase("reward"),
+		"an outcome weight of 0": func(b): b["outcome_weights"]["harm"] = 0,
+		"an unknown outcome": func(b): b["outcome_weights"]["maybe"] = 1,
+		"damage_units of 0": func(b): b["damage_units"] = 0,
+		"damage_units missing": func(b): b.erase("damage_units"),
+	}
+	for label in edits:
+		bad = base.duplicate(true)
+		edits[label].call(bad)
+		bads[label] = bad
 	for label in bads:
 		var broken := _new_placement(bads[label])
 		var got: Dictionary = broken.choose(RandomNumberGenerator.new())
-		check(not broken.is_valid() and broken.problem != "" and got["source"] == "bad pools" and _layout_key(got["positions"]) == _layout_key(placement.fallback), "%s: an error (%s) and the fixed positions" % [label, broken.problem])
-	var empty := _new_placement({"pools": 5})
-	check(not empty.is_valid() and empty.choose(RandomNumberGenerator.new())["source"] == "bad pools", "pools that are not a dictionary are an error too")
-	var missing := DecoyPlacementScript.new({}, _config()["plants"]["kinds"], _placed(), _config()["zones"], _fixed_spots(), _tree_spots(), _start_spots(), 12.0)
+		check(not broken.is_valid() and broken.problem != "" and got["source"] == "bad pools" and fallback_key.call(got["decoys"]) == fallback_key.call(placement.fallback_decoys({})), "%s: an error (%s) and the fixed decoys" % [label, broken.problem])
+	var fine := base.duplicate(true)
+	fine["count_max"] = 24
+	fine["count_min"] = 1
+	check(_new_placement(fine).is_valid(), "a count range of 1..24 (all the slots) is valid")
+	var empty := _new_placement({"slots": 5})
+	check(not empty.is_valid() and empty.choose(RandomNumberGenerator.new())["source"] == "bad pools", "slots that are not an array are an error too")
+	var missing := DecoyPlacementScript.new({}, _config()["plants"]["kinds"], _placed(), _fixed_spots(), _tree_spots(), _start_spots(), 12.0, 64.0, jamo)
 	check(not missing.is_valid() and missing.choose(RandomNumberGenerator.new())["source"] == "bad pools", "missing decoy_placement data is an error and the fallback")
 
 	# The command-line seed.
@@ -7020,6 +7086,101 @@ func test_placement_logic() -> void:
 	rng_b.seed = printed
 	check(rng_a.randi_range(0, 1000000) == rng_b.randi_range(0, 1000000), "a randomized generator's printed seed reproduces its draws")
 	_section_done("test_placement_logic")
+
+
+const DECOY_SAMPLE := 20000        # scene starts the decoy distribution tests roll
+const COUNT_TOLERANCE := 0.01      # absolute, on each count's share (1/15 = 0.0667; about 5.7 standard deviations at this sample size)
+const KIND_TOLERANCE := 0.01       # on each kind's share of all decoys (about 180000 decoys, 10 standard deviations)
+const OUTCOME_TOLERANCE := 0.01    # on the harm share of all decoys
+const OUTCOME_KIND_TOLERANCE := 0.015  # on the harm share within one kind (about 45000 decoys each, 6 standard deviations)
+const LETTER_TOLERANCE := 0.01     # on each jamo's share of all decoys
+const SLOT_TOLERANCE := 0.02       # on how often each slot is used (0.375 expected; 5.9 standard deviations)
+
+
+func test_decoy_roll_stats() -> void:
+	var placement := _new_placement()
+	var jamo := _allowed_letters()
+	var derived := DecoyPlacementScript.target_jamo(_hangul_plants())
+	var same := derived.size() == jamo.size() and jamo.all(func(j): return derived.has(j))
+	print("  jamo of the target words (%d): %s" % [derived.size(), "".join(derived)])
+	check(same and derived.size() == 11 and placement.letters == derived, "the decoy letters are the %d jamo of the six target words, derived from the word data" % derived.size())
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 987654321
+	var counts := {}
+	var kinds := {}
+	var by_kind := {}
+	var harm_by_kind := {}
+	var harm := 0
+	var letters := {}
+	var slot_uses := {}
+	var kind_at_slot := {}
+	var lone := {}      # kind -> the most decoys in one scene made only of that kind
+	var total := 0
+	var in_range := true
+	for n in DECOY_SAMPLE:
+		var decoys: Array = placement.choose(rng)["decoys"]
+		counts[decoys.size()] = int(counts.get(decoys.size(), 0)) + 1
+		in_range = in_range and decoys.size() >= 2 and decoys.size() <= 16
+		var seen_kinds := {}
+		for d in decoys:
+			total += 1
+			kinds[d["kind"]] = int(kinds.get(d["kind"], 0)) + 1
+			by_kind[d["kind"]] = int(by_kind.get(d["kind"], 0)) + 1
+			seen_kinds[d["kind"]] = true
+			if d["outcome"] == "harm":
+				harm += 1
+				harm_by_kind[d["kind"]] = int(harm_by_kind.get(d["kind"], 0)) + 1
+			letters[d["letter"]] = int(letters.get(d["letter"], 0)) + 1
+			slot_uses[d["spot"]] = int(slot_uses.get(d["spot"], 0)) + 1
+			kind_at_slot["%s@%s" % [d["kind"], d["spot"]]] = true
+		if seen_kinds.size() == 1:
+			var only: String = seen_kinds.keys()[0]
+			lone[only] = maxi(int(lone.get(only, 0)), decoys.size())
+	check(in_range and counts.size() == 15, "over %d scene starts every decoy count from 2 to 16 appears and none outside (%d different)" % [DECOY_SAMPLE, counts.size()])
+	var worst := 0.0
+	for c in range(2, 17):
+		worst = maxf(worst, absf(float(counts.get(c, 0)) / DECOY_SAMPLE - 1.0 / 15.0))
+	print("  count: worst share gap %.4f (tolerance %.3f)" % [worst, COUNT_TOLERANCE])
+	check(worst <= COUNT_TOLERANCE, "the count is uniform over 2..16: every share within %.3f of 1/15 (worst %.4f, %d starts)" % [COUNT_TOLERANCE, worst, DECOY_SAMPLE])
+	worst = 0.0
+	for id in DECOY_KIND_IDS:
+		worst = maxf(worst, absf(float(kinds.get(id, 0)) / total - 0.25))
+	print("  kind: worst share gap %.4f (tolerance %.3f), %d decoys" % [worst, KIND_TOLERANCE, total])
+	check(worst <= KIND_TOLERANCE, "each kind is about 25%% of the decoys: within %.3f (worst %.4f, %d decoys)" % [KIND_TOLERANCE, worst, total])
+	check(kind_at_slot.size() == 24 * 4, "every kind appears in every one of the 24 slots at least once (%d of 96 combinations)" % kind_at_slot.size())
+	print("  most decoys in one scene made of one kind: %s" % str(lone))
+	check(DECOY_KIND_IDS.all(func(id): return int(lone.get(id, 0)) >= 4), "scenes where every decoy is one kind are possible, for each kind (at least 4 decoys of one kind alone; the sample has %s)" % str(lone))
+	var harm_share := float(harm) / total
+	print("  outcome: harm %.4f (tolerance %.3f)" % [harm_share, OUTCOME_TOLERANCE])
+	check(absf(harm_share - 0.5) <= OUTCOME_TOLERANCE, "harm and reward are each about 50%%: harm %.4f within %.3f of 0.5 (%d decoys)" % [harm_share, OUTCOME_TOLERANCE, total])
+	for id in DECOY_KIND_IDS:
+		var share := float(harm_by_kind.get(id, 0)) / int(by_kind[id])
+		print("  outcome within %s: harm %.4f" % [id, share])
+		check(absf(share - 0.5) <= OUTCOME_KIND_TOLERANCE, "%s: harm %.4f within %.3f of 0.5, so the outcome does not depend on the kind (%d decoys)" % [id, share, OUTCOME_KIND_TOLERANCE, by_kind[id]])
+	worst = 0.0
+	var letters_ok := letters.keys().all(func(l): return jamo.has(l))
+	for letter in jamo:
+		worst = maxf(worst, absf(float(letters.get(letter, 0)) / total - 1.0 / jamo.size()))
+	check(letters_ok and letters.size() == jamo.size() and worst <= LETTER_TOLERANCE, "every decoy letter is one of the %d target jamo, each used about 1/%d of the time (worst gap %.4f, tolerance %.3f)" % [jamo.size(), jamo.size(), worst, LETTER_TOLERANCE])
+	worst = 0.0
+	for slot in placement.slots:
+		worst = maxf(worst, absf(float(slot_uses.get(slot, 0)) / DECOY_SAMPLE - 9.0 / 24.0))
+	print("  slot use: worst gap %.4f (tolerance %.3f)" % [worst, SLOT_TOLERANCE])
+	check(slot_uses.size() == 24 and worst <= SLOT_TOLERANCE, "each slot is used in about 9/24 of the scenes (worst gap %.4f, tolerance %.3f)" % [worst, SLOT_TOLERANCE])
+	# A seed fixes everything, different seeds differ in count, kinds, outcomes or letters.
+	var a := RandomNumberGenerator.new()
+	var b := RandomNumberGenerator.new()
+	var keys := {}
+	var same_ok := true
+	for seed_value in 500:
+		a.seed = seed_value
+		b.seed = seed_value
+		var first: Array = placement.choose(a)["decoys"]
+		same_ok = same_ok and _layout_key(first) == _layout_key(placement.choose(b)["decoys"])
+		keys[_layout_key(first)] = true
+	check(same_ok, "the same seed reproduces the count, kinds, slots, outcomes and letters exactly")
+	check(keys.size() >= 495, "different seeds differ (%d distinct layouts of 500)" % keys.size())
+	_section_done("test_decoy_roll_stats")
 
 
 func test_chaos_piles_logic() -> void:
@@ -7137,7 +7298,7 @@ func test_chaos_piles_logic() -> void:
 func _world_snapshot(map: Node3D) -> String:
 	var parts: Array[String] = []
 	for plant in map.plants:
-		parts.append("%s@%.3f,%.3f" % [plant.kind_id, plant.position.x, plant.position.z])
+		parts.append("%s@%.3f,%.3f:%s:%s" % [plant.kind_id, plant.position.x, plant.position.z, plant.outcome, plant.letter])
 	for pile in map.piles:
 		parts.append("pile@%.3f,%.3f" % [pile.position.x, pile.position.z] if pile != null else "pile-gone")
 	return ";".join(parts)
@@ -7167,7 +7328,7 @@ func test_placement_timing() -> void:
 	var map: Node3D = await _seeded_map(31337)
 	var roll := _offline_roll(31337, placement, piles)
 	check(map.placement_seed == 31337 and map.placement_rolls == 1, "the seed override fixes the seed and the roll happens once")
-	check(_layout_key(map.layout["positions"]) == _layout_key(roll["layout"]["positions"]) and map.layout["source"] == "random", "the scene's decoy layout is the roll of its seed")
+	check(_layout_key(map.layout["decoys"]) == _layout_key(roll["layout"]["decoys"]) and map.layout["source"] == "random", "the scene's decoy layout is the roll of its seed")
 	check(str(map.pile_roll) == str(roll["piles"]), "the scene's piles are the roll of its seed")
 	var spots_ok := true
 	for i in map.plants.size():
@@ -7197,7 +7358,7 @@ func test_placement_timing() -> void:
 		add_child(m)
 		seeds[m.placement_seed] = true
 		var expected := _offline_roll(m.placement_seed, placement, piles)
-		check(_layout_key(m.layout["positions"]) == _layout_key(expected["layout"]["positions"]) and str(m.pile_roll) == str(expected["piles"]), "random start %d: the layout is the roll of the seed it printed (%d)" % [n, m.placement_seed])
+		check(_layout_key(m.layout["decoys"]) == _layout_key(expected["layout"]["decoys"]) and str(m.pile_roll) == str(expected["piles"]), "random start %d: the layout is the roll of the seed it printed (%d)" % [n, m.placement_seed])
 		m.free()
 	check(seeds.size() == 6, "six scene starts without an override used six different seeds")
 
@@ -7223,7 +7384,7 @@ func test_placement_timing() -> void:
 		if fresh != doomed and is_instance_valid(fresh) and fresh.has_method("picks_allowed"):
 			check(fresh.placement_rolls == 1 and fresh.placement_seed != first_seed, "%s: the new scene rolled once, with a new seed" % path)
 			var again := _offline_roll(fresh.placement_seed, placement, piles)
-			check(_layout_key(fresh.layout["positions"]) == _layout_key(again["layout"]["positions"]) and str(fresh.pile_roll) == str(again["piles"]), "%s: and its layout is the roll of that seed" % path)
+			check(_layout_key(fresh.layout["decoys"]) == _layout_key(again["layout"]["decoys"]) and str(fresh.pile_roll) == str(again["piles"]), "%s: and its layout is the roll of that seed" % path)
 			fresh.set_process(false)
 			fresh.free()
 		get_tree().current_scene = original_scene
@@ -7234,7 +7395,7 @@ func test_placement_timing() -> void:
 		Foraging.legacy_layout = false
 		Foraging.seed_override = 2024
 		var doomed: Node3D = await _current_map(2024)
-		var first_key := _layout_key(doomed.layout["positions"])
+		var first_key := _layout_key(doomed.layout["decoys"])
 		var first_piles := str(doomed.pile_roll)
 		check(doomed.placement_seed == 2024, "(setup) %s: the override is in force" % path)
 		Foraging.seed_override = 2024  # a reload reads it again
@@ -7251,7 +7412,7 @@ func test_placement_timing() -> void:
 		var fresh: Node = get_tree().current_scene
 		check(fresh != doomed and fresh.has_method("picks_allowed"), "(setup) %s: reloaded with the override on" % path)
 		if fresh != doomed and fresh.has_method("picks_allowed"):
-			check(fresh.placement_seed == 2024 and _layout_key(fresh.layout["positions"]) == first_key and str(fresh.pile_roll) == first_piles, "%s: with --placement-seed the restarted scene has the same layout and piles" % path)
+			check(fresh.placement_seed == 2024 and _layout_key(fresh.layout["decoys"]) == first_key and str(fresh.pile_roll) == first_piles, "%s: with --placement-seed the restarted scene has the same layout and piles" % path)
 			fresh.set_process(false)
 			fresh.free()
 		get_tree().current_scene = original_scene
@@ -7261,7 +7422,7 @@ func test_placement_timing() -> void:
 	var live: Dictionary = Content.mountain("hallasan")["foraging"]
 	var saved_place = live["decoy_placement"]
 	var saved_chaos = live["chaos_piles"]
-	live["decoy_placement"] = {"pools": {}}
+	live["decoy_placement"] = {"slots": []}
 	live["chaos_piles"] = {"slots": []}
 	var broken: Node3D = await _seeded_map(5)
 	var same := true
@@ -7279,62 +7440,687 @@ func test_placement_timing() -> void:
 	_section_done("test_placement_timing")
 
 
+func test_legacy_default() -> void:
+	var source := FileAccess.get_file_as_string("res://scenes/foraging/foraging.gd")
+	check(source.contains("static var legacy_layout := false"), "legacy_layout is false by default in the game's code")
+	var setters := _scripts_containing("legacy_layout = true", ["res://scenes", "res://scripts"])
+	check(setters.is_empty(), "nothing in the game's scenes or scripts sets legacy_layout (%s)" % str(setters))
+	# The scene, loaded normally (no seed, the flag as the 7d sections leave it): the random layout.
+	Foraging.legacy_layout = false
+	Foraging.seed_override = -1
+	GameState.new_hike()
+	GameState.controlled = "fernanda"
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	var n: int = map.layout["decoys"].size()
+	check(not Foraging.legacy_layout and map.layout["source"] == "random", "a normal scene load runs with legacy_layout false: the layout is rolled, not the legacy one (source '%s')" % map.layout["source"])
+	check(n >= 2 and n <= 16 and map.plants.size() == 28 + n, "and it has 2 to 16 decoys (%d) on top of the 28 targets" % n)
+	check(map.decoy_placement.is_valid() and map.placement_rolls == 1 and map.pile_roll.size() == map.piles.size(), "and rolled once, with piles from the chaos pile roll")
+	map.free()
+	GameState.new_hike()
+	_section_done("test_legacy_default")
+
+
+## The .gd files under `roots` whose text contains `needle`.
+func _scripts_containing(needle: String, roots: Array) -> Array[String]:
+	var found: Array[String] = []
+	var todo: Array = roots.duplicate()
+	while not todo.is_empty():
+		var dir_path: String = todo.pop_back()
+		var dir := DirAccess.open(dir_path)
+		if dir == null:
+			continue
+		for sub in dir.get_directories():
+			todo.append(dir_path + "/" + sub)
+		for file in dir.get_files():
+			if file.ends_with(".gd") and FileAccess.get_file_as_string(dir_path + "/" + file).contains(needle):
+				found.append(dir_path + "/" + file)
+	return found
+
+
 func test_decoys_at_any_position() -> void:
 	var data_placed: Array = _placed()
 	var kinds := {}
 	for kind in _hangul_plants():
 		kinds[kind["id"]] = kind
+	var data_targets: Array = data_placed.filter(func(e): return kinds[e["kind"]]["kind"] == "target")
+	var placement := _new_placement()
+	var piles := _new_piles()
 	for seed_value in [3, 11, 4242]:
+		var decoys: Array = _offline_roll(seed_value, placement, piles)["layout"]["decoys"]
 		var map: Node3D = await _seeded_map(seed_value, {"ddeok": 1})
 		var tag := "seed %d: " % seed_value
-		var letters_ok: bool = map.plants.size() == data_placed.size()
-		var names_ok := true
-		var targets_ok := true
-		for i in data_placed.size():
-			var plant: Node3D = map.plants[i]
-			letters_ok = letters_ok and plant.letter == String(data_placed[i].get("letter", "")) and plant.kind_id == data_placed[i]["kind"]
-			if plant.kind == "target":
-				names_ok = names_ok and plant.tooltip_text() == kinds[plant.kind_id]["hover_name"]
-				targets_ok = targets_ok and Vector2(plant.position.x, plant.position.z).is_equal_approx(Vector2(float(data_placed[i]["x"]), float(data_placed[i]["z"])))
-			else:
-				names_ok = names_ok and plant.tooltip_text() == "???"
-		check(letters_ok, tag + "every plant keeps its kind and letter, in data order")
-		check(names_ok and targets_ok, tag + "decoys hover as ???, targets by name and at their data positions")
-		check(map.picking.plant_count() == 36 and map.picking.letters_left() == 36, tag + "Picking has the same 36 letter plants")
-		var decoy_ok := true
-		for i in data_placed.size():
-			if map.plants[i].kind != "target":
-				decoy_ok = decoy_ok and map.picking.nearest_pickable(Vector2(map.plants[i].position.x, map.plants[i].position.z)) >= 0
-		check(decoy_ok, tag + "Picking knows each decoy at its rolled position")
-		# Reward decoy: the weighted roll, the backpack, the label, the steam.
+		check(map.plants.size() == 28 + decoys.size() and map.picking.plant_count() == 28 + decoys.size() and map.picking.letters_left() == 28 + decoys.size(), tag + "28 targets and the %d rolled decoys, every one with a letter in Picking" % decoys.size())
+		var target_plants: Array = map.plants.filter(func(p): return p.kind == "target")
+		var decoy_plants: Array = map.plants.filter(func(p): return p.kind != "target")
+		var targets_ok: bool = target_plants.size() == data_targets.size()
+		for i in target_plants.size():
+			var plant: Node3D = target_plants[i]
+			targets_ok = targets_ok and plant.kind_id == data_targets[i]["kind"] and plant.letter == data_targets[i]["letter"] and Vector2(plant.position.x, plant.position.z).is_equal_approx(Vector2(float(data_targets[i]["x"]), float(data_targets[i]["z"]))) and plant.tooltip_text() == kinds[plant.kind_id]["hover_name"]
+		check(targets_ok, tag + "the targets keep their kind, letter, data position and hover name")
+		var decoys_ok: bool = decoy_plants.size() == decoys.size()
+		for i in decoy_plants.size():
+			var plant: Node3D = decoy_plants[i]
+			decoys_ok = decoys_ok and plant.kind_id == decoys[i]["kind"] and plant.letter == decoys[i]["letter"] and plant.outcome == decoys[i]["outcome"] and plant.kind == "decoy_" + decoys[i]["outcome"] and Vector2(plant.position.x, plant.position.z).is_equal_approx(decoys[i]["spot"]) and plant.tooltip_text() == "???"
+			decoys_ok = decoys_ok and map.picking.nearest_pickable(decoys[i]["spot"]) >= 0
+		check(decoys_ok, tag + "each decoy has its rolled kind, letter, outcome and slot, hovers as ???, and Picking knows it")
+		# Reward outcome: the weighted roll, the backpack, the label, the steam.
 		var rng := ForcedRng.new()
 		rng.value = 4  # gongjindan
 		map.reward_rng = rng
-		var reward := _plant_of(map, "decoy_reward", 0)
+		var reward := _first_decoy_with(map, "reward")
 		var puffs := _particle_count(map)
-		map.pick_plant(reward)
-		check(GameState.inventory.snapshot() == {"ddeok": 1, "gongjindan": 1} and reward.letter == "" and _particle_count(map) == puffs + 1, tag + "a reward decoy still gives its rolled item, loses its letter and steams")
-		check((map.find_child("FloatingLabel", false, false) as Label3D) != null and map.picking.basket.is_empty(), tag + "with its floating label and nothing in the basket")
-		# Harm decoy: half a heart off the picker, the gore beat, the steam.
+		check(reward != null, tag + "(setup) the roll has a reward decoy")
+		if reward != null:
+			map.pick_plant(reward)
+			check(GameState.inventory.snapshot() == {"ddeok": 1, "gongjindan": 1} and reward.letter == "" and _particle_count(map) == puffs + 1 and not map.is_gore_playing(), tag + "a reward decoy gives its rolled item, loses its letter and steams, with no gore")
+			check((map.find_child("FloatingLabel", false, false) as Label3D) != null and map.picking.basket.is_empty(), tag + "with its floating label and nothing in the basket")
+		# Harm outcome: half a heart off the picker, the kind's gore beat, the steam.
 		var hearts: int = GameState.heart_units["fernanda"]
-		var harm := _plant_of(map, "decoy_harm", 0)
-		puffs = _particle_count(map)
-		map.pick_plant(harm)
-		check(GameState.heart_units["fernanda"] == hearts - 1 and GameState.heart_units["nestor"] == hearts, tag + "a harm decoy still costs the picker half a heart")
-		check(map.is_gore_playing() and _particle_count(map) == puffs + 1 and harm.letter == "", tag + "and plays its gore and steam")
-		_finish_gore(map)
+		var harm := _first_decoy_with(map, "harm")
+		check(harm != null, tag + "(setup) the roll has a harm decoy")
+		if harm != null:
+			puffs = _particle_count(map)
+			map.pick_plant(harm)
+			check(GameState.heart_units["fernanda"] == hearts - 1 and GameState.heart_units["nestor"] == hearts, tag + "a harm decoy costs the picker half a heart")
+			check(map.is_gore_playing() and map.decoy_gore.gore_id == kinds[harm.kind_id]["gore"] and _particle_count(map) == puffs + 1 and harm.letter == "", tag + "and plays its kind's gore and steam")
+			_finish_gore(map)
 		map.free()
 		get_tree().paused = false
 	GameState.new_hike()
 	_section_done("test_decoys_at_any_position")
 
 
+func _first_decoy_with(map: Node3D, outcome: String) -> Node3D:
+	for plant in map.plants:
+		if plant.outcome == outcome:
+			return plant
+	return null
+
+
+const GORE_OF := {"keuncheonnamseong": "face_swell_pop", "butsunnamu": "convulse_eyes_pop", "norugui": "deer_ears_rip", "deulchuknamu": "deulssuk_drunk"}
+
+
+## Every kind with either outcome: a reward pick gives an item and no damage, a harm pick damages the picker only and plays that kind's gore.
+func test_decoy_outcome_picks() -> void:
+	for kind_id in DECOY_KIND_IDS:
+		var seed_reward := _seed_with_decoy(kind_id, "reward")
+		var seed_harm := _seed_with_decoy(kind_id, "harm")
+		check(seed_reward > 0 and seed_harm > 0, "(setup) %s: seeds with a reward and a harm decoy of it exist (%d, %d)" % [kind_id, seed_reward, seed_harm])
+		var map: Node3D = await _seeded_map(seed_reward, {"ddeok": 2})
+		var plant := _decoy_of(map, kind_id, "reward")
+		var rng := ForcedRng.new()
+		rng.value = 4  # gongjindan
+		map.reward_rng = rng
+		var hearts: Dictionary = GameState.heart_units.duplicate()
+		var puffs := _particle_count(map)
+		map.pick_plant(plant)
+		var label := map.find_child("FloatingLabel", false, false) as Label3D
+		check(GameState.inventory.snapshot() == {"ddeok": 2, "gongjindan": 1} and GameState.heart_units == hearts, "%s, reward outcome: an item in the backpack and no damage" % kind_id)
+		check(not map.decoy_gore.active and not map.is_gore_playing() and map.picks_allowed() and _particle_count(map) == puffs + 1 and plant.letter == "", "%s, reward outcome: the steam, no gore, nothing blocked, the letter gone" % kind_id)
+		check(label != null and label.text.begins_with("+1 "), "%s, reward outcome: a floating '+1 ...' label" % kind_id)
+		map.free()
+		get_tree().paused = false
+		for controlled in ["fernanda", "nestor"]:
+			var other: String = GameState.partner_of(controlled)
+			map = await _seeded_map(seed_harm, {"ddeok": 2}, controlled)
+			plant = _decoy_of(map, kind_id, "harm")
+			var start := GameState.max_units()
+			puffs = _particle_count(map)
+			var floats := map.find_children("*", "Label3D", false, false).size()
+			map.pick_plant(plant)
+			var tag := "%s, harm outcome, %s picks: " % [kind_id, controlled]
+			check(GameState.heart_units[controlled] == start - 1 and GameState.heart_units[other] == start, tag + "half a heart off the picker and nothing off the other")
+			check(map.decoy_gore.active and map.decoy_gore.gore_id == GORE_OF[kind_id] and map.decoy_gore.who == controlled, tag + "the kind's own gore (%s) plays on the picker" % GORE_OF[kind_id])
+			check(_particle_count(map) == puffs + 1 and plant.letter == "" and GameState.inventory.snapshot() == {"ddeok": 2} and map.find_children("*", "Label3D", false, false).size() == floats, tag + "the steam, the letter gone, no item and no reward label")
+			_finish_gore(map)
+			map.free()
+			get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_decoy_outcome_picks")
+
+
+const DecoyGoreFxScript := preload("res://scenes/foraging/decoy_gore_fx.gd")
+const NEW_GORE := [["norugui", "deer_ears_rip", "노루 귀"], ["deulchuknamu", "deulssuk_drunk", "들쭉술"]]
+
+
+func test_new_gore_data() -> void:
+	var cfg := _config()
+	var table: Dictionary = cfg["decoy_gore"]
+	var kinds: Array = cfg["plants"]["kinds"]
+	check(DecoyGoreScript.problem_with(kinds, table) == "", "the shipped decoy_gore data validates with all four gore ids")
+	var ids := {}
+	for kind in kinds:
+		if kind["kind"] == "decoy":
+			ids[kind["gore"]] = true
+			check(table.has(kind["gore"]) and kind["gore"] == GORE_OF[kind["id"]], "%s has exactly one gore id, %s, and it exists" % [kind["id"], kind["gore"]])
+	check(ids.size() == 4, "the four decoy kinds have four different gore ids")
+	for pair in NEW_GORE:
+		var entry: Dictionary = table[pair[1]]
+		check(float(entry["duration"]) > 0.0 and float(entry["pop_seconds"]) > 0.0 and float(entry["pop_seconds"]) <= float(entry["duration"]), "%s has a positive duration and a pop inside it" % pair[1])
+		check(absf(float(entry["duration"]) - 1.6) <= 0.6, "%s lasts about the existing 1.6 s (%.1f s)" % [pair[1], float(entry["duration"])])
+		check(entry["caption_ko"] == pair[2], "%s has the caption '%s'" % [pair[1], pair[2]])
+	for id in ["deer_ears_rip"]:
+		var all_there := true
+		for key in ["head_height", "head_radius", "ear_length", "ear_width", "ear_color", "ear_inner_color", "grow_fraction", "ear_tilt_degrees", "twitch_degrees", "twitch_hz", "swivel_degrees", "pop_blood_strength", "hop_speed", "hop_height", "hop_seconds", "gravity"]:
+			all_there = all_there and table[id].has(key)
+		check(all_there, "deer_ears_rip has every number its look needs, in data")
+	var drunk_there := true
+	for key in ["head_height", "stagger_radius", "wobble_degrees", "wobble_hz", "hiccups", "hiccup_height", "hiccup_seconds", "fountain_particles", "fountain_color", "fountain_size", "fountain_speed", "fountain_lift", "fountain_forward", "fountain_seconds", "gravity", "puddle_radius", "puddle_color", "puddle_fade"]:
+		drunk_there = drunk_there and table["deulssuk_drunk"].has(key)
+	check(drunk_there, "deulssuk_drunk has every number its look needs, in data")
+	check(not table["face_swell_pop"].has("caption_ko") and not table["convulse_eyes_pop"].has("caption_ko"), "the two existing gores have no caption")
+	check(table["show_captions"] == true, "foraging.decoy_gore.show_captions is true")
+	check(DecoyGoreScript.caption(table, "deer_ears_rip") == "노루 귀" and DecoyGoreScript.caption(table, "deulssuk_drunk") == "들쭉술" and DecoyGoreScript.caption(table, "face_swell_pop") == "" and DecoyGoreScript.caption(table, "convulse_eyes_pop") == "", "caption() gives the two new captions and none for the old ones")
+	var off := _table_copy()
+	off["show_captions"] = false
+	check(["deer_ears_rip", "deulssuk_drunk", "face_swell_pop", "convulse_eyes_pop", "nothing"].all(func(id): return DecoyGoreScript.caption(off, id) == ""), "with show_captions false there is no caption at all")
+	check(DecoyGoreScript.problem_with(kinds, off) == "", "and that table is valid")
+	# Bad data is a clear message.
+	var bad := _table_copy()
+	bad["deer_ears_rip"]["caption_ko"] = ""
+	var msg: String = DecoyGoreScript.problem_with(kinds, bad)
+	check(msg.contains("deer_ears_rip") and msg.contains("caption_ko"), "an empty caption_ko is rejected (%s)" % msg)
+	bad = _table_copy()
+	bad["deulssuk_drunk"]["caption_ko"] = 5
+	check(DecoyGoreScript.problem_with(kinds, bad).contains("caption_ko"), "a caption_ko that is not a string is rejected")
+	bad = _table_copy()
+	bad["show_captions"] = "yes"
+	check(DecoyGoreScript.problem_with(kinds, bad).contains("show_captions"), "a show_captions that is not true or false is rejected")
+	bad = _table_copy()
+	bad["caption_style"] = 3
+	check(DecoyGoreScript.problem_with(kinds, bad).contains("caption_style"), "a caption_style that is not a dictionary is rejected")
+	var bad_kinds := _kinds_copy()
+	_kind_in(bad_kinds, "deulchuknamu").erase("gore")
+	msg = DecoyGoreScript.problem_with(bad_kinds, table)
+	check(msg.contains("deulchuknamu") and msg.contains("no gore id"), "a decoy kind without a gore id is rejected (%s)" % msg)
+	bad_kinds = _kinds_copy()
+	_kind_in(bad_kinds, "norugui")["gore"] = "missing_gore"
+	check(DecoyGoreScript.problem_with(bad_kinds, table).contains("missing_gore"), "an unknown gore id on a new kind is rejected")
+	bad_kinds = _kinds_copy()
+	_kind_in(bad_kinds, "ma")["gore"] = "deer_ears_rip"
+	check(DecoyGoreScript.problem_with(bad_kinds, table).contains("gore field"), "a gore field on a target is rejected")
+	bad = _table_copy()
+	bad["deulssuk_drunk"]["pop_seconds"] = 9.0
+	check(DecoyGoreScript.problem_with(kinds, bad).contains("pop_seconds"), "a pop after the end of a new beat is rejected")
+	bad = _table_copy()
+	bad["deer_ears_rip"].erase("duration")
+	check(DecoyGoreScript.problem_with(kinds, bad).contains("duration"), "a new beat without a duration is rejected")
+	_section_done("test_new_gore_data")
+
+
+## The unit vector (over x, z) from `spot` toward the nearest edge of the walkable map.
+func _edge_direction(map: Node3D, spot: Vector3) -> Vector3:
+	var rect: Rect2 = map.walk_bounds()
+	var edges := [[spot.x - rect.position.x, Vector3(-1, 0, 0)], [rect.end.x - spot.x, Vector3(1, 0, 0)], [spot.z - rect.position.y, Vector3(0, 0, -1)], [rect.end.y - spot.z, Vector3(0, 0, 1)]]
+	var best: Array = edges[0]
+	for edge in edges:
+		if edge[0] < best[0]:
+			best = edge
+	return best[1]
+
+
+func _drive_gore_until(map: Node3D, seconds: float) -> void:
+	var ticks := 0
+	while map.decoy_gore.active and map.decoy_gore.elapsed < seconds and ticks < 2000:
+		map.tick_gore(1.0 / 60.0)
+		ticks += 1
+
+
+func test_new_gore_scene() -> void:
+	var table: Dictionary = _config()["decoy_gore"]
+	# ---- deer_ears_rip ----
+	var entry: Dictionary = table["deer_ears_rip"]
+	var tag := "deer_ears_rip: "
+	var map: Node3D = await _seeded_map(_seed_with_decoy("norugui", "harm"), {"ddeok": 1})
+	var picker: Node3D = map.travelers["fernanda"]
+	var other: Node3D = map.travelers["nestor"]
+	picker.global_position = _ground_point(map, 30.0, 0.0)
+	map.update_camera(0.0, true)
+	var base_pos: Vector3 = picker.global_position
+	var base_xform: Transform3D = picker.global_transform
+	var base_color: Color = picker.body_color()
+	var other_xform: Transform3D = other.global_transform
+	var plant := _decoy_of(map, "norugui", "harm")
+	var start := GameState.max_units()
+	map.pick_plant(plant)
+	check(GameState.heart_units["fernanda"] == start - 1 and GameState.heart_units["nestor"] == start, tag + "half a heart off the picker only")
+	check(map.decoy_gore.active and map.decoy_gore.gore_id == "deer_ears_rip" and map.decoy_gore.who == "fernanda" and _particle_count(map) == 1, tag + "the beat starts on the picker, with only the steam so far")
+	var fx := map.find_child("DecoyGoreFx", false, false) as Node3D
+	var left := fx.find_child("EarLeft", false, false) as Node3D
+	var right := fx.find_child("EarRight", false, false) as Node3D
+	check(left != null and right != null and fx.find_children("Ear*", "Node3D", false, false).size() == 2, tag + "two ears")
+	var fur := left.find_child("Fur", false, false) as MeshInstance3D
+	var lining := left.find_child("Lining", false, false) as MeshInstance3D
+	var fur_mesh := fur.mesh as CylinderMesh
+	check(fur_mesh.top_radius == 0.0 and fur_mesh.height >= 1.5 * fur_mesh.bottom_radius * 2.0, tag + "each ear is elongated and pointed (%.2f m long, %.2f m wide)" % [fur_mesh.height, fur_mesh.bottom_radius * 2.0])
+	var fur_color: Color = fur_mesh.material.albedo_color
+	var lining_color: Color = (lining.mesh as CylinderMesh).material.albedo_color
+	check(fur_color.r > fur_color.b and lining_color.get_luminance() > fur_color.get_luminance(), tag + "brown fur with a lighter inner colour")
+	_drive_gore_until(map, float(entry["pop_seconds"]) * 0.1)
+	var small: float = left.scale.x
+	_drive_gore_until(map, float(entry["pop_seconds"]) * 0.5)
+	check(small < 0.6 and left.scale.x > 0.99 and right.scale.x > 0.99, tag + "the ears grow out of the head (scale %.2f, then %.2f)" % [small, left.scale.x])
+	var head_y := base_pos.y + float(entry["head_height"])
+	check(absf(left.global_position.x - (base_pos.x - float(entry["head_radius"]))) < 0.01 and absf(right.global_position.x - (base_pos.x + float(entry["head_radius"]))) < 0.01 and absf(left.global_position.y - head_y) < 0.01 and absf(left.global_position.z - base_pos.z) < 0.01, tag + "one on each side of the head")
+	check(left.rotation.z > 0.1 and right.rotation.z < -0.1, tag + "leaning outward")
+	var lowest := INF
+	var highest := -INF
+	for i in 15:
+		map.tick_gore(1.0 / 60.0)
+		lowest = minf(lowest, left.rotation.z)
+		highest = maxf(highest, left.rotation.z)
+	check(highest - lowest > 0.04, tag + "the ears twitch (%.3f rad of movement)" % (highest - lowest))
+	var swivel := deg_to_rad(float(entry["swivel_degrees"]))
+	var before_swivel: float = absf(left.rotation.y)
+	while map.decoy_gore.build_up() < 0.97:
+		map.tick_gore(1.0 / 60.0)
+	check(absf(left.rotation.y) > 0.8 * swivel and absf(left.rotation.y) > before_swivel and is_equal_approx(left.rotation.y, right.rotation.y), tag + "and swivel toward something offscreen (%.0f degrees of %.0f)" % [rad_to_deg(absf(left.rotation.y)), float(entry["swivel_degrees"])])
+	check(_particle_count(map) == 1 and picker.global_position == base_pos, tag + "no blood yet, the picker is where it was")
+	var dir := _edge_direction(map, base_pos)
+	while not map.decoy_gore.popped:
+		map.tick_gore(1.0 / 60.0)
+	var bursts := map.find_children("*", "CPUParticles3D", false, false)
+	check(bursts.size() == 3, tag + "the pop adds a blood burst for each ear (%d particle nodes with the steam)" % bursts.size())
+	var xs: Array = bursts.slice(1).map(func(b): return b.global_position.x)
+	check(xs.size() == 2 and minf(xs[0], xs[1]) < base_pos.x - 0.1 and maxf(xs[0], xs[1]) > base_pos.x + 0.1, tag + "from both sides of the head")
+	var popped_at: Array = [left.global_position, right.global_position]
+	var floor_of := func(ear: Node3D) -> float: return map.terrain.height_at(ear.global_position.x) + float(entry["ear_width"]) * 0.5
+	var touched := [false, false]
+	var rose_again := [false, false]
+	var lowest_y := INF
+	var ears := [left, right]
+	while map.decoy_gore.active and map.decoy_gore.elapsed < float(entry["pop_seconds"]) + float(entry["hop_seconds"]) - 0.05:
+		map.tick_gore(1.0 / 60.0)
+		for i in 2:
+			var y: float = ears[i].global_position.y
+			var floor_y: float = floor_of.call(ears[i])
+			lowest_y = minf(lowest_y, y - floor_y)
+			if y <= floor_y + 0.01:
+				touched[i] = true
+			elif touched[i] and y > floor_y + 0.05:
+				rose_again[i] = true
+	check(lowest_y >= -0.001, tag + "the ears never go through the ground")
+	check(touched[0] and touched[1] and rose_again[0] and rose_again[1], tag + "they land and hop away in small arcs")
+	var moved_ok := true
+	for i in 2:
+		moved_ok = moved_ok and (ears[i].global_position - popped_at[i]).dot(dir) > 0.3
+	check(moved_ok, tag + "toward the nearest edge of the map (direction %s)" % str(dir))
+	_drive_gore_until(map, float(entry["pop_seconds"]) + float(entry["hop_seconds"]) + 0.02)
+	check(map.decoy_gore.active and not left.visible and not right.visible, tag + "and vanish")
+	check(other.global_transform == other_xform, tag + "the other traveler is untouched")
+	_finish_gore(map)
+	check(not map.decoy_gore.active and map.find_child("DecoyGoreFx", false, false) == null and _particle_count(map) == 1, tag + "the beat ends: no ears, no blood, only the steam")
+	check(picker.global_transform == base_xform and picker.body_color() == base_color and picker.scale == Vector3.ONE, tag + "the picker's head is as before: no leftover ears, same place, rotation, scale and tint")
+	check(map.picks_allowed() and plant.letter == "" and plant.scale == Vector3.ONE, tag + "play resumes, the plant is unchanged")
+	map.free()
+	get_tree().paused = false
+
+	# ---- deulssuk_drunk ----
+	entry = table["deulssuk_drunk"]
+	tag = "deulssuk_drunk: "
+	var spots := {"mid": Vector2(30.0, 0.0), "far left corner": Vector2(0.6, -11.4), "near right": Vector2(62.5, 10.0)}
+	for label in spots:
+		map = await _seeded_map(_seed_with_decoy("deulchuknamu", "harm"), {"ddeok": 1})
+		picker = map.travelers["fernanda"]
+		other = map.travelers["nestor"]
+		var spot: Vector2 = spots[label]
+		picker.global_position = _ground_point(map, spot.x, minf(spot.y, map.near_limit_at(spot.x) - 0.1))
+		map.update_camera(0.0, true)
+		base_pos = picker.global_position
+		base_xform = picker.global_transform
+		base_color = picker.body_color()
+		other_xform = other.global_transform
+		plant = _decoy_of(map, "deulchuknamu", "harm")
+		var t: String = tag + label + ": "
+		var boxes := _prop_boxes(map)
+		map.pick_plant(plant)
+		check(GameState.heart_units["fernanda"] == GameState.max_units() - 1 and map.decoy_gore.active and map.decoy_gore.gore_id == "deulssuk_drunk", t + "half a heart off the picker and the beat starts")
+		fx = map.find_child("DecoyGoreFx", false, false) as Node3D
+		var radius: float = fx._stagger_radius
+		if label == "mid":
+			check(radius > 0.3, t + "there is room to stagger round a circle (radius %.2f m)" % radius)
+		var all_walkable := true
+		var clear_of_props := true
+		var farthest := 0.0
+		var bobs := 0
+		var in_bob := false
+		var wobble := 0.0
+		var base_z := base_xform.basis.get_euler().z
+		while not map.decoy_gore.popped:
+			map.tick_gore(1.0 / 60.0)
+			var here := Vector2(picker.global_position.x, picker.global_position.z)
+			var at_start := here.is_equal_approx(Vector2(base_pos.x, base_pos.z))  # (props have no collision: the picker may start inside one)
+			all_walkable = all_walkable and (map._gore_walkable(here) or (radius == 0.0 and at_start))
+			for box: AABB in boxes:
+				clear_of_props = clear_of_props and (radius == 0.0 or not Rect2(box.position.x, box.position.z, box.size.x, box.size.z).grow(0.35).has_point(here))
+			farthest = maxf(farthest, here.distance_to(Vector2(base_pos.x, base_pos.z)))
+			var bob: float = picker.global_position.y - map.terrain.height_at(picker.global_position.x)
+			if bob > 0.03 and not in_bob:
+				bobs += 1
+			in_bob = bob > 0.03
+			wobble = maxf(wobble, absf(picker.rotation.z - base_z))
+		check(all_walkable and clear_of_props, t + "the stagger stays inside the walk limits and off every prop")
+		check((radius == 0.0 and farthest < 0.01) or (radius > 0.0 and absf(farthest - 2.0 * radius) < 0.05), t + "the picker staggers round the circle (%.2f m from the start at most, radius %.2f)" % [farthest, radius])
+		check(bobs == int(entry["hiccups"]), t + "it hiccups %d times (%d bobs)" % [int(entry["hiccups"]), bobs])
+		check(wobble > 0.05, t + "and wobbles (%.2f rad)" % wobble)
+		check(picker.global_position.is_equal_approx(base_pos), t + "the picker is back at its start position at the pop")
+		var fountain := fx.find_child("Fountain", false, false) as CPUParticles3D
+		var puddle := fx.find_child("Puddle", false, false) as MeshInstance3D
+		check(fountain != null and fountain.emitting and fountain.amount == int(entry["fountain_particles"]), t + "a fountain starts at the pop")
+		if fountain != null:
+			var color: Color = fountain.color
+			check(color.r > color.g and color.b > color.g, t + "it is purple")
+			check(fountain.direction.y > 0.0 and fountain.direction.z > 0.0 and fountain.gravity.y < 0.0, t + "it arcs up and toward the camera, then falls under gravity")
+			check(fountain.global_position.y > base_pos.y + 1.0, t + "out of the mouth, not the feet")
+		_drive_gore_until(map, float(entry["pop_seconds"]) + float(entry["fountain_seconds"]) + 0.05)
+		check(fountain != null and not fountain.emitting, t + "the fountain stops after fountain_seconds")
+		var ground_y: float = map.terrain.height_at(puddle.global_position.x)
+		check(puddle != null and absf(puddle.global_position.y - (ground_y + 0.03)) < 0.01 and puddle.global_position.z > base_pos.z + 0.5, t + "a puddle lies on the ground where the arc lands, toward the camera")
+		_drive_gore_until(map, float(entry["pop_seconds"]) + 0.9)
+		check(puddle.scale.x > 0.99, t + "it has spread")
+		while map.decoy_gore.active and map.decoy_gore.elapsed < float(entry["duration"]) - 0.02:
+			map.tick_gore(1.0 / 60.0)
+		check(((puddle.mesh as CylinderMesh).material as StandardMaterial3D).albedo_color.a < 0.1 , t + "and fades by the end")
+		check(picker.global_position.is_equal_approx(base_pos), t + "the picker ends the beat where it started")
+		check(other.global_transform == other_xform, t + "the other traveler is untouched")
+		_finish_gore(map)
+		check(map.find_child("DecoyGoreFx", false, false) == null and _particle_count(map) == 1, t + "nothing is left: no fountain, no puddle, only the steam")
+		check(picker.global_transform == base_xform and picker.body_color() == base_color and picker.scale == Vector3.ONE and map.picks_allowed(), t + "the picker is exactly as before")
+		map.free()
+		get_tree().paused = false
+	# With no walkable room at all the picker wobbles on the spot.
+	map = await _seeded_map(_seed_with_decoy("deulchuknamu", "harm"), {})
+	picker = map.travelers["fernanda"]
+	base_pos = picker.global_position
+	var solo := DecoyGoreFxScript.new()
+	map.add_child(solo)
+	solo.setup(picker, "deulssuk_drunk", entry, map._blood, Color.RED, {"walkable": func(_p): return false})
+	var stayed := true
+	for i in 40:
+		solo.advance(1.0 / 60.0, float(i) / 40.0)
+		stayed = stayed and Vector2(picker.global_position.x, picker.global_position.z).is_equal_approx(Vector2(base_pos.x, base_pos.z))
+	check(solo._stagger_radius == 0.0 and stayed, tag + "where no circle fits the picker stays on the spot instead of walking into a prop or off the map")
+	solo.finish()
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_new_gore_scene")
+
+
+func _pick_new_harm(map: Node3D, kind_id: String) -> Node3D:
+	var plant := _decoy_of(map, kind_id, "harm")
+	map.pick_plant(plant)
+	return plant
+
+
+## The two new beats go through the same gating, lethal ordering and restart cleanup as the old ones.
+func test_new_gore_flow() -> void:
+	for pair in NEW_GORE:
+		var kind_id: String = pair[0]
+		var seed_value := _seed_with_decoy(kind_id, "harm")
+		var tag: String = pair[1] + ": "
+		# Gating while the beat plays.
+		var map: Node3D = await _seeded_map(seed_value, {"ddeok": 1})
+		_pick_new_harm(map, kind_id)
+		var live := _plant_of(map, "target", 0)
+		var player_pos: Vector3 = map.player.global_position
+		check(not map.picks_allowed() and not map.pick_nearest(), tag + "no pick during the beat")
+		map.pick_plant(live)
+		check(live.letter != "" and map.picking.basket.is_empty(), tag + "pick_plant takes nothing")
+		check(not map.click(Vector2(640, 360)) and not map.open_spelling("ma") and not map.open_pause_menu() and not map.open_backpack() and not get_tree().paused, tag + "no click-walk, spelling view, pause menu or backpack")
+		map.step(Vector2.RIGHT, 0.5)
+		check(map.player.global_position == player_pos, tag + "nobody walks")
+		var countdown_left: float = map.countdown.left
+		map.countdown.paused = false
+		map.step(Vector2.ZERO, 1.0 / 60.0)
+		check(map.countdown.paused and map.countdown.left == countdown_left, tag + "the stuck countdown stands still")
+		_finish_gore(map)
+		check(map.picks_allowed() and map.open_backpack() and map.close_backpack(), tag + "after the beat everything works again")
+		map.free()
+		get_tree().paused = false
+		# A lethal pick: gore first, death one tick after.
+		map = await _seeded_map(seed_value, {"ddeok": 1})
+		GameState.heart_units["fernanda"] = 1
+		var deaths: Array = []
+		var on_death := func(dead, _survivor, _injury): deaths.append(dead)
+		GameState.travelers_died.connect(on_death)
+		var beats := [0]
+		var restarts := [0]
+		map.death_beat_started.connect(func(): beats[0] += 1)
+		map.restarted.connect(func(): restarts[0] += 1)
+		_pick_new_harm(map, kind_id)
+		check(deaths == ["fernanda"] and GameState.heart_units["fernanda"] == 0 and map.decoy_gore.active and beats[0] == 0, tag + "the damage is applied at the pick and the death announced once, the gore starts first")
+		var gore_end := -1
+		var death_tick := -1
+		var overlap := false
+		var n := 0
+		while death_tick < 0 and n < 1000:
+			n += 1
+			map.tick_gore(1.0 / 60.0)
+			overlap = overlap or (map.decoy_gore.active and map.is_death_beat_playing())
+			if gore_end < 0 and not map.decoy_gore.active:
+				gore_end = n
+				check(not map.is_death_beat_playing() and map.find_child("DecoyGoreFx", false, false) == null, tag + "when the gore ends its shapes are gone and the death has not begun")
+			if map.is_death_beat_playing():
+				death_tick = n
+		check(not overlap and gore_end > 0 and death_tick == gore_end + 1, tag + "gore and death never overlap: the death begins one tick after the gore (gore %d, death %d)" % [gore_end, death_tick])
+		var seconds := float(_config()["decoy_gore"][pair[1]]["duration"])
+		check(absf(gore_end / 60.0 - seconds) < 0.05, tag + "the gore ran its full duration first (%.2f s)" % (gore_end / 60.0))
+		map.tick_beat(100.0)
+		GameState.travelers_died.disconnect(on_death)
+		check(beats[0] == 1 and restarts[0] == 1 and deaths == ["fernanda"] and not map.is_gore_playing(), tag + "one death sequence, one restart, no second death")
+		check(GameState.heart_units["fernanda"] == GameState.max_units() and GameState.inventory.snapshot() == {"ddeok": 1}, tag + "hearts and backpack are the scene-start ones")
+		map.free()
+		get_tree().paused = false
+		# A restart in the middle of the beat leaves nothing behind.
+		map = await _seeded_map(seed_value, {"ddeok": 1})
+		var picker: Node3D = map.travelers["fernanda"]
+		var base_xform: Transform3D = picker.global_transform
+		var base_color: Color = picker.body_color()
+		_pick_new_harm(map, kind_id)
+		_drive_gore_until(map, float(_config()["decoy_gore"][pair[1]]["pop_seconds"]) + 0.15)
+		check(map.decoy_gore.active and map.decoy_gore.popped, tag + "(setup) the beat is past its pop")
+		map._restart()
+		check(not map.decoy_gore.active and not map.is_gore_playing() and map.find_child("DecoyGoreFx", false, false) == null and _particle_count(map) == 1, tag + "a restart mid-beat leaves no beat, no shapes and no blood (only the steam)")
+		check(picker.global_transform == base_xform and picker.body_color() == base_color and GameState.heart_units["fernanda"] == GameState.max_units(), tag + "the picker and the hearts are as at the scene start")
+		map.tick_gore(1.0)
+		check(not map.is_death_beat_playing() and map.picks_allowed() and not map.countdown.paused, tag + "nothing starts later on its own")
+		map.free()
+		# A death sequence begun in the middle of the beat drops the gore.
+		map = await _seeded_map(seed_value, {})
+		picker = map.travelers["fernanda"]
+		base_xform = picker.global_transform
+		_pick_new_harm(map, kind_id)
+		_drive_gore_until(map, 0.4)
+		map.begin_death_beat()
+		check(not map.decoy_gore.active and map.find_child("DecoyGoreFx", false, false) == null and map.is_death_beat_playing() and picker.global_transform == base_xform, tag + "a death in the middle of the beat drops the gore and resets the picker")
+		map.tick_beat(100.0)
+		map.free()
+		get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_new_gore_flow")
+
+
+func test_gore_captions() -> void:
+	var style: Dictionary = _config()["decoy_gore"]["caption_style"]
+	var all_kinds := [["keuncheonnamseong", "face_swell_pop", ""], ["butsunnamu", "convulse_eyes_pop", ""], ["norugui", "deer_ears_rip", "노루 귀"], ["deulchuknamu", "deulssuk_drunk", "들쭉술"]]
+	for row in all_kinds:
+		var map: Node3D = await _seeded_map(_seed_with_decoy(row[0], "harm"), {})
+		var picker: Node3D = map.travelers["fernanda"]
+		var base_pos: Vector3 = picker.global_position
+		var tag: String = row[1] + ": "
+		_pick_new_harm(map, row[0])
+		var fx := map.find_child("DecoyGoreFx", false, false) as Node3D
+		var caption := fx.find_child("GoreCaption", false, false) as Label3D
+		if row[2] == "":
+			check(caption == null, tag + "no caption")
+		else:
+			check(caption != null and caption.text == row[2], tag + "the caption reads '%s'" % row[2])
+			if caption != null:
+				check(caption.font.resource_path.ends_with("NotoSansKR-VariableFont_wght.ttf"), tag + "in Noto Sans KR")
+				check(caption.font_size * caption.pixel_size >= 0.4 and caption.billboard == BaseMaterial3D.BILLBOARD_ENABLED and not caption.shaded, tag + "readable: %.2f m tall, billboarded, unshaded" % (caption.font_size * caption.pixel_size))
+				check(caption.no_depth_test and caption.render_priority == int(style["render_priority"]) and caption.render_priority > int(map.reward_label_config["render_priority"]) and caption.outline_render_priority < caption.render_priority, tag + "in front of steam, particles and the reward label, its outline behind its text")
+				check(absf(caption.global_position.x - base_pos.x) < 0.01 and caption.global_position.y >= base_pos.y + 2.0, tag + "above the picker (%.1f m up)" % (caption.global_position.y - base_pos.y))
+				_drive_gore_until(map, float(map.decoy_gore.duration) - 0.05)
+				check(map.decoy_gore.active and caption.is_inside_tree(), tag + "it stays up for the whole beat")
+		_finish_gore(map)
+		check(map.find_child("GoreCaption", true, false) == null, tag + "and is gone when the beat ends")
+		map.free()
+		get_tree().paused = false
+		# show_captions false turns all of them off.
+		map = await _seeded_map(_seed_with_decoy(row[0], "harm"), {})
+		map.gore_table = map.gore_table.duplicate(true)
+		map.gore_table["show_captions"] = false
+		_pick_new_harm(map, row[0])
+		check(map.decoy_gore.active and map.find_child("GoreCaption", true, false) == null, tag + "with show_captions false there is no caption, and the beat still plays")
+		_finish_gore(map)
+		map.free()
+		get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_gore_captions")
+
+
+## Everything drawn, as one string: every built-in property of a node or resource and of its children (script variables, such as a plant's
+## outcome, and node names are left out: they are not what the player sees).
+func _dump(thing: Object) -> String:
+	var parts: Array[String] = [thing.get_class()]
+	for p in thing.get_property_list():
+		if (int(p["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE) != 0 or (int(p["usage"]) & PROPERTY_USAGE_STORAGE) == 0 or p["name"] == "name" or p["name"] == "script":
+			continue
+		var value: Variant = thing.get(p["name"])
+		if value is Node:
+			continue
+		if value is Object and value != null:
+			parts.append("%s=%s" % [p["name"], _dump(value)])
+		else:
+			parts.append("%s=%s" % [p["name"], str(value)])
+	if thing is Node:
+		for child in thing.get_children():
+			parts.append(_dump(child))
+	return "{" + ",".join(parts) + "}"
+
+
+const PlantScript := preload("res://scenes/foraging/plant.gd")
+
+
+func test_hidden_outcome() -> void:
+	for kind in _hangul_plants():
+		if kind["kind"] != "decoy":
+			continue
+		var harm := PlantScript.new()
+		harm.setup(kind, "ㅏ", "harm")
+		var reward := PlantScript.new()
+		reward.setup(kind, "ㅏ", "reward")
+		var tag: String = kind["id"] + ": "
+		check(harm.outcome != reward.outcome and harm.kind != reward.kind, tag + "(setup) the two plants differ in the rolled outcome only")
+		check(harm.tooltip_text() == "???" and reward.tooltip_text() == "???", tag + "the hover name is ??? for both")
+		check(_dump(harm) == _dump(reward), tag + "everything drawn is identical: transform, scale, meshes, colours, materials, letter label, pick area")
+		check(not harm.name.contains("harm") and not reward.name.contains("reward") and not harm.name.contains("reward"), tag + "and no node name gives the outcome away")
+		check(harm.letter == reward.letter and harm.scale == reward.scale and harm.get_child_count() == reward.get_child_count(), tag + "same letter, scale and parts")
+		harm.free()
+		reward.free()
+	# In a scene: the hover name, the reach ring and the pick area behave the same.
+	var seed_value := -1
+	var placement := _new_placement()
+	var rng := RandomNumberGenerator.new()
+	for s in range(1, 400):
+		rng.seed = s
+		var by_kind := {}
+		for d in placement.choose(rng)["decoys"]:
+			by_kind[d["kind"]] = by_kind.get(d["kind"], {})
+			by_kind[d["kind"]][d["outcome"]] = true
+		for kind_id in by_kind:
+			if by_kind[kind_id].size() == 2 and seed_value < 0:
+				seed_value = s
+	check(seed_value > 0, "(setup) a scene with both outcomes of one kind exists (seed %d)" % seed_value)
+	var map: Node3D = await _seeded_map(seed_value)
+	var kind_id := ""
+	for plant in map.plants:
+		if plant.outcome != "" and _decoy_of(map, plant.kind_id, "harm") != null and _decoy_of(map, plant.kind_id, "reward") != null:
+			kind_id = plant.kind_id
+	check(kind_id != "", "(setup) the scene has a harm and a reward decoy of one kind (%s)" % kind_id)
+	if kind_id != "":
+		var rings := []
+		var texts := []
+		var hits := []
+		for outcome in ["harm", "reward"]:
+			var plant := _decoy_of(map, kind_id, outcome)
+			_stand_near(map, plant)
+			map.update_camera(0.0, true)
+			map.step(Vector2.ZERO, 1.0 / 60.0)
+			var target: Dictionary = map.picking.nearest_target(Vector2(map.player.global_position.x, map.player.global_position.z))
+			var ring_size: Vector3 = map._ring.mesh.get_aabb().size
+			var ring_color: Color = map._ring_material.albedo_color
+			rings.append([Vector2(ring_size.x, ring_size.z), Color(ring_color.r, ring_color.g, ring_color.b), map._ring.visible])
+			var screen: Vector2 = map.camera.unproject_position(plant.global_position + Vector3(0.0, 0.8, 0.0))
+			map.update_hover(screen, 0.0)
+			texts.append([map._tooltip_label.text, map._tooltip.visible])
+			hits.append([map.plant_at(screen) == plant, target["type"]])
+		check(rings[0] == rings[1], "the reach ring is the same size, colour and visibility for a harm and a reward decoy of one kind")
+		check(texts[0] == texts[1] and texts[0][0] == "???", "the hover name is ??? for both, shown the same way")
+		check(hits[0] == hits[1] and hits[0][0], "and both are found by the pointer and by Space the same way")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_hidden_outcome")
+
+
+func test_slot_generator() -> void:
+	var data_path := "res://data/mountains/hallasan.json"
+	var before := FileAccess.get_md5(data_path)
+	var tool = load("res://tools/generate_slots.gd").new()
+	check(not tool.autorun, "(setup) the tool does not run by itself when it is only loaded")
+	add_child(tool)
+	var report: Dictionary = tool.run(PackedStringArray())
+	check(report["current"]["valid"] and report["current"]["count"] == 24 and report["current"]["problems"].is_empty(), "the validity check reports the 24 current slots valid against the real scene (%s)" % str(report["current"]["problems"]))
+	check(report["candidate_check"]["valid"] and report["candidates"].size() == 24, "it also generates 24 candidate slots, valid with their margins (%s)" % str(report["candidate_check"]["problems"]))
+	check(report["written"] == "" and FileAccess.get_md5(data_path) == before, "without --write nothing is written: the data file is byte for byte as it was")
+	check(report["seed"] == 1 and report["step"] == 0.5 and report["count"] == 24, "the defaults are seed 1, step 0.5 m, 24 slots")
+	check(not JSON.stringify(report).is_empty() and JSON.parse_string(JSON.stringify(report)) is Dictionary, "the report is JSON")
+	var again: Dictionary = tool.run(PackedStringArray())
+	check(str(again["candidates"]) == str(report["candidates"]), "the same arguments give the same candidates (deterministic)")
+	var other: Dictionary = tool.run(PackedStringArray(["--seed=2", "--step=1.0", "--count=10"]))
+	check(other["seed"] == 2 and other["step"] == 1.0 and other["candidates"].size() == 10 and other["candidate_check"]["valid"] and str(other["candidates"]) != str(report["candidates"]), "another seed, step and count give another valid list of 10")
+	# A slot that breaks a rule is reported.
+	var live: Dictionary = Content.mountain("hallasan")["foraging"]
+	var saved: Array = live["decoy_placement"]["slots"].duplicate(true)
+	live["decoy_placement"]["slots"][0] = [_target_spots()[3].x + 0.5, _target_spots()[3].y]
+	var broken: Dictionary = tool.run(PackedStringArray())
+	live["decoy_placement"]["slots"] = saved
+	check(not broken["current"]["valid"] and not broken["current"]["problems"].is_empty() and str(broken["current"]["problems"]).contains("target plant"), "a slot on a target plant makes the validity check fail and say why (%s)" % str(broken["current"]["problems"]))
+	check(FileAccess.get_md5(data_path) == before, "still nothing written")
+	# --write changes only the slots, and only the file it is told to.
+	var copy_path := "user://slots_test.json"
+	var copy := FileAccess.open(copy_path, FileAccess.WRITE)
+	copy.store_string(FileAccess.get_file_as_string(data_path))
+	copy.close()
+	var wrote: Dictionary = tool.run(PackedStringArray(["--write", "--data=" + copy_path, "--seed=3", "--count=12"]))
+	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(copy_path))
+	check(wrote["written"] == copy_path and parsed is Dictionary, "--write with --data writes the file it is told to, still valid JSON")
+	if parsed is Dictionary:
+		var slots: Array = parsed["foraging"]["decoy_placement"]["slots"]
+		var same_slots: bool = slots.size() == 12 and wrote["candidates"].size() == 12
+		for i in mini(slots.size(), 12):
+			same_slots = same_slots and absf(float(slots[i][0]) - float(wrote["candidates"][i][0])) < 0.001 and absf(float(slots[i][1]) - float(wrote["candidates"][i][1])) < 0.001
+		check(same_slots, "the 12 generated slots are in the file")
+		var original: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(data_path))
+		parsed["foraging"]["decoy_placement"]["slots"] = original["foraging"]["decoy_placement"]["slots"]
+		check(str(parsed) == str(original), "and nothing else in the file changed")
+	check(FileAccess.get_md5(data_path) == before, "the real data file was not touched by --write to a copy")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(copy_path))
+	tool.free()
+	GameState.new_hike()
+	_section_done("test_slot_generator")
+
+
 ## The first seed whose roll has at least `least` piles, or -1.
-func _seed_with_piles(least: int) -> int:
+func _seed_with_piles(least: int, need_harm := false) -> int:
 	var placement := _new_placement()
 	var piles := _new_piles()
 	for seed_value in range(1, 5000):
-		if _offline_roll(seed_value, placement, piles)["piles"].size() >= least:
+		var roll := _offline_roll(seed_value, placement, piles)
+		if roll["piles"].size() >= least and (not need_harm or roll["layout"]["decoys"].any(func(d): return d["outcome"] == "harm")):
 			return seed_value
 	return -1
 
@@ -7354,7 +8140,7 @@ func _bookkeeping(map: Node3D, with_discovery := true) -> Array:
 
 
 func test_pile_pickup() -> void:
-	var seed_value := _seed_with_piles(2)
+	var seed_value := _seed_with_piles(2, true)
 	check(seed_value > 0, "(setup) a seed with two or more piles exists (%d)" % seed_value)
 	var map: Node3D = await _seeded_map(seed_value)
 	var roll := _offline_roll(seed_value, _new_placement(), _new_piles())
@@ -7372,7 +8158,7 @@ func test_pile_pickup() -> void:
 	var drawn := pile.find_children("*", "Control", true, false)
 	check(drawn.size() == 1 and drawn[0].icon_id == "baekseolgi", "the picture is the baekseolgi icon of items.json")
 	check(not pile.has_method("tooltip_text") and not pile.has_method("take_letter"), "a pile is not a plant")
-	check(not map.plants.has(pile) and map.plants.size() == 36, "it is not among the plants")
+	check(not map.plants.has(pile) and map.plants.size() == 28 + roll["layout"]["decoys"].size(), "it is not among the plants")
 	# The ring: identical for a pile and for a plant.
 	_stand_by_pile(map, 0)
 	map.step(Vector2.ZERO, 1.0 / 60.0)
@@ -7507,7 +8293,7 @@ func test_pile_pickup() -> void:
 		total += map.picking.pile_amount(i)
 	var verdict_after: Dictionary = map.evaluate_stuck("after piles")
 	check(verdict_before["stuck"] == verdict_after["stuck"] and verdict_before["reason"] == verdict_after["reason"], "the stuck verdict is the same with every pile taken")
-	check(map.spares.credit_total() == 0 and map.spare_plants.is_empty() and map.picking.basket.is_empty() and map.picking.letters_left() == 36, "no spares, credits or basket letters came from piles")
+	check(map.spares.credit_total() == 0 and map.spare_plants.is_empty() and map.picking.basket.is_empty() and map.picking.letters_left() == map.plants.size(), "no spares, credits or basket letters came from piles")
 	check(map._available_letters().size() == 28, "the letters still to find are only the 28 target letters")
 	check(GameState.inventory.count("ddeok") == total and total > 0, "all piles together gave exactly their amounts (%d)" % total)
 	map.free()

@@ -20,14 +20,23 @@ var starts := 0
 var finishes := 0
 
 
-## Why the gore data can't serve the plant kinds, or "": every harm decoy names a
-## gore id that is in `table`, every entry has a duration above 0 and a pop time
-## in (0, duration], and no other kind has a gore field.
+## The keys of the table that are not gore entries.
+const TABLE_SETTINGS: Array[String] = ["show_captions", "caption_style"]
+
+
+## Why the gore data can't serve the plant kinds, or "": every decoy kind names a
+## gore id that is in `table`, every entry has a duration above 0, a pop time in
+## (0, duration] and, if it has one, a non-empty string caption_ko, `show_captions`
+## is a bool, and no target has a gore field.
 static func problem_with(kinds: Array, table: Variant) -> String:
 	if not table is Dictionary:
 		return "foraging.decoy_gore is missing or is not a table"
+	if table.has("show_captions") and not table["show_captions"] is bool:
+		return "decoy_gore show_captions is not true or false"
+	if table.has("caption_style") and not table["caption_style"] is Dictionary:
+		return "decoy_gore caption_style is not a dictionary"
 	for id in table:
-		if String(id).begins_with("_"):
+		if String(id).begins_with("_") or TABLE_SETTINGS.has(String(id)):
 			continue
 		var entry: Variant = table[id]
 		if not entry is Dictionary:
@@ -38,17 +47,27 @@ static func problem_with(kinds: Array, table: Variant) -> String:
 		var pop := float(entry.get("pop_seconds", 0.0))
 		if pop <= 0.0 or pop > duration:
 			return "decoy_gore '%s' needs 0 < pop_seconds <= duration (%s of %s)" % [id, str(entry.get("pop_seconds", "missing")), str(duration)]
+		if entry.has("caption_ko") and (not entry["caption_ko"] is String or String(entry["caption_ko"]) == ""):
+			return "decoy_gore '%s' has a caption_ko that is not a non-empty string" % id
 	for kind in kinds:
 		var name := String(kind.get("id", "?"))
-		if kind.get("kind", "") == "decoy_harm":
+		if kind.get("kind", "") == "decoy":
 			if not kind.has("gore") or String(kind["gore"]) == "":
-				return "Harm decoy '%s' has no gore id" % name
+				return "Decoy '%s' has no gore id" % name
 			var gid := String(kind["gore"])
-			if gid.begins_with("_") or not table.has(gid):
-				return "Harm decoy '%s' names gore '%s', which is not in decoy_gore" % [name, gid]
+			if gid.begins_with("_") or TABLE_SETTINGS.has(gid) or not table.has(gid):
+				return "Decoy '%s' names gore '%s', which is not in decoy_gore" % [name, gid]
 		elif kind.has("gore"):
-			return "Decoy or target '%s' (%s) must not have a gore field" % [name, kind.get("kind", "?")]
+			return "Target '%s' (%s) must not have a gore field" % [name, kind.get("kind", "?")]
 	return ""
+
+
+## The caption shown for gore `id`: its caption_ko, or "" if it has none or
+## `show_captions` is false.
+static func caption(table: Dictionary, id: String) -> String:
+	if not bool(table.get("show_captions", true)) or not table.get(id) is Dictionary:
+		return ""
+	return String(table[id].get("caption_ko", ""))
 
 
 ## Starts a beat of `entry` (a decoy_gore table entry) on traveler `traveler`.

@@ -27,26 +27,34 @@
       "floating_label": {"rise": 1.6, "seconds": 1.4, "font_size": 48, "pixel_size": 0.012, "color": [1.0, 0.95, 0.6], "render_priority": 10}
     },
     "decoy_gore": {
-      "_note": "The gore beat on the traveler who picked a harm decoy (travelers only, never the plant). Every harm decoy names one entry here in its 'gore' field; reward decoys have none. 'duration' is the whole beat in seconds, 'pop_seconds' (>0, <= duration) when it pops; the beat gates picks, the spelling view, both menus and walking, and pauses the stuck countdown and its music. A lethal pick's death sequence starts on the tick after the beat ends. Colours are r, g, b. PLACEHOLDER numbers and shapes. face_swell_pop: a head blob (radius 'head_radius' m at 'head_height' m) swells to 'swell_scale' times, reddening from 'head_color' to 'swollen_color' and shaking by 'shake_amplitude' m at 'shake_hz', then pops into a blood burst of 'pop_blood_strength' (1 = the normal hit) and 'pop_chunks' flesh chunks. convulse_eyes_pop: the traveler jitters by 'jitter_amplitude' m (and tilts 'tilt_degrees') at 'jitter_hz' until 'pop_seconds', then two eyes (radius 'eye_radius', 'eye_color') with a 'tail_color' tail 'tail_length' m long fly out sideways ('eye_speed_side' m/s), up ('eye_speed_up') and toward the camera ('eye_speed_toward') and fall under 'gravity', with a blood burst of 'pop_blood_strength' at the head.",
+      "_note": "The gore beat on the traveler who picked a harm decoy (travelers only, never the plant, never an animal). Every decoy kind names exactly one entry here in its 'gore' field; the beat is that kind's, whatever the outcome roll was. 'duration' is the whole beat in seconds, 'pop_seconds' (>0, <= duration) when it pops; the beat gates picks, the spelling view, both menus and walking, and pauses the stuck countdown and its music. A lethal pick's death sequence starts on the tick after the beat ends. Colours are r, g, b. PLACEHOLDER numbers and shapes. 'caption_ko' (optional, a non-empty string) is shown above the picker for the whole beat, in front of steam and particles, in the style of 'caption_style' (font_size Label3D pixels, pixel_size metres per pixel, height metres above the feet, colour r, g, b, render_priority); 'show_captions' false turns every caption off. face_swell_pop: a head blob (radius 'head_radius' m at 'head_height' m) swells to 'swell_scale' times, reddening from 'head_color' to 'swollen_color' and shaking by 'shake_amplitude' m at 'shake_hz', then pops into a blood burst of 'pop_blood_strength' (1 = the normal hit) and 'pop_chunks' flesh chunks. convulse_eyes_pop: the traveler jitters by 'jitter_amplitude' m (and tilts 'tilt_degrees') at 'jitter_hz' until 'pop_seconds', then two eyes (radius 'eye_radius', 'eye_color') with a 'tail_color' tail 'tail_length' m long fly out sideways ('eye_speed_side' m/s), up ('eye_speed_up') and toward the camera ('eye_speed_toward') and fall under 'gravity', with a blood burst of 'pop_blood_strength' at the head. deer_ears_rip: two furry ears ('ear_length', 'ear_width' m, 'ear_color', lighter 'ear_inner_color') grow out of the sides of the head (at 'head_height', 'head_radius' m from the middle) during the first 'grow_fraction' of the build-up, lean outward by 'ear_tilt_degrees', twitch ('twitch_degrees' at 'twitch_hz') and swivel by 'swivel_degrees' toward something offscreen; at the pop each ear tears off in a blood burst of 'pop_blood_strength' and hops away ('hop_speed' m/s, hops of 'hop_height' m under 'gravity') toward the nearest edge of the walkable map, vanishing 'hop_seconds' after the pop. deulssuk_drunk: until the pop the traveler wobbles ('wobble_degrees' at 'wobble_hz') and staggers once round a circle of 'stagger_radius' m that starts and ends where it stands (shrunk, or none, where props or the walk limits are in the way), with 'hiccups' bobs of 'hiccup_height' m lasting 'hiccup_seconds' each; at the pop a fountain of 'fountain_particles' droplets ('fountain_color', 'fountain_size' m) arcs out of the mouth ('fountain_speed' m/s, aimed up and toward the camera in the ratio 'fountain_lift' : 'fountain_forward', under 'gravity') for 'fountain_seconds', and a puddle of 'puddle_radius' m ('puddle_color') spreads where it lands and fades out over the last 'puddle_fade' seconds.",
+      "show_captions": true,
+      "caption_style": {"font_size": 56, "pixel_size": 0.012, "height": 2.6, "color": [1.0, 0.95, 0.75], "render_priority": 20},
       "face_swell_pop": {"duration": 1.6, "pop_seconds": 1.0, "head_radius": 0.3, "head_height": 1.45, "head_color": [0.93, 0.74, 0.62], "swollen_color": [0.78, 0.06, 0.08], "swell_scale": 3.4, "shake_amplitude": 0.03, "shake_hz": 30.0, "pop_blood_strength": 3.0, "pop_chunks": 14},
-      "convulse_eyes_pop": {"duration": 1.6, "pop_seconds": 0.9, "jitter_amplitude": 0.09, "jitter_hz": 40.0, "tilt_degrees": 12.0, "eye_radius": 0.12, "eye_color": [1.0, 1.0, 1.0], "tail_color": [0.7, 0.03, 0.06], "tail_length": 0.4, "eye_speed_side": 2.4, "eye_speed_up": 3.6, "eye_speed_toward": 1.6, "gravity": 9.0, "pop_blood_strength": 1.5}
+      "convulse_eyes_pop": {"duration": 1.6, "pop_seconds": 0.9, "jitter_amplitude": 0.09, "jitter_hz": 40.0, "tilt_degrees": 12.0, "eye_radius": 0.12, "eye_color": [1.0, 1.0, 1.0], "tail_color": [0.7, 0.03, 0.06], "tail_length": 0.4, "eye_speed_side": 2.4, "eye_speed_up": 3.6, "eye_speed_toward": 1.6, "gravity": 9.0, "pop_blood_strength": 1.5},
+      "deer_ears_rip": {"duration": 1.8, "pop_seconds": 0.9, "caption_ko": "노루 귀", "head_height": 1.45, "head_radius": 0.3, "ear_length": 0.75, "ear_width": 0.2, "ear_color": [0.55, 0.36, 0.2], "ear_inner_color": [0.9, 0.72, 0.62], "grow_fraction": 0.35, "ear_tilt_degrees": 25.0, "twitch_degrees": 12.0, "twitch_hz": 6.0, "swivel_degrees": 40.0, "pop_blood_strength": 1.8, "hop_speed": 2.2, "hop_height": 0.35, "hop_seconds": 0.8, "gravity": 12.0},
+      "deulssuk_drunk": {"duration": 2.0, "pop_seconds": 0.9, "caption_ko": "들쭉술", "head_height": 1.45, "stagger_radius": 0.7, "wobble_degrees": 14.0, "wobble_hz": 2.5, "hiccups": 3, "hiccup_height": 0.12, "hiccup_seconds": 0.12, "fountain_particles": 120, "fountain_color": [0.45, 0.1, 0.6], "fountain_size": 0.12, "fountain_speed": 3.6, "fountain_lift": 2.4, "fountain_forward": 2.0, "fountain_seconds": 0.4, "gravity": 14.0, "puddle_radius": 0.8, "puddle_color": [0.38, 0.08, 0.5], "puddle_fade": 0.45}
     },
     "hearts_hud": {"_note": "The heart readout at the top right, one row per traveler. 'heart_size', 'gap' and 'margin' are pixels; a half heart is half filled, an empty one only an outline.", "heart_size": 26.0, "gap": 4.0, "margin": 16.0, "fill_color": [0.85, 0.12, 0.18], "outline_color": [0.95, 0.9, 0.9]},
     "spares": {"_note": "Every completed word earns one credit (once). A completion that leaves a jamo short spends its own credit at once on a spare plant of that word's kind, carrying the jamo the unfinished words are most short of; otherwise the credit is banked. A failed syllable spends the oldest banked credits, one spare each, while a shortage is left. Credits banked plus spares spawned never pass 'cap'. 'grow_seconds' is the grow-in (scale 0 to 1), during which the spare cannot be picked. 'slots' maps a word (target kind) id to the fixed [x, z] where its spare appears, in the word's own zone: at least 2 m from every plant and slot, 4 m from other plants of its kind, 6 m from the starts, clear of props. Slots are invisible until used. Positions come from a one-off script, as the first 36 plants did.", "cap": 6, "grow_seconds": 0.5, "slots": {"ma": [15.0, -8.5], "meoru": [13.0, -1.0], "minari": [22.5, -10.0], "gosari": [16.5, -1.0], "gobi": [12.0, 6.5], "simiro": [57.5, 10.0]}},
     "decoy_placement": {
-      "_note": "Where the four decoy kinds (큰천남성, 붓순나무, 노루귀, 들쭉나무) stand. At every scene start each kind picks as many of its 'pools' slots as it has plants, uniformly at random, rejecting a pick that breaks the spacing: two of one kind at least 'same_kind_min' m apart, any two decoys at least 'any_min' m apart (all in metres). Tries are bounded by 'max_retries'; when they run out, or when a pool is bad, the decoys stand where foraging.plants.placed puts them (the fallback). Every slot is inside its kind's zone (kind.zone, 'edge_margin' m from the zone edges and the stage edges), at least 'any_min' m from every target plant and spare slot, 'scenery_min' m from every tree and 'start_min' m from the travelers' starts. Pools were generated by a one-off script (farthest-point sampling over a grid of spots valid against all of that), then checked against the real props; props are kept 2.6 m (centre to centre) from every slot, see foraging.gd, and every slot of a pool is also at least 'same_kind_min' m from the others of its pool and 'any_min' m from every other pool's slots, so every pick is valid. A --placement-seed=N user argument fixes the roll.",
-      "same_kind_min": 4.0,
+      "_note": "Where the decoys stand, how many there are, which kind each is and what it does. Nothing here is fixed: at every scene start the placement RNG rolls, in this order, (1) the number of decoys, uniform over 'count_min'..'count_max' inclusive; (2) that many DISTINCT slots, uniformly, from the ONE shared 'slots' list (any kind may use any slot; zones play no part); then for each decoy in turn (3) its kind by 'kind_weights', (4) its outcome by 'outcome_weights' (harm or reward, independent of the kind) and (5) its letter, uniformly from the jamo of the target words (derived from the words, not listed here). One --placement-seed=N therefore fixes all of it. A harm outcome costs the picker 'damage_units' half-units (1 = half a heart) and plays the kind's gore (foraging.decoy_gore); a reward outcome rolls foraging.decoy_rewards. The outcome is hidden until the pick. 'slots' are [x, z], each on the stage 'edge_margin' m from its edges, at least 'any_min' m from every target plant and spare slot and from every other slot, 'scenery_min' m from every tree and 'start_min' m from the travelers' starts; props are kept 2.6 m (centre to centre) from every slot, see foraging.gd. The slots are the 24 verified slots of the four old per-kind pools (none dropped: the closest pair is 2.56 m apart), generated by tools/generate_slots.gd. 'count_max' may not pass the number of slots. Tries are bounded by 'max_retries'; when they run out, or when this block is bad, the decoys stand where foraging.plants.placed puts them (the fallback: those kinds and letters, outcomes still rolled). PLACEHOLDER numbers.",
       "any_min": 2.0,
       "start_min": 6.0,
       "scenery_min": 2.5,
       "edge_margin": 1.0,
       "max_retries": 50,
-      "pools": {
-        "keuncheonnamseong": [[9.6, -6.1], [22.8, 10.0], [26.8, -10.0], [9.7, 7.0], [3.6, 7.8], [17.7, -6.5]],
-        "butsunnamu": [[15.3, -5.6], [23.7, 7.6], [26.7, -5.5], [13.2, 4.4], [9.3, -10.1], [24.8, 1.4]],
-        "norugui": [[30.8, 9.5], [34.8, -10.0], [42.6, -3.4], [29.2, -0.9], [40.6, 10.0], [36.7, 4.1]],
-        "deulchuknamu": [[57.3, 5.9], [49.2, -10.0], [45.6, 10.0], [60.2, -5.4], [45.2, -0.4], [53.7, -3.5]]
-      }
+      "count_min": 2,
+      "count_max": 16,
+      "kind_weights": {"keuncheonnamseong": 1, "butsunnamu": 1, "norugui": 1, "deulchuknamu": 1},
+      "outcome_weights": {"harm": 1, "reward": 1},
+      "damage_units": 1,
+      "slots": [
+        [9.6, -6.1], [22.8, 10.0], [26.8, -10.0], [9.7, 7.0], [3.6, 7.8], [17.7, -6.5],
+        [15.3, -5.6], [23.7, 7.6], [26.7, -5.5], [13.2, 4.4], [9.3, -10.1], [24.8, 1.4],
+        [30.8, 9.5], [34.8, -10.0], [42.6, -3.4], [29.2, -0.9], [40.6, 10.0], [36.7, 4.1],
+        [57.3, 5.9], [49.2, -10.0], [45.6, 10.0], [60.2, -5.4], [45.2, -0.4], [53.7, -3.5]
+      ]
     },
     "chaos_piles": {
       "_note": "Rare DDEOK piles lying on the ground, no letter, no name. At every scene start 'count_table' draws how many appear (weighted, 0 allowed), they stand on that many of 'slots' chosen uniformly, and 'amount_table' draws each one's DDEOK (weighted). PLACEHOLDER numbers. Entries are {count | amount, weight}: weights whole numbers above 0, amounts at least 1, counts at least 0; the slots must cover the largest count. Slots: [x, z], each at least 'min_plant' m from every target plant, spare slot and decoy slot (so from any decoy layout), 'min_start' m from the starts, 2.5 m from every tree and inside the walkable stage; every zone has one; at least off_path.min_slots are 'off_path.distance' m from every target plant. Piles are at least 'min_pile' m apart. Picking one puts its amount into the backpack as 'item'.",
@@ -135,7 +143,7 @@
       {"id": "alpine", "name": "Alpine grassland", "x": [44, 64], "tint": [0.55, 0.55, 0.3]}
     ],
     "plants": {
-      "_note": "10 kinds, 36 plants. Each plant is one entry in 'placed': kind id, x, z (y comes from the terrain) and, for a target, the single letter it carries. A target kind has one plant per letter of its name (repeats count: 미나리 has two ㅣ plants), so every letter plant of a word is needed. A decoy carries one letter too (from the letters of the six target words, the two plants of a kind differ), so only the hover name tells it apart. kind: target | decoy_harm (injury) | decoy_reward (reward). Decoys look exactly like targets. Injury ids are placeholders; a harm decoy carries 'damage_units' (half-units the picker loses, 1 = half a heart); a reward decoy carries nothing, its item is rolled from foraging.decoy_rewards. Target positions are fixed here, never random, and the letters of a word are not in word order along x. A decoy's x, z here is only the FALLBACK, used when foraging.decoy_placement is bad or its tries run out: the real positions are rolled at every scene start from the pools there (the entry order, and so each decoy's letter, never changes).",
+      "_note": "10 kinds. The 28 target plants are fixed here, one entry in 'placed' each: kind id, x, z (y comes from the terrain) and the single letter it carries. A target kind has one plant per letter of its name (repeats count: 미나리 has two ㅣ plants), so every letter plant of a word is needed. Target positions are fixed, never random, and the letters of a word are not in word order along x. The four decoy kinds (kind 'decoy') have no fixed role: how many decoys there are, which kind, where, with which letter and whether each harms or rewards are rolled at every scene start, see foraging.decoy_placement. They look exactly like targets and carry one letter, so only the hover name tells them apart. A decoy kind's 'injury' is the placeholder id of the death it can cause, its 'gore' the foraging.decoy_gore entry that plays when the roll made it harm; its 'zone' is kept as data but placement does not read it. The 8 decoy entries in 'placed' (2 per kind) are only the FALLBACK, used when foraging.decoy_placement is bad or its tries run out (and by the older tests); their order is where they are inserted in the plant list.",
       "kinds": [
         {
           "id": "ma",
@@ -187,35 +195,35 @@
           "id": "keuncheonnamseong",
           "name": "큰천남성",
           "hover_name": "jack-in-the-pulpit",
-          "kind": "decoy_harm",
+          "kind": "decoy",
           "zone": "lower_forest",
           "letter_style": "sprouting",
           "color": [0.35, 0.28, 0.38],
           "injury": "poison_swell",
-          "damage_units": 1,
           "gore": "face_swell_pop"
         },
         {
           "id": "butsunnamu",
           "name": "붓순나무",
           "hover_name": "Korean star anise",
-          "kind": "decoy_harm",
+          "kind": "decoy",
           "zone": "lower_forest",
           "letter_style": "hanging",
           "color": [0.18, 0.36, 0.24],
           "fruit_color": [0.72, 0.4, 0.15],
           "injury": "poison_burst",
-          "damage_units": 1,
           "gore": "convulse_eyes_pop"
         },
         {
           "id": "norugui",
           "name": "노루귀",
           "hover_name": "hepatica",
-          "kind": "decoy_reward",
+          "kind": "decoy",
           "zone": "mid_slope",
           "letter_style": "sprouting",
-          "color": [0.5, 0.58, 0.45]
+          "color": [0.5, 0.58, 0.45],
+          "injury": "ears_torn_off",
+          "gore": "deer_ears_rip"
         },
         {
           "id": "simiro",
@@ -230,11 +238,13 @@
           "id": "deulchuknamu",
           "name": "들쭉나무",
           "hover_name": "bog bilberry",
-          "kind": "decoy_reward",
+          "kind": "decoy",
           "zone": "alpine",
           "letter_style": "hanging",
           "color": [0.3, 0.32, 0.42],
-          "fruit_color": [0.08, 0.12, 0.32]
+          "fruit_color": [0.08, 0.12, 0.32],
+          "injury": "berry_fermentation",
+          "gore": "deulssuk_drunk"
         }
       ],
       "placed": [
