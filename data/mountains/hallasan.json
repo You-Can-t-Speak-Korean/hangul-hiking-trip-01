@@ -293,6 +293,53 @@
         "zone": "alpine",
         "positions": [[46, -9], [49, 8], [52, 0], [56, -2], [61, -9], [62, 1], [60, 9], [55, 9], [48, -1], [45, -5], [52, -10], [63, -4]]
       }
+    },
+    "ending": {
+      "_note": "How the scene ends. When the SIXTH word is done (any order): (1) the 고사목 at ending.dead_tree.position opens a gap, ending.exit.walk_to_x is how far uphill the travelers may then walk through it, and an exit trigger lies from trigger_from_x to walk_to_x (as wide as the gap); (2) 'note_delay_s' seconds after the word's +2 float starts, the exit note (item ending.note.item) flies in over 'flight_s' seconds and lands range_min..range_max metres from the human traveler on ground at least clear_edge m inside the walk limits, clear_plant m from every plant and pile, clear_prop m from every prop box and clear_tree m from the 고사목; tries is how many random draws are made before the ring is scanned. If the ring has no such ground at all (a traveler cornered behind firs) the same test is made again with the smaller 'relaxed' clearances; only if that fails too does the note land in the open. The flutter is sway (m, Hz), spin (degrees per second, dying away), bob (m, Hz) and flutter (degrees of tilt), all scaled by an envelope that falls to 0 at landing; start_margin is how far right of the view's edge it starts and start_height how far above its landing spot; retarget_min_s is the shortest re-aim when the traveler walks out of range mid-flight; rest_lift is its height above the ground when lying. size is the paper in metres and color its rgb. pickup_text floats up when it is taken. (3) When the human traveler enters the trigger, input is blocked and the screen fades to black over fade_s seconds; the backpack and hearts are then stored as GameState's pending bank, together with 'next'. A scene id in scene_paths is built; one that is missing there (or whose file does not exist) holds on black with hold_text (%s = the id) in the corner. Esc opens the pause menu over the black. Placeholder numbers and text.",
+      "note_delay_s": 1.5,
+      "flight_s": 5.0,
+      "fade_s": 1.0,
+      "next": "cutscene_foraging_to_animals",
+      "scene_paths": {},
+      "hold_text": "next: %s (not built)",
+      "hold_font_size": 18,
+      "hold_color": [0.62, 0.62, 0.66],
+      "note": {
+        "item": "hallasan_exit_sumin",
+        "pickup_text": "+1 note",
+        "size": [0.45, 0.6],
+        "color": [0.96, 0.92, 0.78],
+        "range_min": 1.5,
+        "range_max": 3.0,
+        "clear_edge": 1.0,
+        "clear_plant": 1.5,
+        "clear_prop": 0.6,
+        "clear_tree": 3.0,
+        "relaxed": {"clear_edge": 0.3, "clear_plant": 1.0, "clear_prop": 0.0, "clear_tree": 1.8},
+        "tries": 40,
+        "start_margin": 3.0,
+        "start_height": 7.0,
+        "sway": 1.2,
+        "sway_hz": 0.9,
+        "spin_deg_s": 260.0,
+        "bob": 0.3,
+        "bob_hz": 2.2,
+        "flutter_deg": 40.0,
+        "rest_lift": 0.03,
+        "retarget_min_s": 0.6
+      },
+      "dead_tree": {
+        "position": [64.0, -7.0],
+        "gap_width": 2.2,
+        "height": 6.5,
+        "trunk_radius": 0.5,
+        "open_s": 0.6
+      },
+      "exit": {
+        "trigger_from_x": 65.2,
+        "walk_to_x": 67.0,
+        "keep_out_step": 1.5
+      }
     }
   }
 }

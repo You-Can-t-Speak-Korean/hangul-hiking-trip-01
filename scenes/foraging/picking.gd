@@ -29,6 +29,7 @@ const PROGRESS := 0.02  # metres closer that count as moving toward the target
 
 var _slots: Array[Dictionary] = []  # per plant: {"letter", "decoy", "spot", "locked"}
 var _piles: Array[Dictionary] = []  # per chaos pile: {"spot", "amount", "taken"}
+var _note: Dictionary = {}  # the landed exit note: {"spot", "taken"}, or {} before it has landed
 var _best_distance := INF
 var _stalled := 0.0
 var _inside := {}  # plant index -> true, while the walker is within pick_radius
@@ -233,16 +234,59 @@ func nearest_pile(spot: Vector2) -> int:
 	return best
 
 
-## What Space takes: the plant or the pile nearest to `spot` within pick_radius (a plant
-## on a tie). {"type": "plant" | "pile" | "", "index"}.
+## What Space takes: the plant, the pile or the exit note nearest to `spot` within
+## pick_radius (a plant wins a tie with a pile, a pile a tie with the note).
+## {"type": "plant" | "pile" | "note" | "", "index"}; the note's index is 0.
 func nearest_target(spot: Vector2) -> Dictionary:
+	var best := {"type": "", "index": -1}
+	var best_distance := INF
 	var plant := nearest_pickable(spot)
+	if plant >= 0:
+		best = {"type": "plant", "index": plant}
+		best_distance = spot.distance_to(_slots[plant]["spot"])
 	var pile := nearest_pile(spot)
-	if plant < 0 and pile < 0:
-		return {"type": "", "index": -1}
-	if pile >= 0 and (plant < 0 or spot.distance_to(_piles[pile]["spot"]) < spot.distance_to(_slots[plant]["spot"])):
-		return {"type": "pile", "index": pile}
-	return {"type": "plant", "index": plant}
+	if pile >= 0 and spot.distance_to(_piles[pile]["spot"]) < best_distance:
+		best = {"type": "pile", "index": pile}
+		best_distance = spot.distance_to(_piles[pile]["spot"])
+	if is_note_in_reach(spot) and spot.distance_to(_note["spot"]) < best_distance:
+		best = {"type": "note", "index": 0}
+	return best
+
+
+## ---- The exit note: one pickup at most, with no letter. It joins the nearest-target
+## logic and the reach ring once it has landed (add_note), and is never in the basket,
+## the letters or the stuck check. ----
+
+## The note has landed at `spot` (x, z) and can be picked now.
+func add_note(spot: Vector2) -> void:
+	_note = {"spot": spot, "taken": false}
+
+
+func has_note() -> bool:
+	return not _note.is_empty() and not _note["taken"]
+
+
+func note_spot() -> Vector2:
+	return _note["spot"] if not _note.is_empty() else Vector2.ZERO
+
+
+## True if the landed, untaken note lies within pick_radius of `spot`.
+func is_note_in_reach(spot: Vector2) -> bool:
+	return has_note() and spot.distance_to(_note["spot"]) <= pick_radius
+
+
+## Takes the note. {"result": "note" | "none"}: "none" if it has not landed, is gone
+## already, or `allowed` is false.
+func pick_note(allowed: bool = true) -> Dictionary:
+	if not allowed or not has_note():
+		return {"result": "none"}
+	_note["taken"] = true
+	return {"result": "note"}
+
+
+## The note is lost (a death, Restart scene): nothing of it is left to pick.
+func clear_note() -> void:
+	_note = {}
 
 
 ## The (x, z) of a pile, and its amount.

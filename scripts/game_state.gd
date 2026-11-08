@@ -38,6 +38,11 @@ var inventory := InventoryScript.new()
 var _scene_start_units: Dictionary = {}
 var _scene_start_ddeok: int = 0
 var _scene_start_inventory: Dictionary = {}
+## The bank handed to the next scene: {"units", "ddeok", "inventory", "target"}, or {}.
+## Stored when a scene ends (store_pending_bank) and applied by the next scene's
+## begin_scene(), which makes it that scene's start snapshot. Until then the current
+## scene's own start snapshot is untouched, so a Restart scene still returns to it.
+var pending_bank: Dictionary = {}
 
 
 func _ready() -> void:
@@ -89,16 +94,47 @@ func new_hike(starting_ddeok: int = -1) -> void:
 	for entry in Content.starting_kit():  # the 수첩: in every scene-start snapshot, so never lost
 		inventory.add(entry["item"], entry["count"])
 	current_scene = ""
+	pending_bank = {}
 	begin_scene("")
 
 
 ## Snapshots hearts, ddeok and the backpack so restart_scene() can restore them.
+## If a pending bank is waiting for exactly this scene, it is applied first, so it
+## becomes the scene's start snapshot.
 func begin_scene(scene_id: String) -> void:
+	if not pending_bank.is_empty() and scene_id == String(pending_bank["target"]):
+		_apply_pending_bank()
 	current_scene = scene_id
 	_scene_start_units = heart_units.duplicate()
 	_scene_start_ddeok = ddeok
 	_scene_start_inventory = inventory.snapshot()
 	# Saving goes here later (progress save per scene).
+
+
+## The current scene is ending: keeps what the travelers carry out, for `target_id`
+## (the next scene's id). Nothing live changes.
+func store_pending_bank(target_id: String) -> void:
+	pending_bank = {"units": heart_units.duplicate(), "ddeok": ddeok, "inventory": inventory.snapshot(), "target": target_id}
+
+
+func has_pending_bank() -> bool:
+	return not pending_bank.is_empty()
+
+
+## Throws the pending bank away (Restart scene from the end of a scene).
+func discard_pending_bank() -> void:
+	pending_bank = {}
+
+
+func _apply_pending_bank() -> void:
+	var bank := pending_bank
+	pending_bank = {}
+	heart_units = bank["units"].duplicate()
+	inventory.restore(bank["inventory"])
+	ddeok = int(bank["ddeok"])
+	for t in TRAVELERS:
+		hearts_changed.emit(t, heart_units[t])
+	ddeok_changed.emit(ddeok)
 
 
 ## Death → restart the current scene with what they had when it began.

@@ -17,7 +17,7 @@ extends CanvasLayer
 ## with the newest note's text only (look: data/series/notebook.json), ◀ ▶ outside
 ## the page edge when a page exists that way, and a scroll when the text does not
 ## fit. Flip with A / D or Left / Right, scroll with W / S or Up / Down. Esc (or
-## the Back button) returns to the list. A notebook quick key (N, /) opens the same
+## the Back button) returns to the list. A notebook quick key (Q, /) opens the same
 ## view with no list behind it through `notebook_open_handler`; then Esc or the
 ## same quick key closes the panel, and the backpack keys do nothing.
 

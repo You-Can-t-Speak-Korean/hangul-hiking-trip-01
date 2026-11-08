@@ -34,6 +34,10 @@ const ChaosPiles := preload("res://scenes/foraging/chaos_piles.gd")
 const Pile := preload("res://scenes/foraging/pile.gd")
 const DecoyGore := preload("res://scenes/foraging/decoy_gore.gd")
 const DecoyGoreFx := preload("res://scenes/foraging/decoy_gore_fx.gd")
+const Ending := preload("res://scenes/foraging/ending.gd")
+const ExitNote := preload("res://scenes/foraging/exit_note.gd")
+const DeadTree := preload("res://scenes/foraging/dead_tree.gd")
+const EndingHud := preload("res://scenes/foraging/ending_hud.gd")
 const PLANT_FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
@@ -108,6 +112,21 @@ var hearts_hud: CanvasLayer
 ## `plants` too, after the placed ones).
 var spares
 var spare_plants: Array[Node3D] = []
+## The scene's ending (data: foraging.ending): its rules, the 고사목 and the black. The
+## sixth finished word opens the exit (`exit_open`): the 고사목 opens a gap, the exit note
+## flies in (`note_node`, its phase is `ending_logic.phase`) and the human traveler may
+## walk out. `exit_state` is "" while the scene plays, "fading" while the screen goes
+## black (input is blocked), "hold" once it is black and the next scene is not built (a
+## debug line shows), "handed_off" once the next scene has been asked for.
+var ending: Dictionary = {}
+var ending_logic
+var ending_hud: CanvasLayer
+var ending_rng := RandomNumberGenerator.new()
+var dead_tree
+var note_node: Node3D
+var exit_open := false
+var exit_state := ""
+var note_spot_source := ""   # how the latest landing spot was found ("random", "scan", "none valid")
 ## Set from the moment both travelers die (begin_death_beat), or from the last
 ## second of the stuck countdown (_tick_stuck), until the scene is restarted:
 ## picks, walks, hover names and opening the spelling view are ignored.
@@ -197,6 +216,14 @@ var tooltip_flicker_rate := 10.0  # visible/hidden changes per second while flic
 ## scene restarts when it ends.
 signal death_beat_started
 signal restarted
+## The sixth word is done: the gap is open and the exit note is on its way.
+signal exit_opened
+signal note_landed
+signal note_picked
+## The human traveler entered the exit and the screen starts to go black / the next
+## scene (target id and scene path) has been asked for.
+signal exit_started
+signal exit_handoff(target_id: String, path: String)
 
 var _aim_height := 0.0
 var _beat_left := -1.0  # seconds of death beat left; -1 when none is playing
@@ -254,6 +281,7 @@ func _ready() -> void:
 	var plants_cfg: Dictionary = _roll_decoys(config)
 	_build_plants(plants_cfg, config["plants"])
 	_build_scenery(config["scenery"])
+	_build_ending(config["ending"])
 	_build_ground()
 	_build_backdrop(config["backdrop"]["pieces"])
 	_build_props(config["props"])
@@ -303,6 +331,9 @@ func _ready() -> void:
 	backpack_hud.open_handler = open_backpack
 	backpack_hud.notebook_open_handler = open_notebook
 	backpack_hud.close_requested.connect(close_backpack)
+	ending_hud = EndingHud.new()
+	add_child(ending_hud)
+	ending_hud.setup(ending)
 	var rewards: Dictionary = config["decoy_rewards"]
 	reward_table = RewardTable.new(rewards["table"], Content.items)
 	if not reward_table.is_valid():
@@ -373,7 +404,7 @@ func step(input: Vector2, delta: float) -> void:
 		picking.cancel_walk()  # the keys take over
 	elif picking.is_walking():
 		walk = _walk_step(delta)
-	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing():  # the last second, the kill, the gore, the death beat and the menus: nobody walks
+	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing() and exit_state == "":  # the last second, the kill, the gore, the death beat, the menus and the exit: nobody walks
 		player.drive(walk, delta)
 		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
@@ -387,13 +418,14 @@ func step(input: Vector2, delta: float) -> void:
 	discovery_hud.refresh()
 	basket_hud.refresh(delta)
 	_tick_stuck(delta)
+	_tick_ending(delta)
 
 
 ## False while restarting, while the pause menu or the backpack is open, while a
-## gore beat plays, or once the travelers are dead (no one can pick). The spelling
+## gore beat plays, once the exit has been entered, or once the travelers are dead (no one can pick). The spelling
 ## view, both menus and the click-walk ask this too.
 func picks_allowed() -> bool:
-	if restarting or pause_menu.is_open or backpack.is_open or is_gore_playing():
+	if restarting or pause_menu.is_open or backpack.is_open or is_gore_playing() or exit_state != "":
 		return false
 	for id in GameState.TRAVELERS:
 		if not GameState.is_alive(id):
@@ -543,6 +575,7 @@ func tick_beat(delta: float) -> void:
 func _restart() -> void:
 	_cancel_gore()
 	_abandon_stuck()
+	_clear_ending()  # the note is loot, and a bank waiting for the next scene is not wanted
 	GameState.restart_scene()
 	if backpack != null:  # no selection, question or message carries into the new scene
 		backpack.reset()
@@ -574,10 +607,13 @@ func pick_nearest() -> bool:
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
 	if target["type"] == "":
 		return false
-	if target["type"] == "pile":
-		pick_pile(piles[target["index"]])
-	else:
-		pick_plant(plants[target["index"]])
+	match target["type"]:
+		"pile":
+			pick_pile(piles[target["index"]])
+		"note":
+			pick_note()
+		_:
+			pick_plant(plants[target["index"]])
 	return true
 
 
@@ -592,7 +628,14 @@ func _update_reach(delta: float) -> void:
 	var target: Dictionary = picking.nearest_target(spot)
 	_ring.visible = target["type"] != ""
 	if target["type"] != "":
-		var plant: Node3D = piles[target["index"]] if target["type"] == "pile" else plants[target["index"]]
+		var plant: Node3D
+		match target["type"]:
+			"pile":
+				plant = piles[target["index"]]
+			"note":
+				plant = note_node
+			_:
+				plant = plants[target["index"]]
 		if plant != _ring_plant:
 			_ring_plant = plant
 			_ring.mesh = _ring_mesh(plant.global_position)
@@ -690,10 +733,11 @@ func _give_reward(at: Vector3) -> Dictionary:
 func _on_word_completed(word_id: String) -> void:
 	var item_id := String(word_rewards.get("item_by_word", {}).get(word_id, ""))
 	var count := int(word_rewards.get("word_reward_count", 0))
-	if item_id == "" or count < 1 or not GameState.inventory.add(item_id, count):
-		return
-	var at: Vector3 = player.global_position + Vector3(0.0, float(word_rewards["label_height"]), 0.0)
-	_float_label("+%d %s" % [count, String(Content.item(item_id)["name_ko"])], at)
+	if item_id != "" and count >= 1 and GameState.inventory.add(item_id, count):
+		var at: Vector3 = player.global_position + Vector3(0.0, float(word_rewards["label_height"]), 0.0)
+		_float_label("+%d %s" % [count, String(Content.item(item_id)["name_ko"])], at)
+	if spelling.all_done():  # the sixth word, whichever order they came in
+		_open_exit()
 
 
 ## The --debug-notes user argument (or the test override): every note of
@@ -1272,7 +1316,7 @@ func _ray_hit(screen_pos: Vector2, layer: int) -> Dictionary:
 ## a plant again; moving straight from one plant onto another starts the new
 ## tooltip at once. Only one is up at a time: the latest trigger wins.
 func update_hover(screen_pos: Vector2, delta: float = 0.0) -> void:
-	if restarting or pause_menu.is_open or backpack.is_open:  # no names in the last second, the kill, the death beat or the menus
+	if restarting or pause_menu.is_open or backpack.is_open or exit_state != "":  # no names in the last second, the kill, the death beat, the menus or the exit
 		_hover_plant = null
 		_tip_plant = null
 		_tooltip.visible = false
@@ -1484,6 +1528,13 @@ func _build_props(props: Dictionary) -> void:
 ## the spares and the damage have settled); waits while the view is open or
 ## spare events are unsettled. Logs the verdict and its reason. Returns the verdict.
 func evaluate_stuck(event: String) -> Dictionary:
+	if exit_open:  # every word is done: there is nothing left to be stuck on, and no countdown can start
+		stuck_verdict = {"stuck": false, "reason": "every word is done, the exit is open", "plan": []}
+		_log_stuck(event, stuck_verdict, "")
+		if countdown.verdict(false, picks_allowed()) == "cancelled":
+			_stop_music()
+		stuck_hud.refresh(countdown, spelling_hud.is_open())
+		return stuck_verdict
 	if spelling_hud.is_open() or spares.has_pending():
 		_log_stuck(event, stuck_verdict, "deferred, the view is open or spares are unsettled")
 		return stuck_verdict
@@ -1529,7 +1580,7 @@ func _tick_stuck(delta: float) -> void:
 ## scene is restarting (the last second, the kill, the death beat), a traveler is
 ## dead or the menu is open already.
 func open_pause_menu() -> bool:
-	if spelling_hud.is_open() or not picks_allowed() or _dim != null or kill != null:
+	if spelling_hud.is_open() or (not picks_allowed() and exit_state != "hold") or _dim != null or kill != null:  # (Esc opens it over the black of the hold)
 		return false
 	if not pause_menu.open(true):
 		return false
@@ -1742,3 +1793,236 @@ func _stop_music() -> void:
 	_music_player.queue_free()
 	_music_player = null
 	audio_calls += 1
+
+
+# ---- The ending (data: foraging.ending): the exit note, the 고사목 and the black ----
+
+## Builds the rules, the 고사목 and its keep-out for the props (they would otherwise stand in
+## the gap). The 고사목 is scenery until the sixth word is done.
+func _build_ending(data: Dictionary) -> void:
+	ending = data
+	ending_logic = Ending.new(data)
+	ending_rng.seed = DecoyPlacement.derive_seed(placement_seed, 2)
+	dead_tree = DeadTree.new()
+	dead_tree.setup(data["dead_tree"])
+	var at: Vector2 = ending_logic.tree_position()
+	dead_tree.position = Vector3(at.x, terrain.height_at(at.x), at.y)
+	$Scenery.add_child(dead_tree)
+	_register_prop(dead_tree)
+	var step := float(data["exit"]["keep_out_step"])
+	var x: float = at.x - 2.0 * step
+	while x <= float(data["exit"]["walk_to_x"]) + step:
+		keep_out.append(Vector2(x, at.y))
+		x += step
+	for side in [-1.0, 1.0]:
+		keep_out.append(Vector2(at.x, at.y + side * (ending_logic.gap_width() / 2.0 + 1.0)))
+
+
+## The sixth word is done: the gap opens and the exit note's pause starts. The leftover
+## decoys and piles stay live, and the stuck countdown can no longer start. Only once.
+func _open_exit() -> void:
+	if exit_open:
+		return
+	exit_open = true
+	dead_tree.open(float(ending["dead_tree"]["open_s"]))
+	for traveler in travelers.values():
+		traveler.gap = ending_logic.gap_rect()
+	countdown.abandon()
+	_stop_music()
+	ending_logic.begin_wait()
+	exit_opened.emit()
+
+
+## True while the ending's clocks stand still: any panel or view is open, a gore beat
+## plays, or the scene is dying.
+func _ending_frozen() -> bool:
+	return spelling_hud.is_open() or pause_menu.is_open or backpack.is_open or is_gore_playing() or _dim != null or restarting
+
+
+## One tick of the ending: the fade once the exit is entered, else the exit trigger and
+## the note's pause and flight.
+func _tick_ending(delta: float) -> void:
+	if exit_state == "fading":
+		var done: bool = ending_logic.tick_fade(delta)
+		ending_hud.set_alpha(1.0 if done else ending_logic.fade_alpha())
+		if done:
+			_exit_faded()
+		return
+	if not exit_open or exit_state != "" or _ending_frozen():
+		return
+	var spot := Vector2(player.global_position.x, player.global_position.z)
+	if ending_logic.trigger_rect().has_point(spot):
+		_begin_exit()
+		return
+	match ending_logic.phase:
+		Ending.WAITING:
+			if ending_logic.tick_wait(delta):
+				_launch_note()
+		Ending.FLYING:
+			_fly_note(delta, spot)
+
+
+## The human traveler is in the trigger: input stops, the screen starts to go black, and
+## what they carry is kept for the next scene.
+func _begin_exit() -> void:
+	exit_state = "fading"
+	picking.cancel_walk()
+	_tip_plant = null
+	_tooltip.visible = false
+	ending_logic.begin_fade()
+	GameState.store_pending_bank(ending_logic.next_id())
+	exit_started.emit()
+
+
+## The screen is black: hand over to the next scene, or hold if it is not built.
+func _exit_faded() -> void:
+	ending_hud.set_alpha(1.0)
+	var target: String = ending_logic.next_id()
+	var path: String = ending_logic.scene_path(target)
+	if path == "":
+		exit_state = "hold"
+		ending_hud.show_line(ending_logic.hold_text(target))
+		return
+	exit_state = "handed_off"
+	exit_handoff.emit(target, path)
+	if get_tree().current_scene == self:
+		get_tree().change_scene_to_file(path)
+
+
+## True if the exit note may lie at (x, z): inside the walk limits and clear of the edges,
+## the 고사목, every plant and pile, and every prop (data: ending.note.clear_*, or the
+## smaller ending.note.relaxed.clear_* when `relaxed`).
+func _note_spot_ok(spot: Vector2, relaxed: bool = false) -> bool:
+	var paper: Dictionary = ending["note"]["relaxed"] if relaxed else ending["note"]
+	var edge := float(paper["clear_edge"])
+	if not walk_bounds().grow(-edge).has_point(spot) or spot.y > near_limit_at(spot.x) - edge:
+		return false
+	if spot.distance_to(ending_logic.tree_position()) < float(paper["clear_tree"]):
+		return false
+	var apart := float(paper["clear_plant"])
+	for plant in plants:
+		if Vector2(plant.global_position.x, plant.global_position.z).distance_to(spot) < apart:
+			return false
+	for pile in piles:
+		if pile != null and Vector2(pile.global_position.x, pile.global_position.z).distance_to(spot) < apart:
+			return false
+	var around := float(paper["clear_prop"])
+	for neighbour in range(floori(spot.x / FADE_CELL) - 1, floori(spot.x / FADE_CELL) + 2):
+		for prop in _props_by_cell.get(neighbour, []):
+			var box: AABB = prop.bounds
+			if Rect2(box.position.x, box.position.z, box.size.x, box.size.z).grow(around).has_point(spot):
+				return false
+	return true
+
+
+func _ground_at(spot: Vector2) -> Vector3:
+	return Vector3(spot.x, terrain.height_at(spot.x), spot.y)
+
+
+## The pause is over: picks the landing spot near the human traveler and sends the note
+## in from off the right (uphill) edge of the view.
+func _launch_note() -> void:
+	var paper: Dictionary = ending["note"]
+	var origin := Vector2(player.global_position.x, player.global_position.z)
+	var chosen: Dictionary = _choose_note_spot(origin)
+	if note_spot_source == "none valid":
+		push_warning("No clear ground for the exit note within reach of the traveler; it lands in the open")
+	var spot: Vector2 = chosen["spot"]
+	var start := _ground_at(spot)
+	start.x = maxf(camera.global_position.x + camera_half_width() + float(paper["start_margin"]), spot.x + float(paper["start_margin"]))
+	start.y += float(paper["start_height"])
+	note_node = ExitNote.new()
+	note_node.setup(paper)
+	add_child(note_node)
+	ending_logic.begin_flight(start, _ground_at(spot), spot, ending_rng.randf_range(0.0, TAU))
+	_pose_note()
+
+
+## A landing spot 1.5-3 m from `origin` (see Ending.choose_spot). If the ring has no clear
+## ground at all, the clearances relax (source "relaxed"). `note_spot_source` says how it went.
+func _choose_note_spot(origin: Vector2) -> Dictionary:
+	var chosen: Dictionary = ending_logic.choose_spot(ending_rng, origin, _note_spot_ok)
+	if chosen["source"] == "none valid":
+		var relaxed: Dictionary = ending_logic.choose_spot(ending_rng, origin, _note_spot_ok.bind(true))
+		if relaxed["source"] != "none valid":
+			relaxed["source"] = "relaxed"
+		chosen = relaxed
+	note_spot_source = String(chosen["source"])
+	return chosen
+
+
+func _pose_note() -> void:
+	var pose: Dictionary = ending_logic.pose()
+	note_node.global_position = pose["position"]
+	note_node.rotation = pose["rotation"]
+
+
+## One tick of the flight. If the human traveler has walked out of the 1.5-3 m range the
+## note is re-aimed from where it is; it lands when its line has been flown and the
+## traveler is in range.
+func _fly_note(delta: float, from: Vector2) -> void:
+	if not ending_logic.in_range(from, ending_logic.spot):
+		_retarget_note(from)
+	var ended: bool = ending_logic.tick_flight(delta)
+	_pose_note()
+	if not ended:
+		return
+	if not ending_logic.in_range(from, ending_logic.spot):
+		_retarget_note(from)
+		return
+	_land_note()
+
+
+func _retarget_note(from: Vector2) -> void:
+	var chosen: Dictionary = _choose_note_spot(from)
+	ending_logic.retarget(_ground_at(chosen["spot"]), chosen["spot"])
+
+
+## The note comes to rest flat on the ground and can be picked (nearest-target logic and
+## reach ring, like a chaos pile: no name, no glow).
+func _land_note() -> void:
+	ending_logic.land()
+	var spot: Vector2 = ending_logic.spot
+	var at := _ground_at(spot)
+	at.y += float(ending["note"]["rest_lift"])
+	note_node.global_position = at
+	note_node.rotation = Vector3(-PI / 2.0, ending_logic.rest_yaw, 0.0)
+	picking.add_note(spot)
+	note_landed.emit()
+
+
+## Takes the landed note: 수민's note goes into the backpack and "+1 note" floats up from
+## it. Does nothing if it has not landed, is gone already or picks are not allowed. Only
+## the human traveler's position is ever asked (pick_nearest), never the partner's.
+func pick_note() -> void:
+	var result: Dictionary = picking.pick_note(picks_allowed())
+	if result["result"] == "none":
+		return
+	var at: Vector3 = note_node.global_position
+	ending_logic.take()
+	note_node.get_parent().remove_child(note_node)
+	note_node.queue_free()
+	note_node = null
+	if GameState.inventory.add(String(ending["note"]["item"])):
+		_float_label(String(ending["note"]["pickup_text"]), at + Vector3(0.0, 0.5, 0.0))
+	note_picked.emit()
+
+
+## A death or Restart scene: the note (flying or lying) is gone, the gap is shut, the black
+## is lifted and the bank waiting for the next scene is thrown away. (The scene is then
+## reloaded; a map that is not the current scene, as in the tests, is just reset here.)
+func _clear_ending() -> void:
+	if note_node != null and is_instance_valid(note_node):
+		note_node.get_parent().remove_child(note_node)
+		note_node.queue_free()
+	note_node = null
+	picking.clear_note()
+	ending_logic = Ending.new(ending)
+	exit_open = false
+	exit_state = ""
+	dead_tree.close()
+	for traveler in travelers.values():
+		traveler.gap = Rect2()
+	ending_hud.set_alpha(0.0)
+	ending_hud.hide_line()
+	GameState.discard_pending_bank()

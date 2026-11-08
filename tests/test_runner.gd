@@ -127,11 +127,20 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_notebook_input",
 	"test_notebook_quick_keys",
 	"test_debug_notes",
+	"test_ending_data",
+	"test_pending_bank",
+	"test_ending_logic",
+	"test_ending_keys",
+	"test_ending_note",
+	"test_ending_flight_follows",
+	"test_ending_landing_spots",
+	"test_ending_exit",
+	"test_ending_leftovers",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
-## the printed total minus a small margin (currently 5).
-const MIN_CHECKS := 2712
+## the printed total minus a small margin (currently 6).
+const MIN_CHECKS := 3115
 
 
 func check(condition: bool, label: String) -> void:
@@ -295,6 +304,16 @@ func _ready() -> void:
 	test_notebook_input()
 	await test_notebook_quick_keys()
 	await test_debug_notes()
+	print("== Ending ==")
+	test_ending_data()
+	test_pending_bank()
+	test_ending_logic()
+	await test_ending_keys()
+	await test_ending_note()
+	await test_ending_flight_follows()
+	await test_ending_landing_spots()
+	await test_ending_exit()
+	await test_ending_leftovers()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -1007,7 +1026,7 @@ func test_terrain_scene() -> void:
 	check(styles.size() == 4, "all four letter styles are in use")
 
 	# Scenery and props.
-	check(map.get_node("Scenery").get_child_count() == 12, "12 구상나무 as scenery")
+	check(map.get_node("Scenery").get_children().filter(func(n: Node) -> bool: return n.name != &"DeadTree").size() == 12 and map.get_node("Scenery").has_node("DeadTree"), "12 구상나무 as scenery, and the 고사목 beside them")
 	var scenery_clean := map.get_node("Scenery").find_children("*", "Label3D", true, false).is_empty()
 	check(scenery_clean, "the trees carry no letters")
 	var props_clear := true
@@ -8715,20 +8734,20 @@ func test_notebook_pages_scene() -> void:
 	var viewport := map.get_viewport()
 	var hud = map.backpack_hud
 	# Empty state.
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	await _settle_layout()
 	check(hud.notebook_visible() and hud.notebook_empty_text() == "No notes yet." and hud.notebook_text() == "", "no notes: the page says 'No notes yet.'")
 	check(not hud.notebook_arrow_visible(-1) and not hud.notebook_arrow_visible(1), "and there is nothing to flip to")
 	_tap(viewport, KEY_A)
 	_tap(viewport, KEY_RIGHT)
 	check(hud.notebook_empty_text() == "No notes yet.", "flipping on the empty page does nothing")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	check(not map.backpack.is_open and not get_tree().paused, "(setup) closed")
 	# Two notes, A then B.
 	GameState.inventory.add("test_note_a")
 	GameState.inventory.add("plant_ma", 2)
 	GameState.inventory.add("test_note_b")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	await _settle_layout()
 	check(hud.notebook_text() == "Page B\nsecond" and hud.notebook_empty_text() == "", "B, gained last, shows first")
 	check(hud.notebook_arrow_visible(-1) and not hud.notebook_arrow_visible(1) and hud.notebook_arrow_text(-1) == "◀" and hud.notebook_arrow_text(1) == "▶", "◀ shows because an older page exists; ▶ is hidden")
@@ -8753,7 +8772,7 @@ func test_notebook_pages_scene() -> void:
 	check(style.bg_color.is_equal_approx(Color(look["page_color"][0], look["page_color"][1], look["page_color"][2])) and hud.notebook_text_label().get_theme_color("font_color").is_equal_approx(Color(look["page_text_color"][0], look["page_text_color"][1], look["page_text_color"][2])), "the page is the data's cream with the data's dark text")
 	check(hud.notebook_text_label().get_theme_font("font") == KO_FONT and hud.notebook_text_label().get_theme_font_size("font_size") == int(look["font_size"]), "the text is Noto Sans KR at the data's size")
 	# Order survives a death-style restore and reopening.
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	check(not get_tree().paused, "(setup) closed")
 	var snap: Dictionary = GameState.inventory.snapshot()
 	GameState.inventory.clear()
@@ -8763,15 +8782,15 @@ func test_notebook_pages_scene() -> void:
 	check(hud.notebook_text() == "Page B\nsecond", "after a snapshot and restore B still shows first")
 	_tap(viewport, KEY_SLASH)
 	# A short page needs no scroll, and its keys do nothing.
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	await _settle_layout()
 	check(hud.notebook_scroll_max() == 0 and not hud.scroll_notebook(1), "a short page has nothing to scroll")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	# The notes of the debug/exit kind are plain items, so removing one changes the pages.
 	GameState.inventory.remove("test_note_b")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	check(hud.notebook_text() == "Page A\nfirst" and not hud.notebook_arrow_visible(1) and not hud.notebook_arrow_visible(-1), "with B gone, A is the only page")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	_remove_test_notes()
 	map.free()
 	get_tree().paused = false
@@ -8792,7 +8811,7 @@ func test_notebook_fit() -> void:
 		GameState.inventory.add("hallasan_exit_sumin")
 		var viewport := map.get_viewport()
 		var hud = map.backpack_hud
-		_tap(viewport, KEY_N)
+		_tap(viewport, KEY_Q)
 		await _settle_layout()
 		await _settle_layout()
 		var screen := Rect2(Vector2.ZERO, Vector2(size))
@@ -8827,8 +8846,8 @@ func test_notebook_fit() -> void:
 		# A page of 60 lines always scrolls, and a flip starts the next page at its top.
 		GameState.inventory.add("test_note_long")
 		hud.refresh()
-		_tap(viewport, KEY_N)
-		_tap(viewport, KEY_N)
+		_tap(viewport, KEY_Q)
+		_tap(viewport, KEY_Q)
 		await _settle_layout()
 		hud.refresh()
 		check(hud.notebook_text().begins_with("Line 0 of") and hud.notebook_scroll_max() > 0, tag + "a 60-line note scrolls")
@@ -8837,7 +8856,7 @@ func test_notebook_fit() -> void:
 		_tap(viewport, KEY_A)
 		await _settle_layout()
 		check(hud.notebook_text() == EXIT_NOTE_TEXT and hud.notebook_scroll() == 0, tag + "flipping to another page starts at its top")
-		_tap(viewport, KEY_N)
+		_tap(viewport, KEY_Q)
 		_remove_test_notes()
 		map.free()
 		get_tree().paused = false
@@ -8847,11 +8866,11 @@ func test_notebook_fit() -> void:
 
 
 func test_notebook_input() -> void:
-	check(_bound_keys("notebook_p1") == [[KEY_N, 0]] and _bound_keys("notebook_p2") == [[KEY_SLASH, 0]], "notebook_p1 is bound to N only and notebook_p2 to / only")
-	var n := _key_event(KEY_N)
+	check(_bound_keys("notebook_p1") == [[KEY_Q, 0]] and _bound_keys("notebook_p2") == [[KEY_SLASH, 0]], "notebook_p1 is bound to Q only and notebook_p2 to / only")
+	var n := _key_event(KEY_Q)
 	var slash := _key_event(KEY_SLASH)
-	check(n.is_action_pressed("notebook_p1") and not n.is_action_pressed("notebook_p2") and slash.is_action_pressed("notebook_p2") and not slash.is_action_pressed("notebook_p1"), "N is P1's key and / is P2's")
-	check(BackpackHudScript.notebook_action(n) == "notebook_p1" and BackpackHudScript.notebook_action(slash) == "notebook_p2" and BackpackHudScript.notebook_action(_key_event(KEY_TAB)) == "" and BackpackHudScript.notebook_action(_key_event(KEY_N, false)) == "", "notebook_action() names the key, and a release or another key is nothing")
+	check(n.is_action_pressed("notebook_p1") and not n.is_action_pressed("notebook_p2") and slash.is_action_pressed("notebook_p2") and not slash.is_action_pressed("notebook_p1"), "Q is P1's key and / is P2's")
+	check(BackpackHudScript.notebook_action(n) == "notebook_p1" and BackpackHudScript.notebook_action(slash) == "notebook_p2" and BackpackHudScript.notebook_action(_key_event(KEY_TAB)) == "" and BackpackHudScript.notebook_action(_key_event(KEY_Q, false)) == "", "notebook_action() names the key, and a release or another key is nothing")
 	var clash: Array[String] = []
 	for action in InputMap.get_actions():
 		if action == "notebook_p1" or action == "notebook_p2":
@@ -8859,7 +8878,7 @@ func test_notebook_input() -> void:
 		for key_event in [n, slash]:
 			if InputMap.event_is_action(key_event, action):
 				clash.append("%s/%s" % [action, key_event.as_text_physical_keycode()])
-	check(clash.is_empty(), "neither N nor / is bound to any other input action (%s)" % str(clash))
+	check(clash.is_empty(), "neither Q nor / is bound to any other input action (%s)" % str(clash))
 	_section_done("test_notebook_input")
 
 
@@ -8871,7 +8890,7 @@ func test_notebook_quick_keys() -> void:
 	var viewport := map.get_viewport()
 	var hud = map.backpack_hud
 	var pack = map.backpack
-	for case in [["P1 N", KEY_N, "notebook_p1"], ["P2 /", KEY_SLASH, "notebook_p2"]]:
+	for case in [["P1 Q", KEY_Q, "notebook_p1"], ["P2 /", KEY_SLASH, "notebook_p2"]]:
 		var tag: String = case[0] + ": "
 		_tap(viewport, case[1])
 		await _settle_layout()
@@ -8884,7 +8903,7 @@ func test_notebook_quick_keys() -> void:
 		check(not pack.is_open and not hud.notebook_visible() and not get_tree().paused and not map.pause_menu.is_open, tag + "Esc closes it entirely and resumes (the pause menu stays shut)")
 		# The other player's quick key, and the backpack keys, do nothing over it.
 		_tap(viewport, case[1])
-		var other_key: Key = KEY_SLASH if case[1] == KEY_N else KEY_N
+		var other_key: Key = KEY_SLASH if case[1] == KEY_Q else KEY_Q
 		_tap(viewport, other_key)
 		check(pack.is_open and pack.notebook_open, tag + "the other player's quick key does not close it")
 		_tap(viewport, KEY_TAB)
@@ -8895,30 +8914,30 @@ func test_notebook_quick_keys() -> void:
 		check(not pack.is_open and not get_tree().paused, tag + "(setup) closed")
 	# Over the backpack list or a notebook opened from it, the quick keys do nothing.
 	_tap(viewport, KEY_TAB)
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	_tap(viewport, KEY_SLASH)
 	check(pack.is_open and not pack.notebook_open and not pack.notebook_quick, "over the backpack list the quick keys do nothing")
 	_tap(viewport, KEY_S)
 	_tap(viewport, KEY_SPACE)
 	check(pack.notebook_open and not pack.notebook_quick, "(setup) the notebook opened from the list")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	_tap(viewport, KEY_SLASH)
 	check(pack.is_open and pack.notebook_open and not pack.notebook_quick, "over it the quick keys do nothing either")
 	_tap(viewport, KEY_ESCAPE)
 	_tap(viewport, KEY_ESCAPE)
 	check(not pack.is_open and not get_tree().paused, "(setup) closed with two Escs")
 	# Gating: the same states the backpack refuses, for both keys.
-	var keys := [KEY_N, KEY_SLASH]
+	var keys := [KEY_Q, KEY_SLASH]
 	check(map.open_spelling("ma") and get_tree().paused, "(setup) the spelling view is open")
 	for k in keys:
 		_tap(viewport, k)
-	check(not pack.is_open and not hud.notebook_visible() and map.spelling_hud.is_open() and not map.open_notebook("notebook_p1"), "N and / don't open it over the spelling view")
+	check(not pack.is_open and not hud.notebook_visible() and map.spelling_hud.is_open() and not map.open_notebook("notebook_p1"), "Q and / don't open it over the spelling view")
 	map.spelling_hud.close()
 	_tap(viewport, KEY_ESCAPE)
 	check(map.pause_menu.is_open, "(setup) the pause menu is open")
 	for k in keys:
 		_tap(viewport, k)
-	check(not pack.is_open and map.pause_menu.is_open and not map.pause_menu.confirming and map.pause_menu.focus == 0 and not map.open_notebook("notebook_p2"), "N and / don't open it over the pause menu, and the menu's focus is untouched")
+	check(not pack.is_open and map.pause_menu.is_open and not map.pause_menu.confirming and map.pause_menu.focus == 0 and not map.open_notebook("notebook_p2"), "Q and / don't open it over the pause menu, and the menu's focus is untouched")
 	_tap(viewport, KEY_S)
 	_tap(viewport, KEY_SPACE)
 	check(map.pause_menu.confirming, "(setup) the restart question is up")
@@ -8939,9 +8958,9 @@ func test_notebook_quick_keys() -> void:
 	GameState.heart_units["nestor"] = 0
 	check(not map.open_notebook("notebook_p1") and not pack.is_open, "with a traveler dead it can't open")
 	GameState.heart_units["nestor"] = GameState.max_units()
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	check(pack.is_open, "(control) with all of that cleared the same key opens it")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	map.free()
 	get_tree().paused = false
 	# Gore.
@@ -8951,7 +8970,7 @@ func test_notebook_quick_keys() -> void:
 	check(map.is_gore_playing(), "(setup) a gore beat is playing")
 	for k in keys:
 		_tap(viewport, k)
-	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "N and / do nothing during a gore beat")
+	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "Q and / do nothing during a gore beat")
 	_finish_gore(map)
 	map.free()
 	get_tree().paused = false
@@ -8963,12 +8982,12 @@ func test_notebook_quick_keys() -> void:
 	check(map.countdown.is_locked() and map.restarting and map.kill == null, "(setup) the last second")
 	for k in keys:
 		_tap(viewport, k)
-	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p2"), "N and / are ignored in the last second")
+	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p2"), "Q and / are ignored in the last second")
 	_run(map, 1.0, 0.05)
 	check(map.kill != null and map.deer != null and not map.is_death_beat_playing(), "(setup) the monster sequence runs")
 	for k in keys:
 		_tap(viewport, k)
-	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "N and / are ignored during the monster sequence")
+	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "Q and / are ignored during the monster sequence")
 	var guard := 0
 	while not map.is_death_beat_playing() and guard < 100:
 		_run(map, 0.1, 0.05)
@@ -8976,7 +8995,7 @@ func test_notebook_quick_keys() -> void:
 	check(map.is_death_beat_playing(), "(setup) the death beat is playing")
 	for k in keys:
 		_tap(viewport, k)
-	check(not map.backpack.is_open and not get_tree().paused and not map.backpack_hud.notebook_visible() and not map.open_notebook("notebook_p1"), "N and / are ignored during the death beat")
+	check(not map.backpack.is_open and not get_tree().paused and not map.backpack_hud.notebook_visible() and not map.open_notebook("notebook_p1"), "Q and / are ignored during the death beat")
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
@@ -8998,10 +9017,10 @@ func test_debug_notes() -> void:
 	map = await _kit_map(false)
 	var viewport := map.get_viewport()
 	check(GameState.inventory.snapshot() == {"sucheop": 1, "hallasan_exit_sumin": 1}, "with --debug-notes the exit note is in the backpack at scene start")
-	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_Q)
 	await _settle_layout()
-	check(map.backpack_hud.notebook_text() == EXIT_NOTE_TEXT, "N shows 수민's note, word for word")
-	_tap(viewport, KEY_N)
+	check(map.backpack_hud.notebook_text() == EXIT_NOTE_TEXT, "Q shows 수민's note, word for word")
+	_tap(viewport, KEY_Q)
 	_tap(viewport, KEY_TAB)
 	await _settle_layout()
 	check(map.backpack_hud.row_count() == 1 and map.backpack_hud.row_id(0) == "sucheop", "the note has no row in the backpack")
@@ -9025,3 +9044,679 @@ func test_debug_notes() -> void:
 	get_window().size = window_before
 	GameState.new_hike()
 	_section_done("test_debug_notes")
+
+
+# ---- Prompt 8b: the foraging ending (exit note, 고사목 exit, pending bank, hold on black) ----
+
+const EndingScript := preload("res://scenes/foraging/ending.gd")
+const EXIT_ITEM := "hallasan_exit_sumin"
+const NEXT_ID := "cutscene_foraging_to_animals"
+const DT := 1.0 / 60.0
+
+
+## A map with the real kit, optional extra items and DDEOK held at the scene start, and every
+## target letter in the basket (legacy layout: decoys at their fixed spots, no piles).
+func _held_kit_map(held := {}, ddeok := 0, pick_all := true) -> Node3D:
+	GameState.new_hike(ddeok)
+	for id in held:
+		GameState.inventory.add(id, held[id])
+	GameState.begin_scene("")
+	GameState.controlled = "fernanda"
+	var legacy_before := Foraging.legacy_layout
+	Foraging.legacy_layout = true   # the decoys at their fixed spots, no piles: the same map every time
+	Foraging.seed_override = 7      # ...and the same ending rolls
+	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
+	add_child(map)
+	Foraging.seed_override = -1
+	Foraging.legacy_layout = legacy_before
+	map.set_physics_process(false)
+	map.set_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	if pick_all:
+		for plant in map.plants:
+			if plant.kind == "target":
+				map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	return map
+
+
+## Spells the first `count` words through the real Spelling.
+func _finish_words(map: Node3D, count := 6) -> void:
+	var done := 0
+	for id in PLANT_WORDS:
+		if done >= count:
+			return
+		_spell(map, id)
+		get_tree().paused = false
+		done += 1
+
+
+func _put(map: Node3D, traveler: Node3D, x: float, z: float) -> void:
+	traveler.global_position = Vector3(x, map.terrain.height_at(x), z)
+	map.update_camera(0.0, true)
+
+
+func _xz(node: Node3D) -> Vector2:
+	return Vector2(node.global_position.x, node.global_position.z)
+
+
+func _walk(map: Node3D, input: Vector2, seconds: float) -> void:
+	for i in roundi(seconds / DT):
+		map.step(input, DT)
+
+
+func _float_texts(map: Node3D) -> Array[String]:
+	var texts: Array[String] = []
+	for label in map.find_children("*", "Label3D", false, false):
+		texts.append(label.text)
+	return texts
+
+
+func test_ending_data() -> void:
+	var config := _config()
+	var ending: Dictionary = config["ending"]
+	check(is_equal_approx(float(ending["note_delay_s"]), 1.5) and is_equal_approx(float(ending["flight_s"]), 5.0) and is_equal_approx(float(ending["fade_s"]), 1.0), "the note waits 1.5 s, flies 5 s, and the fade takes 1 s")
+	check(ending["next"] == NEXT_ID and ending["scene_paths"] is Dictionary and ending["scene_paths"].is_empty(), "the next scene is the animals cutscene, which is not built")
+	check(ending["hold_text"] == "next: %s (not built)", "the debug line text is in the data")
+	var paper: Dictionary = ending["note"]
+	check(paper["item"] == EXIT_ITEM and Content.notes.has(EXIT_ITEM) and Content.has_item(EXIT_ITEM), "the note gives 수민's exit note of data/notes/hallasan.json")
+	check(paper["pickup_text"] == "+1 note", "taking it floats '+1 note'")
+	check(is_equal_approx(float(paper["range_min"]), 1.5) and is_equal_approx(float(paper["range_max"]), 3.0), "it lands 1.5-3 m from the traveler")
+	var tree := Vector2(float(ending["dead_tree"]["position"][0]), float(ending["dead_tree"]["position"][1]))
+	var stage_width := float(config["stage"]["width"])
+	check(tree.x >= stage_width - 2.5 and tree.x <= stage_width and absf(tree.y) < float(config["stage"]["depth"]) / 2.0, "the 고사목 stands at the far right (uphill) edge of the stage (%s)" % str(tree))
+	var near_grove := INF
+	for pos in config["scenery"]["gusangnamu"]["positions"]:
+		near_grove = minf(near_grove, tree.distance_to(Vector2(float(pos[0]), float(pos[1]))))
+	check(near_grove <= 6.0, "...next to the 구상나무 groves (nearest fir %.1f m)" % near_grove)
+	check(float(ending["dead_tree"]["gap_width"]) >= 4.0 * 0.35 * 1.4, "the gap is wide enough for a traveler (2 x 0.35 m radius, with room)")
+	var exit: Dictionary = ending["exit"]
+	check(float(exit["trigger_from_x"]) > tree.x + 0.5 and float(exit["walk_to_x"]) > float(exit["trigger_from_x"]) and float(exit["walk_to_x"]) < stage_width + float(config["apron"]["sides"]) - 2.0, "the trigger lies beyond the tree and inside the apron")
+	var spots: Array = []
+	for entry in config["plants"]["placed"]:
+		spots.append(Vector2(float(entry["x"]), float(entry["z"])))
+	for slot in config["decoy_placement"]["slots"] + config["chaos_piles"]["slots"]:
+		spots.append(Vector2(float(slot[0]), float(slot[1])))
+	for id in config["spares"]["slots"]:
+		spots.append(Vector2(float(config["spares"]["slots"][id][0]), float(config["spares"]["slots"][id][1])))
+	check(_nearest_distance(tree, spots) >= 3.0, "no plant, slot or spare spot is within 3 m of the 고사목 (%.1f m)" % _nearest_distance(tree, spots))
+	var reserved := PackedStringArray()
+	for action in InputMap.get_actions():
+		if InputMap.event_is_action(_key_event(KEY_Q), action):
+			reserved.append(action)
+	check(reserved == PackedStringArray(["notebook_p1"]), "Q is bound to the notebook and nothing else (%s)" % str(reserved))
+	check(_bound_keys("notebook_p1") == [[KEY_Q, 0]], "notebook_p1 is Q only")
+	check(InputMap.get_actions().filter(func(a: StringName) -> bool: return InputMap.event_is_action(_key_event(KEY_N), a)).is_empty(), "N is bound to nothing")
+	_section_done("test_ending_data")
+
+
+func test_pending_bank() -> void:
+	GameState.new_hike(10)
+	GameState.inventory.add("plant_ma", 2)
+	GameState.damage_units("nestor", 3)
+	GameState.begin_scene("foraging")
+	GameState.inventory.add("plant_gobi", 2)  # gained in the scene
+	GameState.add_ddeok(7)
+	var bank_inventory := GameState.inventory.snapshot()
+	var bank_units := GameState.heart_units.duplicate()
+	GameState.store_pending_bank("next_x")
+	check(GameState.has_pending_bank() and GameState.pending_bank["target"] == "next_x" and GameState.pending_bank["ddeok"] == 17 and GameState.pending_bank["inventory"] == bank_inventory and GameState.pending_bank["units"] == bank_units, "the pending bank holds the backpack, hearts, DDEOK and the target id")
+	check(GameState.inventory.snapshot() == bank_inventory and GameState.ddeok == 17, "storing it changes nothing that is live")
+	GameState.inventory.add("plant_ma", 1)  # (the bank is a copy)
+	check(GameState.pending_bank["inventory"] == bank_inventory, "it is a copy, not a view of the live backpack")
+	GameState.inventory.restore(bank_inventory)
+	# Restarting the old scene still gives its own start snapshot, bank or not.
+	GameState.restart_scene()
+	check(GameState.inventory.snapshot() == {"sucheop": 1, "plant_ma": 2} and GameState.ddeok == 10 and GameState.has_pending_bank(), "Restart scene returns to the scene-start snapshot while a bank waits")
+	GameState.inventory.restore(bank_inventory)
+	GameState.ddeok = 3
+	GameState.heart_units["fernanda"] = 1
+	GameState.begin_scene("some_other_scene")
+	check(GameState.has_pending_bank() and GameState.ddeok == 3, "another scene's begin_scene does not take the bank")
+	GameState.begin_scene("next_x")
+	check(not GameState.has_pending_bank() and GameState.inventory.snapshot() == bank_inventory and GameState.ddeok == 17 and GameState.heart_units == bank_units, "the target scene's begin_scene applies the bank")
+	GameState.inventory.clear()
+	GameState.ddeok = 0
+	GameState.restart_scene()
+	check(GameState.inventory.snapshot() == bank_inventory and GameState.ddeok == 17, "...and it is that scene's start snapshot")
+	GameState.store_pending_bank("next_x")
+	GameState.discard_pending_bank()
+	check(not GameState.has_pending_bank(), "a bank can be discarded")
+	GameState.store_pending_bank("next_x")
+	GameState.new_hike()
+	check(not GameState.has_pending_bank(), "a new hike drops any bank")
+	_section_done("test_pending_bank")
+
+
+func test_ending_logic() -> void:
+	var data: Dictionary = _config()["ending"]
+	var e = EndingScript.new(data)
+	check(e.phase == "idle" and not e.tick_wait(10.0) and not e.tick_flight(10.0), "nothing runs before the sixth word")
+	e.begin_wait()
+	check(e.phase == "waiting" and not e.tick_wait(1.4) and e.tick_wait(0.11), "the wait is 1.5 s")
+	var start := Vector3(30.0, 9.0, 4.0)
+	var finish := Vector3(20.0, 3.0, 1.0)
+	e.begin_flight(start, finish, Vector2(20.0, 1.0), 0.7)
+	check(e.phase == "flying" and e.pose()["position"].is_equal_approx(start), "the flight starts at the start")
+	var finished := false
+	var ticks := 0
+	var ended_at := 0.0
+	while ticks < 400:
+		finished = e.tick_flight(0.05)
+		ticks += 1
+		if finished:
+			ended_at = e.elapsed
+			break
+	check(finished and absf(ended_at - 5.0) < 0.06, "it ends after flight_s (%.2f s)" % ended_at)
+	var rest: Dictionary = e.pose()
+	check(rest["position"].is_equal_approx(finish + Vector3(0.0, float(data["note"]["rest_lift"]), 0.0)), "it comes to rest on the ground, lifted by rest_lift")
+	check(is_equal_approx(rest["rotation"].x, -PI / 2.0) and absf(rest["rotation"].z) < 0.001 and is_equal_approx(rest["rotation"].y, 0.7 + deg_to_rad(float(data["note"]["spin_deg_s"])) * 5.0 * 0.5), "it lies flat (face up) at the end, the flutter gone, turned by its spin")
+	# The flutter: sway, spin, bob and tilt are all there mid-flight.
+	e.begin_flight(start, finish, Vector2(20.0, 1.0), 0.0)
+	var sides: Array[float] = []
+	var bobs: Array[float] = []
+	var tilts: Array[float] = []
+	var yaws: Array[float] = []
+	var horizontal := Vector3(finish.x - start.x, 0.0, finish.z - start.z).normalized()
+	for i in 50:
+		e.tick_flight(0.05)
+		var pose: Dictionary = e.pose()
+		var p: Vector3 = pose["position"] - e.base_position()
+		sides.append(Vector3(p.x, 0.0, p.z).dot(Vector3(-horizontal.z, 0.0, horizontal.x)))
+		bobs.append(p.y)
+		tilts.append(pose["rotation"].x + PI / 2.0)
+		yaws.append(pose["rotation"].y)
+	check(sides.max() > 0.2 and sides.min() < -0.2, "it sways to both sides of its line (%.2f..%.2f m)" % [sides.min(), sides.max()])
+	check(bobs.max() > 0.05 and bobs.min() < -0.05, "it bobs up and down")
+	check(tilts.max() > 0.1 and tilts.min() < -0.1, "it tilts back and forth")
+	check(yaws[40] - yaws[0] > 1.0, "it spins (%.1f rad in the first 2 s)" % (yaws[40] - yaws[0]))
+	# A re-aim never moves the note.
+	e.begin_flight(start, finish, Vector2(20.0, 1.0), 0.0)
+	for i in 40:
+		e.tick_flight(0.05)
+	var before: Vector3 = e.base_position()
+	e.retarget(Vector3(25.0, 4.0, -3.0), Vector2(25.0, -3.0))
+	check(e.base_position().is_equal_approx(before) and e.retargets == 1 and e.spot == Vector2(25.0, -3.0), "a re-aim goes on from where the note is")
+	check(is_equal_approx(e.seg_length, 3.0), "...and takes the flight's remaining time (%.2f s)" % e.seg_length)
+	for i in 59:
+		e.tick_flight(0.05)
+	e.retarget(Vector3(25.0, 4.0, -3.0), Vector2(25.0, -3.0))
+	check(is_equal_approx(e.seg_length, float(data["note"]["retarget_min_s"])), "a re-aim at the very end still takes retarget_min_s")
+	e.land()
+	check(e.phase == "landed", "it lands")
+	e.take()
+	check(e.phase == "taken", "...and can be taken")
+	e.clear()
+	check(e.phase == "gone", "...and is lost on a restart")
+	# Range and the landing spot.
+	var o := Vector2(10.0, 0.0)
+	check(e.in_range(o, o + Vector2(1.5, 0.0)) and e.in_range(o, o + Vector2(0.0, 3.0)) and not e.in_range(o, o + Vector2(1.49, 0.0)) and not e.in_range(o, o + Vector2(3.01, 0.0)), "in_range is 1.5-3 m, ends included")
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 5
+	var inside := true
+	var kinds := {}
+	for i in 100:
+		var chosen: Dictionary = e.choose_spot(rng, o, func(v: Vector2) -> bool: return true)
+		kinds[chosen["source"]] = true
+		inside = inside and e.in_range(o, chosen["spot"])
+	check(inside and kinds.keys() == ["random"], "choose_spot finds a spot in range at once when all ground is valid")
+	var thin: Callable = func(v: Vector2) -> bool: return v.x > o.x + 2.9 and absf(v.y - o.y) < 0.25
+	var narrow: Dictionary = e.choose_spot(rng, o, thin)
+	check(narrow["source"] == "scan" and e.in_range(o, narrow["spot"]) and thin.call(narrow["spot"]), "when the random draws fail it scans the ring and still finds the one valid spot")
+	check(e.choose_spot(rng, o, func(v: Vector2) -> bool: return false)["source"] == "none valid", "with no valid ground at all it says so")
+	# Geometry and the target.
+	var gap: Rect2 = e.gap_rect()
+	var trigger: Rect2 = e.trigger_rect()
+	var tree: Vector2 = e.tree_position()
+	check(is_equal_approx(gap.size.y, e.gap_width()) and is_equal_approx(gap.get_center().y, tree.y) and gap.end.x > trigger.end.x - 0.001, "the gap runs through the tree to the end of the walkable strip")
+	check(trigger.position.x > tree.x and trigger.end.x <= gap.end.x + 0.001 and trigger.position.y >= gap.position.y - 0.001 and trigger.end.y <= gap.end.y + 0.001, "the trigger lies inside the gap strip, beyond the tree")
+	check(e.next_id() == NEXT_ID and e.scene_path(NEXT_ID) == "" and e.hold_text(NEXT_ID) == "next: cutscene_foraging_to_animals (not built)", "the target does not resolve; the hold line reads 'next: <id> (not built)'")
+	var built: Dictionary = data.duplicate(true)
+	built["scene_paths"] = {"made": "res://scenes/foraging/foraging.tscn", "lost": "res://scenes/nowhere.tscn"}
+	var e2 = EndingScript.new(built)
+	check(e2.scene_path("made") == "res://scenes/foraging/foraging.tscn" and e2.scene_path("lost") == "" and e2.scene_path("unknown") == "", "a target resolves only if its scene file exists")
+	# The fade.
+	check(not e.is_fading() and e.fade_alpha() == 0.0, "no fade to begin with")
+	e.begin_fade()
+	check(e.is_fading() and not e.tick_fade(0.5) and is_equal_approx(e.fade_alpha(), 0.5), "half way through the fade it is half black")
+	check(e.tick_fade(0.5) and not e.is_fading(), "after fade_s it is done")
+	_section_done("test_ending_logic")
+
+
+func test_ending_keys() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _held_kit_map({}, 0, false)
+	var viewport := map.get_viewport()
+	_tap(viewport, KEY_N)
+	await _settle_layout()
+	check(not map.backpack.is_open and not get_tree().paused, "N does nothing")
+	_tap(viewport, KEY_Q)
+	await _settle_layout()
+	check(map.backpack.is_open and map.backpack.notebook_open and map.backpack.notebook_key == "notebook_p1" and get_tree().paused, "Q opens the 수첩 for P1")
+	_tap(viewport, KEY_N)
+	await _settle_layout()
+	check(map.backpack.is_open and map.backpack.notebook_open, "N still does nothing with it open")
+	_tap(viewport, KEY_Q)
+	await _settle_layout()
+	check(not map.backpack.is_open and not get_tree().paused, "Q closes it again")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_ending_keys")
+
+
+func test_ending_note() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _held_kit_map()
+	var ending: Dictionary = map.ending
+	check(map.dead_tree != null and not map.dead_tree.is_open and not map.exit_open and map.note_node == null, "(setup) the 고사목 stands closed")
+	_finish_words(map, 5)
+	_run(map, 10.0)
+	check(not map.exit_open and map.note_node == null and map.ending_logic.phase == "idle" and not map.dead_tree.is_open, "no note and no gap after five words")
+	check(not _float_texts(map).has("+1 note"), "(sanity) nothing floats")
+	# The sixth word.
+	var landed: Array[int] = [0]
+	map.note_landed.connect(func() -> void: landed[0] += 1)
+	_spell(map, "simiro")
+	get_tree().paused = false
+	check(map.exit_open and map.ending_logic.phase == "waiting" and map.note_node == null, "the sixth word opens the exit and starts the wait; no note yet")
+	check(_float_texts(map).has("+2 시로미"), "(sanity) its '+2' floats")
+	_run(map, 1.4)
+	check(map.note_node == null, "no note after 1.4 s")
+	_run(map, 0.12)
+	check(map.note_node != null and map.ending_logic.phase == "flying" and map.note_node.get_parent() == map, "it appears after note_delay_s (1.5 s)")
+	check(not map.camera.is_position_in_frustum(map.note_node.global_position), "...from off screen")
+	check(map.note_node.find_children("*", "Light3D", true, false).is_empty() and map.note_node.find_children("*", "Label3D", true, false).is_empty() and not map.note_node.has_method("tooltip_text"), "it has no glow and no name")
+	var paper := map.note_node.find_child("Paper", true, false) as MeshInstance3D
+	check(paper != null and paper.mesh is QuadMesh and (paper.mesh as QuadMesh).size.x < 1.0 and (paper.material_override as StandardMaterial3D).albedo_color.r > 0.9, "it is a small cream paper quad")
+	check(not map.picking.has_note() and map.pick_nearest() == false, "it cannot be picked in flight")
+	# Pauses: nothing moves while the map is paused, for each way of pausing it.
+	var elapsed_before: float = map.ending_logic.elapsed
+	_run(map, 1.0)
+	var flown: float = map.ending_logic.elapsed - elapsed_before
+	check(absf(flown - 1.0) < 0.05, "(sanity) it flies 1 s in 1 s (%.2f)" % flown)
+	var frozen := 0
+	for way in ["backpack", "notebook", "pause menu", "gore"]:
+		match way:
+			"backpack":
+				map.open_backpack()
+			"notebook":
+				map.open_notebook("notebook_p1")
+			"pause menu":
+				map.open_pause_menu()
+			"gore":
+				_pick_harm(map, "keuncheonnamseong")
+		var at: float = map.ending_logic.elapsed
+		var pos: Vector3 = map.note_node.global_position
+		_run(map, 2.0)
+		if map.ending_logic.elapsed == at and map.note_node.global_position == pos and map.ending_logic.phase == "flying":
+			frozen += 1
+		else:
+			print("  (the flight moved while: %s)" % way)
+		match way:
+			"backpack", "notebook":
+				map.close_backpack()
+			"pause menu":
+				map.pause_hud.choose(0)
+			"gore":
+				_finish_gore(map)
+		get_tree().paused = false
+	check(frozen == 4, "the flight stands still in the backpack, the 수첩, the pause menu and a gore beat (the spelling view cannot open: every word is done)")
+	var resumed: float = map.ending_logic.elapsed
+	_run(map, 0.5)
+	check(map.ending_logic.elapsed - resumed > 0.45, "...and goes on afterwards")
+	# It lands.
+	_run(map, 4.0)
+	check(map.ending_logic.phase == "landed" and landed[0] == 1 and map.picking.has_note(), "it lands within flight_s of its start")
+	var spot := _xz(map.note_node)
+	var distance := spot.distance_to(_xz(map.player))
+	check(distance >= 1.5 - 0.001 and distance <= 3.0 + 0.001, "...%.2f m from the human traveler (1.5-3 m)" % distance)
+	check(map._note_spot_ok(spot) and map.walk_bounds().has_point(spot), "...on valid ground")
+	check(is_equal_approx(map.note_node.global_position.y, map.terrain.height_at(spot.x) + float(ending["note"]["rest_lift"])) and is_equal_approx(map.note_node.rotation.x, -PI / 2.0), "...lying flat on it")
+	# Pickable like a pile, from the human traveler only.
+	check(map.picking.nearest_target(_xz(map.player))["type"] == "", "(sanity) it is out of reach at the landing distance")
+	check(not map.pick_nearest() and GameState.inventory.count(EXIT_ITEM) == 0, "out of reach, Space does nothing")
+	_put(map, map.partner, spot.x + 0.4, spot.y + 0.2)
+	_put(map, map.player, spot.x + 6.0, clampf(spot.y, -8.0, 8.0))
+	map.update_camera(0.0, true)
+	check(map.picking.nearest_target(_xz(map.partner))["type"] == "note" and not map.pick_nearest() and GameState.inventory.count(EXIT_ITEM) == 0, "the partner beside it cannot pick it: only the human traveler can")
+	_put(map, map.partner, spot.x - 8.0, spot.y)
+	_put(map, map.player, spot.x + 0.5, spot.y + 0.3)
+	map.step(Vector2.ZERO, DT)
+	check(map.picking.nearest_target(_xz(map.player)) == {"type": "note", "index": 0}, "in reach, the note is the nearest target")
+	check(map._ring.visible and map._ring_plant == map.note_node and is_equal_approx(map._ring.global_position.x, map.note_node.global_position.x), "the reach ring sits on it")
+	check(not map._tooltip.visible and map._tip_plant == null, "no hover name appears")
+	var held_before := GameState.inventory.snapshot()
+	check(map.pick_nearest(), "Space picks it")
+	var held_now := GameState.inventory.snapshot()
+	check(GameState.inventory.count(EXIT_ITEM) == 1 and held_now.size() == held_before.size() + 1, "...the exit note is in the backpack, and nothing else changed")
+	check(_float_texts(map).has("+1 note"), "...'+1 note' floats")
+	check(map.note_node == null and map.ending_logic.phase == "taken" and not map.picking.has_note() and not map.pick_nearest(), "...and it is gone from the ground")
+	check(_book_ids().back() == EXIT_ITEM, "...as the newest page of the 수첩")
+	_tap(map.get_viewport(), KEY_Q)
+	await _settle_layout()
+	check(map.backpack_hud.notebook_text() == EXIT_NOTE_TEXT, "Q shows 수민's note, word for word")
+	_tap(map.get_viewport(), KEY_Q)
+	map.free()
+	get_tree().paused = false
+	# A death removes it, flying or picked.
+	for stage in ["flying", "landed", "picked"]:
+		map = await _held_kit_map({"plant_ma": 1}, 4)
+		var start_inventory := GameState.inventory.snapshot()
+		_finish_words(map)
+		_run(map, 1.6)
+		if stage != "flying":
+			_run(map, 5.2)
+		if stage == "picked":
+			var where := _xz(map.note_node)
+			_put(map, map.player, where.x + 0.3, where.y)
+			map.pick_nearest()
+		check(GameState.inventory.count(EXIT_ITEM) == (1 if stage == "picked" else 0) and (map.note_node != null) == (stage != "picked"), "%s: (setup) the note is %s" % [stage, "in the backpack" if stage == "picked" else "out"])
+		map.begin_death_beat()
+		map.tick_beat(100.0)
+		check(map.note_node == null and not map.picking.has_note() and map.ending_logic.phase == "idle" and not map.exit_open, "%s: a death removes the note from the ground and shuts the exit" % stage)
+		check(GameState.inventory.snapshot() == start_inventory and GameState.inventory.count(EXIT_ITEM) == 0, "%s: ...and from the backpack, which is as at the scene start" % stage)
+		map.free()
+		get_tree().paused = false
+	# The note is optional: the exit works without it (see test_ending_exit). A second sixth word cannot repeat it.
+	map = await _held_kit_map()
+	_finish_words(map)
+	_run(map, 1.6)
+	var first_note: Node3D = map.note_node
+	map._open_exit()
+	map._on_word_completed("ma")
+	_run(map, 0.2)
+	check(map.note_node == first_note and map.ending_logic.phase == "flying", "finishing again cannot start a second note")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_ending_note")
+
+
+func test_ending_flight_follows() -> void:
+	var map: Node3D = await _held_kit_map()
+	_finish_words(map)
+	_run(map, 1.6)
+	_run(map, 1.0)
+	var last: Vector3 = map.note_node.global_position
+	var biggest_jump := 0.0
+	_put(map, map.player, map.player.global_position.x + 14.0, 2.0)  # walks off during the flight
+	for i in 600:
+		map.step(Vector2.ZERO, DT)
+		if map.note_node == null:
+			break
+		biggest_jump = maxf(biggest_jump, map.note_node.global_position.distance_to(last))
+		last = map.note_node.global_position
+		if map.ending_logic.phase == "landed":
+			break
+	check(map.ending_logic.retargets >= 1, "a traveler who walks out of range mid-flight gets the note re-aimed")
+	check(map.ending_logic.phase == "landed", "...and it still lands")
+	var distance := _xz(map.note_node).distance_to(_xz(map.player))
+	check(distance >= 1.5 - 0.001 and distance <= 3.0 + 0.001 and map._note_spot_ok(_xz(map.note_node)), "...1.5-3 m from where the traveler now is (%.2f m)" % distance)
+	check(biggest_jump < 1.5, "...without ever jumping (largest step %.2f m in one tick)" % biggest_jump)
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_ending_flight_follows")
+
+
+func test_ending_landing_spots() -> void:
+	var count := 0
+	var bad: Array[String] = []
+	var sources := {}
+	var seeds := [4, 17, 29]
+	var spots := [Vector2(3.0, 0.0), Vector2(12.0, -9.0), Vector2(26.0, 8.0), Vector2(40.0, 0.0), Vector2(55.0, -3.0), Vector2(60.0, -8.0), Vector2(61.0, 10.0), Vector2(63.0, -10.5)]
+	for seed_value in seeds:
+		var map: Node3D = await _seeded_map(seed_value)
+		var boxes := _prop_boxes(map)
+		for where in spots:
+			map._clear_ending()
+			_put(map, map.player, where.x, where.y)
+			_put(map, map.partner, where.x - 1.5, where.y)
+			map._open_exit()
+			_run(map, 1.6)
+			_run(map, 5.3)
+			count += 1
+			sources[map.note_spot_source] = true
+			var tag := "seed %d at %s" % [seed_value, str(where)]
+			if map.ending_logic.phase != "landed":
+				bad.append(tag + ": did not land (" + map.ending_logic.phase + ")")
+				continue
+			var spot := _xz(map.note_node)
+			var player_at := _xz(map.player)
+			var relaxed: bool = map.note_spot_source == "relaxed"  # (ground this crowded is rare: see the count below)
+			var prop_gap := 0.0 if relaxed else 0.6
+			var plant_gap := 1.0 if relaxed else 1.5
+			var tree_gap := 1.8 if relaxed else 3.0
+			if not map.ending_logic.in_range(player_at, spot):
+				bad.append(tag + ": range %.2f" % spot.distance_to(player_at))
+			if not map.walk_bounds().has_point(spot) or spot.y > map.near_limit_at(spot.x):
+				bad.append(tag + ": outside the walk limits")
+			for box: AABB in boxes:
+				if Rect2(box.position.x, box.position.z, box.size.x, box.size.z).grow(prop_gap).has_point(spot):
+					bad.append(tag + ": inside a prop")
+					break
+			for plant in map.plants:
+				if _xz(plant).distance_to(spot) < plant_gap:
+					bad.append(tag + ": beside a plant")
+					break
+			for pile in map.piles:
+				if pile != null and _xz(pile).distance_to(spot) < plant_gap:
+					bad.append(tag + ": beside a pile")
+					break
+			if spot.distance_to(map.ending_logic.tree_position()) < tree_gap:
+				bad.append(tag + ": by the 고사목")
+		map.free()
+		get_tree().paused = false
+	print("  landing spots: %d landings, found by %s" % [count, str(sources.keys())])
+	check(count == seeds.size() * spots.size() and bad.is_empty(), "%d landings (3 layouts x 8 places) are all in range, inside the walk limits and clear of props, plants, piles and the 고사목 %s" % [count, str(bad.slice(0, 4))])
+	check(not sources.has("none valid"), "no landing needed to fall back to open ground")
+	GameState.new_hike()
+	_section_done("test_ending_landing_spots")
+
+
+func test_ending_exit() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	_add_test_notes()
+	var map: Node3D = await _held_kit_map({"plant_ma": 1, "test_note_a": 1}, 50)
+	GameState.heart_units["nestor"] = 7
+	GameState.begin_scene("foraging")
+	var start_inventory := GameState.inventory.snapshot()
+	var start_units := GameState.heart_units.duplicate()
+	var tree: Vector2 = map.ending_logic.tree_position()
+	var edge: float = map.walk_bounds().end.x
+	# Closed: the edge is a wall, through the tree's own gap as well.
+	_put(map, map.player, edge - 1.0, tree.y)
+	_put(map, map.partner, edge - 3.0, tree.y)
+	await get_tree().physics_frame  # (a teleported body reaches the physics server on the next frame)
+	_walk(map, Vector2(1.0, 0.0), 2.0)
+	check(map.player.global_position.x <= edge + 0.001 and map.exit_state == "", "before the sixth word the edge is blocked (x %.2f)" % map.player.global_position.x)
+	check(map.dead_tree.barrier.visible and not map.dead_tree.is_open and map.player.gap.size.x <= 0.0, "...the 고사목 is scenery with its gap shut")
+	# The sixth word opens it.
+	_put(map, map.player, 40.0, 0.0)
+	_finish_words(map)
+	check(map.exit_open and map.dead_tree.is_open and map.player.gap == map.ending_logic.gap_rect() and map.partner.gap == map.ending_logic.gap_rect(), "the sixth word opens the gap for both travelers")
+	await get_tree().create_timer(float(map.ending["dead_tree"]["open_s"]) + 0.3).timeout
+	check(not map.dead_tree.barrier.visible, "...and the barrier is gone")
+	# A traveler still cannot cross the edge beside the gap.
+	_put(map, map.player, edge - 0.5, tree.y + map.ending_logic.gap_width() / 2.0 + 1.5)
+	_put(map, map.partner, edge - 2.5, tree.y + map.ending_logic.gap_width() / 2.0 + 1.5)
+	await get_tree().physics_frame
+	_walk(map, Vector2(1.0, 0.0), 1.5)
+	check(map.player.global_position.x <= edge + 0.001 and map.exit_state == "", "...but the rest of the edge stays a wall (x %.2f)" % map.player.global_position.x)
+	# Through the gap, past the tree.
+	_put(map, map.player, edge - 2.0, tree.y)
+	_put(map, map.partner, edge - 4.0, tree.y)
+	await get_tree().physics_frame
+	var trigger: Rect2 = map.ending_logic.trigger_rect()
+	var passed_edge := false
+	for i in 240:
+		map.step(Vector2(1.0, 0.0), DT)
+		passed_edge = passed_edge or map.player.global_position.x > edge + 0.5
+		if map.exit_state != "":
+			break
+	check(passed_edge and map.exit_state == "fading" and trigger.has_point(_xz(map.player)), "walking through the gap, the human traveler passes the tree and enters the trigger (state '%s' at %s, passed %s)" % [map.exit_state, str(map.player.global_position), str(passed_edge)])
+	check(map.player.global_position.z >= map.ending_logic.gap_rect().position.y - 0.001 and map.player.global_position.z <= map.ending_logic.gap_rect().end.y + 0.001, "...inside the gap")
+	# The fade.
+	var bank_inventory := GameState.inventory.snapshot()
+	var bank_units := GameState.heart_units.duplicate()
+	var bank_ddeok := GameState.ddeok
+	check(GameState.has_pending_bank() and GameState.pending_bank["target"] == NEXT_ID and GameState.pending_bank["inventory"] == bank_inventory and GameState.pending_bank["units"] == bank_units and GameState.pending_bank["ddeok"] == bank_ddeok, "the pending bank (backpack, hearts, DDEOK) and the target id are stored at the fade")
+	check(bank_inventory.size() > start_inventory.size() and bank_inventory.get("plant_ma", 0) == 3, "(sanity) the bank includes what was gained in the scene")
+	var frozen_at := _xz(map.player)
+	map.step(Vector2(-1.0, 0.0), 0.25)
+	check(_xz(map.player) == frozen_at and not map.picks_allowed(), "input is blocked in the fade: nobody walks, nothing can be picked")
+	check(not map.open_pause_menu() and not map.open_backpack() and not map.open_notebook("notebook_p1") and not map.open_spelling("ma") and not map.click(Vector2(100.0, 100.0)), "...no menu, backpack, 수첩, spelling view or click works")
+	check(map.ending_hud.alpha() > 0.2 and map.ending_hud.alpha() < 0.8 and map.exit_state == "fading", "a quarter of a second in, the screen is part black")
+	map.step(Vector2.ZERO, 0.5)
+	check(map.exit_state == "fading" and map.ending_hud.alpha() > 0.7 and map.ending_hud.alpha() < 1.0, "...and not yet black at 0.75 s")
+	map.step(Vector2.ZERO, 0.3)
+	check(map.exit_state == "hold" and is_equal_approx(map.ending_hud.alpha(), 1.0), "after fade_s the screen is black")
+	check(map.ending_hud.line_text() == "next: cutscene_foraging_to_animals (not built)", "the target does not resolve: the hold shows 'next: <id> (not built)'")
+	check(GameState.pending_bank["target"] == NEXT_ID and GameState.pending_bank["inventory"] == bank_inventory, "...and the bank still waits")
+	map.step(Vector2(1.0, 0.0), 1.0)
+	check(map.exit_state == "hold" and map.ending_hud.alpha() == 1.0 and map.ending_hud.line_text() != "", "the hold stays black")
+	check(not map.picks_allowed() and not map.open_backpack() and not map.open_notebook("notebook_p1"), "...with no input")
+	# Esc opens the pause menu over the black.
+	check(map.open_pause_menu() and map.pause_menu.is_open and get_tree().paused and map.pause_hud.layer > map.ending_hud.layer, "Esc still opens the pause menu over the black")
+	map.pause_hud.choose(0)
+	check(not map.pause_menu.is_open and not get_tree().paused and map.exit_state == "hold" and map.ending_hud.alpha() == 1.0, "Resume goes back to the hold")
+	# Restart scene from the hold.
+	check(map.open_pause_menu(), "(setup) the menu opens again")
+	map.pause_hud.choose(1)
+	map.pause_hud.choose(0)
+	check(not GameState.has_pending_bank(), "Restart scene from the hold discards the pending bank")
+	check(GameState.inventory.snapshot() == start_inventory and GameState.inventory.count(EXIT_ITEM) == 0 and GameState.inventory.count("plant_ma") == 1 and GameState.inventory.count("test_note_a") == 1, "...and the backpack is the scene-start snapshot: plants and notes as at the start, no loot duplicated")
+	check(GameState.ddeok == 50 and GameState.heart_units == start_units, "...with the DDEOK and hearts of the start")
+	check(map.exit_state == "" and not map.exit_open and map.ending_hud.alpha() == 0.0 and map.ending_hud.line_text() == "" and map.note_node == null, "...the black is lifted, the exit shut and no note left")
+	map.free()
+	get_tree().paused = false
+	# A target that is built: handed over at the fade, no hold.
+	GameState.new_hike()
+	map = await _held_kit_map()
+	map.ending_logic.config = map.ending_logic.config.duplicate(true)
+	map.ending_logic.config["scene_paths"] = {NEXT_ID: "res://scenes/foraging/foraging.tscn"}
+	var handoffs: Array = []
+	map.exit_handoff.connect(func(id: String, path: String) -> void: handoffs.append([id, path]))
+	_finish_words(map)
+	_put(map, map.player, trigger.position.x + 0.2, tree.y)
+	map.step(Vector2.ZERO, DT)
+	map.step(Vector2.ZERO, 1.1)
+	check(handoffs == [[NEXT_ID, "res://scenes/foraging/foraging.tscn"]] and map.exit_state == "handed_off" and map.ending_hud.line_text() == "" and GameState.has_pending_bank(), "a built target is asked for at the fade, with no debug line, and the bank is kept for its begin_scene")
+	map.free()
+	get_tree().paused = false
+	# The exit works without the note, and with it picked.
+	for take_note in [false, true]:
+		map = await _held_kit_map()
+		_finish_words(map)
+		_run(map, 6.8)
+		check(map.ending_logic.phase == "landed", "(setup) the note has landed")
+		if take_note:
+			_put(map, map.player, _xz(map.note_node).x + 0.3, _xz(map.note_node).y)
+			map.pick_nearest()
+		_put(map, map.player, trigger.position.x + 0.2, tree.y)
+		map.step(Vector2.ZERO, DT)
+		map.step(Vector2.ZERO, 1.1)
+		var has_note: bool = GameState.pending_bank["inventory"].has(EXIT_ITEM) if GameState.has_pending_bank() else false
+		check(map.exit_state == "hold" and has_note == take_note, "the exit works %s the note, and the bank %s it" % ["with" if take_note else "without", "holds" if take_note else "lacks"])
+		map.free()
+		get_tree().paused = false
+	# Only the human traveler's entry counts.
+	map = await _held_kit_map()
+	_finish_words(map)
+	_put(map, map.player, 40.0, 0.0)
+	_put(map, map.partner, trigger.position.x + 0.2, tree.y)
+	map.partner.gap = map.ending_logic.gap_rect()
+	map.step(Vector2.ZERO, DT)
+	check(map.exit_state == "", "the partner in the trigger does not leave")
+	map.free()
+	get_tree().paused = false
+	_remove_test_notes()
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_ending_exit")
+
+
+func test_ending_leftovers() -> void:
+	var seed_value := 0
+	var map: Node3D
+	for candidate in range(1, 80):  # the first layout with a pile, a reward decoy and a harm decoy
+		map = await _seeded_map(candidate)
+		if map.picking.piles_left() > 0 and _first_decoy_with(map, "reward") != null and _first_decoy_with(map, "harm") != null:
+			seed_value = candidate
+			break
+		map.free()
+		map = null
+	check(map != null, "(setup) a layout with a pile and both kinds of decoy was found (seed %d)" % seed_value)
+	if map == null:
+		_section_done("test_ending_leftovers")
+		return
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	map.basket_hud.refresh(1.0)
+	var reward := _first_decoy_with(map, "reward")
+	var harm := _first_decoy_with(map, "harm")
+	check(reward != null and harm != null and map.picking.piles_left() > 0, "(setup) layout %d has a reward decoy, a harm decoy and a pile" % seed_value)
+	_finish_words(map)
+	check(map.exit_open, "(setup) the scene is finished")
+	_run(map, 6.8)
+	# Stuck: never after completion.
+	var verdict: Dictionary = map.evaluate_stuck("test")
+	check(not verdict["stuck"] and not map.countdown.running and map.countdown.starts == 0, "after completion the scene is never stuck")
+	_run(map, 90.0)
+	check(map.countdown.starts == 0 and not map.countdown.running and map.kill == null and not map.restarting and map.music_starts == 0, "...no countdown starts in 90 s, no monster comes, no music plays")
+	map.picking.basket.clear()
+	map.evaluate_stuck("test, empty basket")
+	check(not map.stuck_verdict["stuck"] and map.countdown.starts == 0, "...not even with an empty basket and nothing to spell")
+	# Leftovers are live.
+	var items_before := GameState.inventory.snapshot()
+	var ddeok_before := GameState.inventory.count("ddeok")
+	var pile_index := -1
+	for i in map.piles.size():
+		if map.piles[i] != null:
+			pile_index = i
+			break
+	var amount: int = map.picking.pile_amount(pile_index)
+	_put(map, map.player, map.picking.pile_spot(pile_index).x + 0.3, map.picking.pile_spot(pile_index).y)
+	check(map.pick_nearest() and GameState.inventory.count("ddeok") == ddeok_before + amount and map.piles[pile_index] == null, "a leftover chaos pile can still be picked after completion (+%d)" % amount)
+	map.pick_plant(reward)
+	check(GameState.inventory.snapshot() != items_before and not map.picking.has_letter(map.plants.find(reward)), "a leftover reward decoy still works")
+	var hearts_before := GameState.heart_units.duplicate()
+	map.pick_plant(harm)
+	check(GameState.heart_units != hearts_before and map.is_gore_playing(), "a leftover harm decoy still hurts and plays its gore")
+	_finish_gore(map)
+	map.tick_gore(DT)
+	check(not map.stuck_verdict["stuck"] and map.countdown.starts == 0 and map.exit_open and not map.is_death_beat_playing(), "...and the exit stays open")
+	# They stay live until the travelers leave: a pick during the fade is refused.
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	map = await _seeded_map(seed_value)
+	for plant in map.plants:
+		if plant.kind == "target":
+			map.pick_plant(plant)
+	_finish_words(map)
+	var live_pile := -1
+	for i in map.piles.size():
+		if map.piles[i] != null:
+			live_pile = i
+	var trigger: Rect2 = map.ending_logic.trigger_rect()
+	_put(map, map.player, trigger.position.x + 0.2, map.ending_logic.tree_position().y)
+	map.step(Vector2.ZERO, DT)
+	check(map.exit_state == "fading" and map.piles[live_pile] != null, "(setup) the travelers are leaving")
+	_put(map, map.player, map.picking.pile_spot(live_pile).x + 0.3, map.picking.pile_spot(live_pile).y)
+	check(not map.pick_nearest() and map.piles[live_pile] != null, "...and from then on nothing can be picked")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_ending_leftovers")

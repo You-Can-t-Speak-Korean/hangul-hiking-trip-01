@@ -81,6 +81,14 @@ func solved(id: String) -> Array[String]:
 	return _words[id]["solved"] if _words.has(id) else []
 
 
+## True once every target word is done.
+func all_done() -> bool:
+	for id in _words:
+		if not is_done(id):
+			return false
+	return not _words.is_empty()
+
+
 func is_done(id: String) -> bool:
 	return _words.has(id) and solved(id).size() == block_count(id)
 

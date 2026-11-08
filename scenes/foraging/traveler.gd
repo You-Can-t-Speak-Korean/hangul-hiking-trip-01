@@ -14,6 +14,10 @@ var bounds := Rect2()
 ## Optional: x -> the largest z the origin may have there (the view's bottom edge
 ## moves with the slope). Applied on top of `bounds`.
 var near_limit := Callable()
+## Optional: a strip over (x, z) through the right edge of `bounds`, open once the scene is
+## finished. While its size is not zero, a traveler may walk through it, from the edge to
+## its end.x, and is held inside its z range there. Empty (the default) = the edge is a wall.
+var gap := Rect2()
 var on_floor := false
 var _floor_normal := Vector3.UP
 var _fall_speed := 0.0
@@ -119,11 +123,18 @@ func _move(motion: Vector3, delta: float) -> void:
 	var step := motion
 	if on_floor:
 		step.y = -(_floor_normal.x * motion.x + _floor_normal.z * motion.z) / _floor_normal.y
+	var before_x := global_position.x
 	var hit := move_and_collide(step)
 	if hit:
 		move_and_collide(hit.get_remainder().slide(hit.get_normal()))
 	var p := global_position
-	p.x = clampf(p.x, bounds.position.x, bounds.end.x)
+	p.x = clampf(p.x, bounds.position.x, bounds.end.x if gap.size.x <= 0.0 else gap.end.x)
+	if p.x > bounds.end.x:
+		# Only through the gap: you must enter it within its z range, then you stay in it.
+		if before_x > bounds.end.x or (p.z >= gap.position.y and p.z <= gap.end.y):
+			p.z = clampf(p.z, gap.position.y, gap.end.y)
+		else:
+			p.x = bounds.end.x
 	p.z = clampf(p.z, bounds.position.y, bounds.end.y)
 	if near_limit.is_valid():
 		p.z = minf(p.z, float(near_limit.call(p.x)))
