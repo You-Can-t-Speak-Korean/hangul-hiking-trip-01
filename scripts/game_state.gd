@@ -11,7 +11,8 @@ extends Node
 ## - Death restarts the current scene with the hearts held at its start.
 ## - DDEOK (the currency) carries over to the next game.
 ## - Fernanda's backpack (`inventory`) is restored with the hearts: a death or a
-##   restart puts back exactly what it held when the scene began.
+##   restart puts back exactly what it held when the scene began. A new hike starts
+##   it with the starting kit (rules.json starting_kit: the 수첩).
 
 const InventoryScript := preload("res://scripts/inventory.gd")
 
@@ -85,6 +86,8 @@ func new_hike(starting_ddeok: int = -1) -> void:
 	else:
 		ddeok = int(Content.rules.get("starting_ddeok_without_save", 0))
 	inventory.clear()
+	for entry in Content.starting_kit():  # the 수첩: in every scene-start snapshot, so never lost
+		inventory.add(entry["item"], entry["count"])
 	current_scene = ""
 	begin_scene("")
 

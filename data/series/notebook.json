@@ -1,0 +1,37 @@
+{
+  "_note": "The 수첩 (notebook) view, drawn inside the backpack panel (placeholder look: a cream page, dark text, Noto Sans KR). Sizes and font sizes are pixels; colours are r, g, b. 'page_margin' is the space between the page edge and its text. 'scroll_step' is how far one press (or repeat) of the scroll keys moves a page that does not fit. 'arrow_previous' / 'arrow_next' are the flip indicators outside the page edge; they show only when a page exists that way. The panel's title and close button change while the notebook is up: 'back_text' when it was opened from the backpack row (Esc goes back to the list), 'close_text' when it was opened by a quick key.",
+  "title": "Notebook",
+  "empty_text": "No notes yet.",
+  "close_text": "Close",
+  "back_text": "Back",
+  "page_color": [
+    0.96,
+    0.92,
+    0.8
+  ],
+  "page_text_color": [
+    0.16,
+    0.13,
+    0.11
+  ],
+  "page_empty_text_color": [
+    0.45,
+    0.4,
+    0.34
+  ],
+  "page_corner_radius": 6,
+  "page_margin": 18,
+  "font_size": 20,
+  "empty_font_size": 22,
+  "line_spacing": 3,
+  "scroll_step": 56,
+  "arrow_previous": "◀",
+  "arrow_next": "▶",
+  "arrow_font_size": 26,
+  "arrow_width": 34,
+  "arrow_color": [
+    0.95,
+    0.85,
+    0.4
+  ]
+}

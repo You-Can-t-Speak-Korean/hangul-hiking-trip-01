@@ -27,6 +27,7 @@ const PauseMenu := preload("res://scenes/foraging/pause_menu.gd")
 const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
 const Backpack := preload("res://scenes/foraging/backpack.gd")
 const BackpackHud := preload("res://scenes/foraging/backpack_hud.gd")
+const NotebookLogic := preload("res://scenes/foraging/notebook.gd")
 const RewardTable := preload("res://scripts/reward_table.gd")
 const DecoyPlacement := preload("res://scenes/foraging/decoy_placement.gd")
 const ChaosPiles := preload("res://scenes/foraging/chaos_piles.gd")
@@ -67,6 +68,9 @@ const FERNANDA_COLOR := Color(0.95, 0.55, 0.70)  # pink
 ## fixed harm/reward roles those older tests expect of each decoy kind, used only then.
 static var seed_override := -1
 static var legacy_layout := false
+## Set by tests: acts as the --debug-notes user argument (every note of data/notes goes
+## into the backpack at scene start, as if gained in the scene).
+static var debug_notes_override := false
 const LEGACY_OUTCOMES := {"keuncheonnamseong": "harm", "butsunnamu": "harm", "norugui": "reward", "deulchuknamu": "reward"}
 
 var stage_width: float = 0.0
@@ -136,6 +140,9 @@ var harm_units := 1
 ## it or with the spelling view. `restarting` is not set while it is open.
 var backpack
 var backpack_hud: CanvasLayer
+## What a finished word gives (data: foraging.word_rewards): `word_reward_count` of the
+## plant item `word_items[word id]`, floated up from the traveler who spelled it.
+var word_rewards: Dictionary = {}
 ## What reward decoys give (data: foraging.decoy_rewards): the weighted table, the
 ## random source it is rolled with (randomized once per scene start; tests may
 ## replace it with anything that has randi_range) and the rise of the floating label.
@@ -273,6 +280,8 @@ func _ready() -> void:
 	spelling.syllable_failed.connect(_on_syllable_failed)
 	spares = Spares.new(config["spares"], plants_cfg)
 	spelling.word_completed.connect(spares.queue)
+	word_rewards = config["word_rewards"]
+	spelling.word_completed.connect(_on_word_completed)
 	hearts_hud = HeartsHud.new()
 	add_child(hearts_hud)
 	hearts_hud.setup(config["hearts_hud"])
@@ -292,6 +301,7 @@ func _ready() -> void:
 	add_child(backpack_hud)
 	backpack_hud.setup(backpack, GameState.inventory, config["backpack_hud"])
 	backpack_hud.open_handler = open_backpack
+	backpack_hud.notebook_open_handler = open_notebook
 	backpack_hud.close_requested.connect(close_backpack)
 	var rewards: Dictionary = config["decoy_rewards"]
 	reward_table = RewardTable.new(rewards["table"], Content.items)
@@ -306,6 +316,7 @@ func _ready() -> void:
 		push_error("%s in foraging.decoy_gore of %s: harm decoys will play no gore" % [gore_problem, GameState.game_id])
 	reward_rng.randomize()
 	GameState.begin_scene("foraging")  # a death restores the hearts held now
+	_add_debug_notes()  # after the snapshot: a note gained "in the scene" is lost on a death
 	var colors := {"nestor": NESTOR_COLOR, "fernanda": FERNANDA_COLOR}
 	for id in GameState.TRAVELERS:
 		var traveler := Traveler.new()
@@ -670,6 +681,30 @@ func _give_reward(at: Vector3) -> Dictionary:
 		text += " " + String(item["name_ko"])
 	_float_label(text, at)
 	return won
+
+
+## A target word was finished: `word_reward_count` of its plant item go into the
+## backpack and "+2 고사리" floats up from the player's traveler (the one who spelled
+## it), in the floating-label style of the reward decoys. Nothing for a word with no
+## item in foraging.word_rewards. Review and bonus words alike.
+func _on_word_completed(word_id: String) -> void:
+	var item_id := String(word_rewards.get("item_by_word", {}).get(word_id, ""))
+	var count := int(word_rewards.get("word_reward_count", 0))
+	if item_id == "" or count < 1 or not GameState.inventory.add(item_id, count):
+		return
+	var at: Vector3 = player.global_position + Vector3(0.0, float(word_rewards["label_height"]), 0.0)
+	_float_label("+%d %s" % [count, String(Content.item(item_id)["name_ko"])], at)
+
+
+## The --debug-notes user argument (or the test override): every note of
+## data/notes/*.json goes into the backpack, after the scene-start snapshot, so a death
+## removes them and the next scene start adds them again. Prints one line when active.
+func _add_debug_notes() -> void:
+	if not debug_notes_override and not NotebookLogic.debug_notes_from_args(OS.get_cmdline_user_args()):
+		return
+	for id in Content.notes:
+		GameState.inventory.add(id)
+	print("%s: %d note(s) added to the backpack" % [NotebookLogic.DEBUG_ARG, Content.notes.size()])
 
 
 ## A short label that rises from a world position and fades (Label3D, like the letters).
@@ -1514,10 +1549,31 @@ func open_pause_menu() -> bool:
 ## open, the scene is restarting (the last second, the kill, the death beat, a
 ## restart asked for), a traveler is dead or the backpack is open already.
 func open_backpack() -> bool:
-	if spelling_hud.is_open() or not picks_allowed() or _dim != null or kill != null or pause_menu.restart_requests > 0:
+	if not _panel_allowed() or not backpack.open(true):
 		return false
-	if not backpack.open(true):
+	_pause_for_panel()
+	return true
+
+
+## A notebook quick key (`action` is "notebook_p1" or "notebook_p2"): opens the
+## backpack panel on the 수첩 and pauses the map, the countdown and the music, under
+## exactly the rules of open_backpack(): never over the spelling view or the pause
+## menu, never while restarting, in a gore beat, a monster sequence or the death
+## beat, or with a traveler dead. False (and nothing happens) otherwise.
+func open_notebook(action: String) -> bool:
+	if not _panel_allowed() or not backpack.open_notebook_quick(true, action, GameState.inventory.items()):
 		return false
+	_pause_for_panel()
+	return true
+
+
+## True if the backpack panel (or the notebook) may open now, apart from being open already.
+func _panel_allowed() -> bool:
+	return not (spelling_hud.is_open() or not picks_allowed() or _dim != null or kill != null or pause_menu.restart_requests > 0)
+
+
+## The panel has just opened: the map, the countdown and the music stand still.
+func _pause_for_panel() -> void:
 	picking.cancel_walk()
 	_tip_plant = null  # a hover name would stay frozen on screen
 	_tooltip.visible = false
@@ -1525,7 +1581,6 @@ func open_backpack() -> bool:
 	_silence_music(true)
 	backpack_hud.refresh()
 	get_tree().paused = true
-	return true
 
 
 ## Closes the backpack and lets the map, the countdown and the music go on in

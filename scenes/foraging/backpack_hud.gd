@@ -11,10 +11,20 @@ extends CanvasLayer
 ## through `open_handler` (and is only taken if the map did). This runs in
 ## _input, ahead of the GUI's own Tab focus navigation, so Tab can't be
 ## swallowed first; a Tab the map turns down is left alone.
+##
+## The 수첩 (notebook) row is selectable too: choosing it (Space / Enter or a
+## click) shows the notebook view in the panel in place of the list: one cream page
+## with the newest note's text only (look: data/series/notebook.json), ◀ ▶ outside
+## the page edge when a page exists that way, and a scroll when the text does not
+## fit. Flip with A / D or Left / Right, scroll with W / S or Up / Down. Esc (or
+## the Back button) returns to the list. A notebook quick key (N, /) opens the same
+## view with no list behind it through `notebook_open_handler`; then Esc or the
+## same quick key closes the panel, and the backpack keys do nothing.
 
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 const ItemIcon := preload("res://scenes/foraging/item_icon.gd")
 const BackpackLogic := preload("res://scenes/foraging/backpack.gd")
+const BookLogic := preload("res://scenes/foraging/notebook.gd")
 
 ## The panel should close (key, Esc or the Close button). The map unpauses on this.
 signal close_requested
@@ -22,6 +32,9 @@ signal close_requested
 ## Called when a backpack key is pressed while the panel is closed. Returns true
 ## if the map opened it. Set by the map.
 var open_handler := Callable()
+## Called with the input action ("notebook_p1" or "notebook_p2") of a notebook quick
+## key pressed while the panel is closed. Returns true if the map opened it.
+var notebook_open_handler := Callable()
 
 var _backpack
 var _inventory
@@ -37,6 +50,15 @@ var _choice: PanelContainer
 var _choice_prompt: Label
 var _choice_buttons: Array[Button] = []
 var _message: Label
+var _book: HBoxContainer
+var _book_previous: Label
+var _book_next: Label
+var _book_page: PanelContainer
+var _book_scroll: ScrollContainer
+var _book_text: Label
+var _book_empty: Label
+var _book_config: Dictionary = {}
+var _book_shown := "<closed>"  # the note id on the page (or "" for the empty state) the last time it was drawn
 
 
 ## `backpack` is the Backpack, `inventory` the Inventory to list, `config` is
@@ -86,7 +108,7 @@ func setup(backpack, inventory, config: Dictionary) -> void:
 	_close_button.text = str(config["close_text"])
 	_close_button.focus_mode = Control.FOCUS_NONE
 	_close_button.add_theme_font_size_override("font_size", int(config["button_font_size"]))
-	_close_button.pressed.connect(close_requested.emit)
+	_close_button.pressed.connect(_on_close_pressed)
 	header.add_child(_close_button)
 	_scroll = ScrollContainer.new()
 	_scroll.name = "Scroll"
@@ -106,6 +128,7 @@ func setup(backpack, inventory, config: Dictionary) -> void:
 	_empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	column.add_child(_empty)
 	_build_choice(column)
+	_build_book(column)
 	_message = _label("Message", int(config["message_font_size"]), _color(config["message_color"]))
 	_message.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_message.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -138,9 +161,14 @@ func refresh() -> void:
 		row.queue_free()
 	var items: Array = _inventory.items()
 	for entry in items:
-		_rows.add_child(_make_row(entry["id"], int(entry["count"])))
-	_empty.visible = items.is_empty()
-	_scroll.visible = not items.is_empty()
+		var id := String(entry["id"])
+		if BookLogic.is_note(id):
+			continue  # notes live in the 수첩 only, never as a row
+		_rows.add_child(_make_row(id, int(entry["count"])))
+	var in_book: bool = _backpack.notebook_open
+	_empty.visible = _rows.get_child_count() == 0 and not in_book
+	_scroll.visible = _rows.get_child_count() > 0 and not in_book
+	_update_book(items)
 	_update_choice()
 	_update_message()
 
@@ -152,6 +180,9 @@ func _input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed:
 		return
 	if _backpack.is_open:
+		if _backpack.notebook_open:
+			_book_input(event)
+			return
 		var action := BackpackLogic.action_for(event)
 		if action != "":
 			if _on_key_action(action):
@@ -170,8 +201,78 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			close_requested.emit()
 		return
-	if not event.echo and is_backpack_key(event) and open_handler.is_valid() and open_handler.call():
+	if event.echo:
+		return
+	if is_backpack_key(event) and open_handler.is_valid() and open_handler.call():
 		get_viewport().set_input_as_handled()
+		return
+	var quick := notebook_action(event)
+	if quick != "" and notebook_open_handler.is_valid() and notebook_open_handler.call(quick):
+		get_viewport().set_input_as_handled()
+
+
+## Keys while the notebook shows. The movement keys of both players are the
+## notebook's: left / right flip (one page per press), up / down scroll (they
+## repeat while held), place does nothing. Esc goes back to the list, or closes the
+## panel over a quick-key notebook; so does the quick key that opened it. The
+## backpack keys close the panel when the notebook came from the list and do
+## nothing when it came from a quick key.
+func _book_input(event: InputEvent) -> void:
+	var action := BackpackLogic.action_for(event)
+	if action != "":
+		get_viewport().set_input_as_handled()
+		if action == "up" or action == "down":
+			scroll_notebook(1 if action == "down" else -1)
+		elif (action == "left" or action == "right") and not event.echo:
+			flip_notebook(1 if action == "right" else -1)
+		return
+	if event.echo:
+		return
+	if event.keycode == KEY_ESCAPE:
+		get_viewport().set_input_as_handled()
+		_escape_book()
+	elif notebook_action(event) != "":
+		get_viewport().set_input_as_handled()
+		if _backpack.notebook_quick and event.is_action_pressed(_backpack.notebook_key):
+			close_requested.emit()
+	elif is_backpack_key(event):
+		get_viewport().set_input_as_handled()
+		if not _backpack.notebook_quick:
+			close_requested.emit()
+
+
+## Esc (or Back / Close) over the notebook: back to the list, or out of the panel.
+func _escape_book() -> void:
+	if _backpack.notebook_open and not _backpack.notebook_quick:
+		_backpack.escape()  # back to the list
+		refresh()
+	else:
+		close_requested.emit()  # the map closes the panel (and resumes) through close_backpack()
+
+
+func _on_close_pressed() -> void:
+	if _backpack.notebook_open:
+		_escape_book()
+	else:
+		close_requested.emit()
+
+
+## Flips the notebook one page: -1 to an older note, +1 to a newer one. False at the end.
+func flip_notebook(direction: int) -> bool:
+	if not _backpack.notebook_open or not _backpack.book.flip(direction, _inventory.items()):
+		return false
+	refresh()
+	return true
+
+
+## Scrolls the shown page by `direction` steps (-1 up, +1 down) of notebook.json
+## scroll_step pixels, within the page. False if it did not move.
+func scroll_notebook(direction: int) -> bool:
+	if not _backpack.notebook_open:
+		return false
+	var before := _book_scroll.scroll_vertical
+	_book_scroll.scroll_vertical = clampi(before + direction * int(_book_config["scroll_step"]), 0, notebook_scroll_max())
+	return _book_scroll.scroll_vertical != before
 
 
 ## A movement or place key of either player while the panel is open. True if it
@@ -184,6 +285,8 @@ func _on_key_action(action: String) -> bool:
 		_ask()
 	elif result == "drink":
 		drink_chosen()
+	elif result == "notebook":
+		_backpack.show_notebook(_inventory.items())
 	refresh()
 	return true
 
@@ -212,7 +315,10 @@ func _on_hearts_changed(_traveler: String, _units: int) -> void:
 func _on_row_input(event: InputEvent, id: String) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		if _backpack.select(id, _inventory.items()):
-			_ask()
+			if BackpackLogic.is_notebook(id):
+				_backpack.show_notebook(_inventory.items())
+			else:
+				_ask()
 			refresh()
 		get_viewport().set_input_as_handled()
 
@@ -291,6 +397,15 @@ func _style_choice_button(button: Button, highlighted: bool) -> void:
 		button.add_theme_stylebox_override(state, style)
 
 
+## The input action ("notebook_p1" or "notebook_p2") of a press of a notebook quick
+## key, "" for anything else.
+static func notebook_action(event: InputEvent) -> String:
+	for action in ["notebook_p1", "notebook_p2"]:
+		if event.is_action_pressed(action):
+			return action
+	return ""
+
+
 ## True for a press of either player's backpack key.
 static func is_backpack_key(event: InputEvent) -> bool:
 	return event.is_action_pressed("backpack_p1") or event.is_action_pressed("backpack_p2")
@@ -351,9 +466,149 @@ func empty_text() -> String:
 	return _empty.text
 
 
+## Whether the notebook view is showing (tests).
+func notebook_visible() -> bool:
+	return _book.visible and _root.visible
+
+
+## The text on the shown page ("" for the empty state).
+func notebook_text() -> String:
+	return _book_text.text if _book_scroll.visible else ""
+
+
+## The empty-state line, "" while a page is shown.
+func notebook_empty_text() -> String:
+	return _book_empty.text if _book_empty.visible else ""
+
+
+## Whether the flip indicator that way (-1 previous, +1 next) is drawn.
+func notebook_arrow_visible(direction: int) -> bool:
+	return (_book_next if direction > 0 else _book_previous).visible
+
+
+func notebook_arrow_text(direction: int) -> String:
+	return (_book_next if direction > 0 else _book_previous).text
+
+
+## How far the shown page can scroll, in pixels (0 if its text fits).
+func notebook_scroll_max() -> int:
+	var bar := _book_scroll.get_v_scroll_bar()
+	return maxi(int(ceil(bar.max_value - bar.page)), 0)
+
+
+func notebook_scroll() -> int:
+	return _book_scroll.scroll_vertical
+
+
+func notebook_page_rect() -> Rect2:
+	return _book_page.get_global_rect()
+
+
+func notebook_text_label() -> Label:
+	return _book_text
+
+
+func notebook_scroll_container() -> ScrollContainer:
+	return _book_scroll
+
+
+func title_text() -> String:
+	return _title.text
+
+
+func close_text() -> String:
+	return _close_button.text
+
+
 ## id of the item a row shows (tests).
 func row_id(index: int) -> String:
 	return String(_rows.get_child(index).get_meta("item_id"))
+
+
+## The notebook view: a flip indicator, one cream page (the text scrolls inside it
+## when it does not fit), a flip indicator. Hidden until the Backpack says the
+## notebook is open. Look: data/series/notebook.json.
+func _build_book(column: VBoxContainer) -> void:
+	_book_config = Content.notebook
+	var nb := _book_config
+	_book = HBoxContainer.new()
+	_book.name = "Notebook"
+	_book.visible = false
+	_book.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_book.add_theme_constant_override("separation", 4)
+	_book.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(_book)
+	_book_previous = _book_arrow("Previous", str(nb["arrow_previous"]))
+	_book_page = PanelContainer.new()
+	_book_page.name = "Page"
+	_book_page.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_book_page.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var paper := StyleBoxFlat.new()
+	paper.bg_color = _color(nb["page_color"])
+	paper.set_corner_radius_all(int(nb["page_corner_radius"]))
+	paper.set_content_margin_all(float(nb["page_margin"]))
+	_book_page.add_theme_stylebox_override("panel", paper)
+	_book.add_child(_book_page)
+	_book_scroll = ScrollContainer.new()
+	_book_scroll.name = "PageScroll"
+	_book_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_book_page.add_child(_book_scroll)
+	_book_text = _label("PageText", int(nb["font_size"]), _color(nb["page_text_color"]))
+	_book_text.add_theme_font_override("font", FONT)
+	_book_text.add_theme_constant_override("line_spacing", int(nb["line_spacing"]))
+	_book_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_book_text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_book_scroll.add_child(_book_text)
+	_book_empty = _label("PageEmpty", int(nb["empty_font_size"]), _color(nb["page_empty_text_color"]))
+	_book_empty.add_theme_font_override("font", FONT)
+	_book_empty.text = str(nb["empty_text"])
+	_book_empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_book_empty.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_book_empty.visible = false
+	_book_page.add_child(_book_empty)
+	_book_next = _book_arrow("Next", str(nb["arrow_next"]))
+	_book.move_child(_book_previous.get_parent(), 0)
+
+
+## A flip indicator: a label in a fixed-width cell added to the notebook row, so the
+## page does not shift when the indicator hides.
+func _book_arrow(label_name: String, glyph: String) -> Label:
+	var cell := Control.new()
+	cell.name = label_name + "Cell"
+	cell.custom_minimum_size = Vector2(float(_book_config["arrow_width"]), 0.0)
+	cell.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_book.add_child(cell)
+	var arrow := _label(label_name, int(_book_config["arrow_font_size"]), _color(_book_config["arrow_color"]))
+	arrow.add_theme_font_override("font", FONT)
+	arrow.text = glyph
+	arrow.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	arrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	arrow.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cell.add_child(arrow)
+	return arrow
+
+
+## Shows or hides the notebook view to match the Backpack and fills in the shown page.
+func _update_book(items: Array) -> void:
+	var open: bool = _backpack.notebook_open
+	_book.visible = open
+	if not open:
+		_title.text = str(_config["title"])
+		_close_button.text = str(_config["close_text"])
+		_book_shown = "<closed>"
+		return
+	_title.text = str(_book_config["title"])
+	_close_button.text = str(_book_config["close_text" if _backpack.notebook_quick else "back_text"])
+	var id: String = _backpack.book.current_id(items)
+	var text: String = _backpack.book.page_text(items)
+	if id != _book_shown:  # a new page starts at its top
+		_book_shown = id
+		_book_scroll.scroll_vertical = 0
+	_book_text.text = text
+	_book_scroll.visible = text != ""
+	_book_empty.visible = text == ""
+	_book_previous.visible = _backpack.book.has_previous(items)
+	_book_next.visible = _backpack.book.has_next(items)
 
 
 func _make_row(id: String, count: int) -> PanelContainer:

@@ -1,10 +1,17 @@
 {
-  "_note": "Series-wide item types. kind is elixir | charm | hint | note | currency. An optional 'icon' names a placeholder icon drawn in code (scenes/foraging/item_icon.gd). heal_units is in half-hearts (rules.json half_units_per_heart). Items with usable false cannot be used yet. No note items exist yet.",
+  "_note": "Series-wide item types. kind is elixir | charm | hint | note | currency | plant | notebook. An optional 'icon' names a placeholder icon drawn in code (scenes/foraging/item_icon.gd). heal_units is in half-hearts (rules.json half_units_per_heart). Items with usable false cannot be used yet. kind plant is a plant a finished word gives (view-only in the backpack); kind notebook is the 수첩, the only item that opens a view (the notes inside it). Note items are not listed here: Content registers them from data/notes/*.json (kind note).",
   "items": [
     {"id": "ssanghwatang", "kind": "elixir", "name_ko": "쌍화탕", "name_en": "Ssanghwatang", "description_en": "Herbal tonic. Restores half a heart.", "heal_units": 1},
     {"id": "gongjindan", "kind": "elixir", "name_ko": "공진단", "name_en": "Gongjindan", "description_en": "Herbal pill. Restores one heart.", "heal_units": 2},
     {"id": "spelling_hint", "kind": "hint", "name_ko": "", "name_en": "Spelling hint", "description_en": "Shows one correct letter for 2 seconds.", "usable": false},
     {"id": "slow_time_charm", "kind": "charm", "name_ko": "", "name_en": "Slow-time charm", "description_en": "Slows time.", "usable": false},
-    {"id": "ddeok", "kind": "currency", "name_ko": "DDEOK", "name_en": "DDEOK", "description_en": "Virtual rice-cake token. A precursor of the in-game currency.", "usable": false, "icon": "baekseolgi"}
+    {"id": "ddeok", "kind": "currency", "name_ko": "DDEOK", "name_en": "DDEOK", "description_en": "Virtual rice-cake token. A precursor of the in-game currency.", "usable": false, "icon": "baekseolgi"},
+    {"id": "plant_ma", "kind": "plant", "name_ko": "마", "name_en": "Chinese yam", "description_en": "Slimy when cut. Good for stamina, they say."},
+    {"id": "plant_meoru", "kind": "plant", "name_ko": "머루", "name_en": "Wild grape", "description_en": "Small, sour, and purple. Stains everything."},
+    {"id": "plant_minari", "kind": "plant", "name_ko": "미나리", "name_en": "Water dropwort", "description_en": "Grows where your feet get wet. Crunchy."},
+    {"id": "plant_gosari", "kind": "plant", "name_ko": "고사리", "name_en": "Bracken fern", "description_en": "Curled up like it's hiding. Never eat it raw."},
+    {"id": "plant_gobi", "kind": "plant", "name_ko": "고비", "name_en": "Royal fern", "description_en": "Fuzzy little fist. Bracken's fancier cousin."},
+    {"id": "plant_siromi", "kind": "plant", "name_ko": "시로미", "name_en": "Crowberry", "description_en": "Tiny black berries from the windy top."},
+    {"id": "sucheop", "kind": "notebook", "name_ko": "수첩", "name_en": "Notebook", "description_en": "A gift from the old lady. The pages smell like incense."}
   ]
 }

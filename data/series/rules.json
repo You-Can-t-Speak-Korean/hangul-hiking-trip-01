@@ -14,5 +14,9 @@
     "monster_capture": 100,
     "cooking_dish": 50
   },
-  "starting_ddeok_without_save": 0
+  "starting_ddeok_without_save": 0,
+  "_note_starting_kit": "What Fernanda's backpack holds at the start of a hike (GameState.new_hike). It is part of every scene-start snapshot, so a death or a restart never takes it away.",
+  "starting_kit": [
+    {"item": "sucheop", "count": 1}
+  ]
 }

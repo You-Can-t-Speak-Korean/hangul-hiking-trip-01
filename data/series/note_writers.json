@@ -1,0 +1,25 @@
+{
+  "_note": "Who writes notes (data/notes/*.json 'writer'). Never shown in game yet; it exists for future notes. name_ko is empty for the old lady, who is never called 'grandma' in game text.",
+  "writers": [
+    {
+      "id": "old_lady",
+      "name_ko": "",
+      "note": "The quiet 무당. Never called \"grandma\" in game text."
+    },
+    {
+      "id": "dong_cheolsu",
+      "name_ko": "동철수",
+      "note": "The over-equipped 등산 아저씨."
+    },
+    {
+      "id": "song_sumin",
+      "name_ko": "송수민",
+      "note": "University student, lost on an MT hike."
+    },
+    {
+      "id": "bong_minsu",
+      "name_ko": "봉민수",
+      "note": "University student, lost on an MT hike."
+    }
+  ]
+}

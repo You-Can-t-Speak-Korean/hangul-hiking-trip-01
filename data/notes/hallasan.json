@@ -1,0 +1,10 @@
+{
+  "_note": "Notes found on Hallasan. Each note is an item of kind note (Content registers every id here as an item), stored in Fernanda's backpack and shown only inside the 수첩. 'writer' is an id from data/series/note_writers.json and is never shown. 'text' is the whole page and nothing else is drawn on it: a line break in the text is a line break on the page, a blank line is a paragraph break, and long lines are rewrapped to the page width. The notebook opens on the note gained last; older notes are reached by flipping back.",
+  "notes": [
+    {
+      "id": "hallasan_exit_sumin",
+      "writer": "song_sumin",
+      "text": "To 민수 ♡\n\nOkay. I'm not lost anymore. I'm only a LITTLE lost.\nI found 머루 and 미나리!! I ate the 머루 and almost cried,\nit was so good. I saved you some. Not a lot. Sorry ♡\n\nA hiking man with like a hundred pockets told me\nreal wild 노루 live up top. Rare ones!!\nHe also told me where he pooped. So. 50% trust.\n\nGo up the hill to the big dead 나무.\nThe white twisty one, like a skeleton doing yoga.\nWalk right through it and keep climbing.\nI'll wait for you up there~ probably!!\n(Do 노루 eat people?? Don't answer that.)\n\nSome plants here won't tell you their name.\nI picked one. My face is fine now. Mostly.\n\n— 수민\np.s. you still owe me 고기 from MT"
+    }
+  ]
+}

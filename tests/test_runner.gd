@@ -117,6 +117,16 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_slot_generator",
 	"test_pile_pickup",
 	"test_pile_restart",
+	"test_plant_items_data",
+	"test_notebook_logic",
+	"test_word_rewards",
+	"test_scene_loot_rules",
+	"test_backpack_notebook_rows",
+	"test_notebook_pages_scene",
+	"test_notebook_fit",
+	"test_notebook_input",
+	"test_notebook_quick_keys",
+	"test_debug_notes",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
@@ -273,6 +283,18 @@ func _ready() -> void:
 	await test_slot_generator()
 	await test_pile_pickup()
 	await test_pile_restart()
+	print("== Plant items, the 수첩 and notes ==")
+	Foraging.legacy_layout = true  # the decoys at their fixed places, as the older backpack sections expect
+	test_plant_items_data()
+	test_notebook_logic()
+	await test_word_rewards()
+	await test_scene_loot_rules()
+	await test_backpack_notebook_rows()
+	await test_notebook_pages_scene()
+	await test_notebook_fit()
+	test_notebook_input()
+	await test_notebook_quick_keys()
+	await test_debug_notes()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -405,7 +427,7 @@ func test_heart_units() -> void:
 	var on_death := func(dead, survivor, injury): deaths.append(dead)
 	GameState.travelers_died.connect(on_death)
 
-	GameState.new_hike(0)
+	_bare_hike(0)
 	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "hike start: everyone at max units")
 	GameState.begin_scene("units")
 	check(not GameState.damage_units("nestor", 1), "a half hit doesn't kill")
@@ -415,12 +437,12 @@ func test_heart_units() -> void:
 	check(changes.back() == ["nestor", 9], "hearts_changed carries units on damage")
 	GameState.damage_units("nestor", 1)
 	check(GameState.heart_units["nestor"] == 8 and not GameState.has_half("nestor"), "two half hits equal one whole heart")
-	GameState.new_hike(0)
+	_bare_hike(0)
 	GameState.damage("fernanda", "test")
 	check(GameState.heart_units["fernanda"] == 8, "the whole-heart damage call takes exactly 2 units")
 
 	# Heal: caps, no-op on the dead, exact round trip.
-	GameState.new_hike(0)
+	_bare_hike(0)
 	GameState.heal("nestor", 1)
 	check(GameState.heart_units["nestor"] == 10, "heal caps at max")
 	GameState.damage_units("nestor", 3)
@@ -432,7 +454,7 @@ func test_heart_units() -> void:
 	check(GameState.heart_units["nestor"] == 8, "heal raises by exactly the units given")
 
 	# Floor and death.
-	GameState.new_hike(0)
+	_bare_hike(0)
 	deaths.clear()
 	GameState.heart_units["nestor"] = 1
 	check(GameState.damage_units("nestor", 5, "x"), "damage past 0 kills")
@@ -443,7 +465,7 @@ func test_heart_units() -> void:
 	check(GameState.damage_units("nestor", 1) and deaths.size() == 1, "hitting the dead doesn't re-emit death")
 
 	# Restart restores an odd unit count exactly.
-	GameState.new_hike(0)
+	_bare_hike(0)
 	GameState.damage_units("fernanda", 3)
 	GameState.begin_scene("odd")
 	GameState.damage_units("fernanda", 4)
@@ -455,7 +477,7 @@ func test_heart_units() -> void:
 
 	GameState.hearts_changed.disconnect(on_change)
 	GameState.travelers_died.disconnect(on_death)
-	GameState.new_hike(0)
+	_bare_hike(0)
 	_section_done("test_heart_units")
 
 
@@ -1083,6 +1105,16 @@ func test_terrain_scene() -> void:
 	_section_done("test_terrain_scene")
 
 
+## A new hike WITHOUT the starting kit (the 수첩). Every test written before the 수첩
+## existed expects an empty backpack at the start of a hike and counts its rows and
+## contents; this keeps their set-up as it was. The 수첩-era tests call
+## GameState.new_hike() itself.
+func _bare_hike(starting_ddeok := -1) -> void:
+	GameState.new_hike(starting_ddeok)
+	GameState.inventory.clear()
+	GameState.begin_scene("")
+
+
 func _config() -> Dictionary:
 	return Content.mountain("hallasan")["foraging"]
 
@@ -1690,7 +1722,7 @@ func _walk_until_done(map: Node3D) -> int:
 
 
 func test_picking_scene() -> void:
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -1814,14 +1846,14 @@ func test_picking_scene() -> void:
 	check(not gated.picks_allowed() and not gated.click(near["screen"]), "a click with the travelers dead is ignored")
 	gated.pick_plant(near["plant"])
 	check(gated.picking.basket.is_empty() and near["plant"].letter != "", "a pick with the travelers dead takes nothing")
-	GameState.new_hike()
+	_bare_hike()
 	check(gated.picks_allowed() and gated.click(near["screen"]), "after the hike restarts a click works again")
 	gated.step(Vector2.ZERO, 0.0)
 	while GameState.is_alive("nestor"):  # they die mid-walk
 		GameState.damage("nestor", "test")
 	gated.step(Vector2.ZERO, 0.1)
 	check(gated.picking.walk_target == -1, "a walk in progress is dropped when the travelers die")
-	GameState.new_hike()
+	_bare_hike()
 	gated.free()
 
 	# A restarted scene: the basket is empty and all 36 letters are back.
@@ -1835,7 +1867,7 @@ func test_picking_scene() -> void:
 	check(back, "every plant shows its letter again")
 	check(again.basket_hud.find_child("Tiles", true, false).get_child_count() == 0, "the basket HUD is empty again")
 	again.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_picking_scene")
 
 
@@ -1866,7 +1898,7 @@ func test_hud_clicks_and_layout() -> void:
 	var window_before := get_window().size
 	get_window().size = Vector2i(1280, 720)
 	await get_tree().process_frame
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -1981,7 +2013,7 @@ func test_hud_clicks_and_layout() -> void:
 		check(map.picking.walk_target == -1, "a click on a plant that is behind a discovery panel starts no walk")
 	map.free()
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_hud_clicks_and_layout")
 
 
@@ -2094,7 +2126,7 @@ func _stand_near(map: Node3D, plant: Node3D, offset := Vector2(0.4, 0.2)) -> voi
 
 
 func _fresh_reach_map() -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -2453,7 +2485,7 @@ func test_spelling_scene() -> void:
 	var window_before := get_window().size
 	get_window().size = Vector2i(1280, 720)
 	await get_tree().process_frame
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -2485,7 +2517,7 @@ func test_spelling_scene() -> void:
 	for i in 5:
 		GameState.damage("nestor", "test")
 	check(not GameState.is_alive("nestor") and not map.open_spelling("ma") and not get_tree().paused, "opening is refused when a traveler is dead")
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 
 	# A real click on the list entry opens it and pauses.
@@ -2584,7 +2616,7 @@ func test_spelling_scene() -> void:
 	again.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_spelling_scene")
 
 
@@ -2631,7 +2663,7 @@ func test_damage_logic() -> void:
 	var deaths := []
 	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
 	GameState.travelers_died.connect(on_death)
-	GameState.new_hike(0)
+	_bare_hike(0)
 	check(damage.settle() == {"failures": 0, "died": false} and GameState.heart_units["nestor"] == 10, "settling with nothing queued changes nothing")
 	damage.queue_failure()
 	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "queuing a failure costs nothing yet")
@@ -2640,7 +2672,7 @@ func test_damage_logic() -> void:
 	check(GameState.heart_units["nestor"] == 10 - step and GameState.heart_units["fernanda"] == 10 - step and GameState.heart_units["nestor"] == 9, "a failure lowers BOTH travelers by failure_damage_units (10 -> 9)")
 	check(damage.settle()["failures"] == 0, "a failure is applied once")
 	# Ten in a row, settled one at a time: the tenth kills, once.
-	GameState.new_hike(0)
+	_bare_hike(0)
 	deaths.clear()
 	var died_at := []
 	for i in 10:
@@ -2654,7 +2686,7 @@ func test_damage_logic() -> void:
 	check(damage.settle() == {"failures": 0, "died": false} and deaths.size() == 1, "failures after the death do nothing and announce nothing")
 	# Ten queued at once and twelve queued at once.
 	for count in [10, 12]:
-		GameState.new_hike(0)
+		_bare_hike(0)
 		deaths.clear()
 		for i in count:
 			damage.queue_failure()
@@ -2662,7 +2694,7 @@ func test_damage_logic() -> void:
 		check(result["died"] and deaths.size() == 1 and damage.pending == 0, "%d queued at once: one death, nothing left over" % count)
 		check(result["failures"] == 10, "%d queued at once: only the 10 that happened are applied (%d)" % [count, result["failures"]])
 	# The old whole-heart call still works.
-	GameState.new_hike(0)
+	_bare_hike(0)
 	GameState.damage("nestor", "test")
 	check(GameState.heart_units["nestor"] == 8, "the old damage() still takes exactly one whole heart")
 	# Nothing in the foraging scripts heals.
@@ -2671,7 +2703,7 @@ func test_damage_logic() -> void:
 		heals += FileAccess.get_file_as_string("res://scenes/foraging/%s.gd" % path).count("heal(")
 	check(heals == 0, "nothing in the foraging scripts calls heal()")
 	GameState.travelers_died.disconnect(on_death)
-	GameState.new_hike(0)
+	_bare_hike(0)
 	_section_done("test_damage_logic")
 
 
@@ -2694,7 +2726,7 @@ func test_hearts_scene() -> void:
 	var window_before := get_window().size
 	get_window().size = Vector2i(1280, 720)
 	await get_tree().process_frame
-	GameState.new_hike()
+	_bare_hike()
 	var map := _new_hearts_map()
 	await get_tree().physics_frame
 	await get_tree().physics_frame
@@ -2715,7 +2747,7 @@ func test_hearts_scene() -> void:
 	check(hud.drawn_states("nestor") == [2, 2, 2, 2, 1] and hud.drawn_states("fernanda") == [2, 2, 2, 2, 2], "9 units draws 4 full + 1 half, and only for that traveler")
 	GameState.damage_units("nestor", 9)
 	check(hud.drawn_states("nestor") == [0, 0, 0, 0, 0], "0 units draws all outlines")
-	GameState.new_hike()
+	_bare_hike()
 	hud.refresh()
 
 	# Layout at 1280x720 against the discovery list, the basket and the spelling view.
@@ -2774,7 +2806,7 @@ func test_hearts_scene() -> void:
 	map.free()
 
 	# Damage after the view closes; gore on both travelers, staggered.
-	GameState.new_hike()
+	_bare_hike()
 	map = _new_hearts_map()
 	await get_tree().physics_frame
 	hud = map.hearts_hud
@@ -2805,7 +2837,7 @@ func test_hearts_scene() -> void:
 	check(GameState.heart_units["nestor"] == 9, "a view that closes without a failure costs nothing")
 
 	# Ten failures: the tenth kills, once, and starts one death beat.
-	GameState.new_hike()
+	_bare_hike()
 	map.free()
 	map = _new_hearts_map()
 	await get_tree().physics_frame
@@ -2837,7 +2869,7 @@ func test_hearts_scene() -> void:
 	map.tick_beat(float(gore["death_beat"]) / 2.0)
 	check(is_equal_approx(dim.color.a, float(gore["death_dim_alpha"]) / 2.0) and map.is_death_beat_playing(), "halfway through the beat the screen is half dimmed")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 
 	# The beat on a living pair isolates the restarting flag.
 	map = _new_hearts_map()
@@ -2849,12 +2881,12 @@ func test_hearts_scene() -> void:
 	check(beats.size() == 1 and map.restarting, "begin_death_beat sets restarting, and only starts one beat")
 	check(not map.picks_allowed() and not map.pick_nearest() and not map.open_spelling("ma"), "restarting alone rejects picks and the spelling view")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 
 	# Restart: hearts back to the scene-start snapshot, the scene fresh. The map
 	# becomes the current scene so the real reload path runs.
 	var original_scene := get_tree().current_scene
-	GameState.new_hike()
+	_bare_hike()
 	GameState.heart_units["nestor"] = 7  # an odd count carried into the scene
 	GameState.heart_units["fernanda"] = 9
 	var doomed := _new_hearts_map()
@@ -2891,7 +2923,7 @@ func test_hearts_scene() -> void:
 	get_tree().current_scene = original_scene
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_hearts_scene")
 
 
@@ -3057,7 +3089,7 @@ func test_spares_logic() -> void:
 
 ## A fresh map with every target discovered and every target letter in the basket.
 func _spares_map(pick_everything := true) -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -3253,7 +3285,7 @@ func test_spares_scene() -> void:
 	again.spelling_hud.closed.emit()
 	check(again.spare_plants.size() == 1, "the same word can earn a spare again in the new scene")
 	again.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_spares_scene")
 
 
@@ -3284,7 +3316,7 @@ func test_spares_real_events() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_spares_real_events")
 
 
@@ -3468,7 +3500,7 @@ func test_credits_scene() -> void:
 	again.spelling_hud.closed.emit()
 	check(again.spare_plants.size() == 1, "the same word can earn again in the new scene")
 	again.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_credits_scene")
 
 
@@ -3498,7 +3530,7 @@ func test_credits_real_events() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_credits_real_events")
 
 
@@ -3751,7 +3783,7 @@ func test_walk_limit_scene() -> void:
 	check(failures.is_empty(), "no sky or void from any spot of the walkable area %s" % str(failures))
 	map.free()
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_walk_limit_scene")
 
 
@@ -3903,7 +3935,7 @@ func test_keyboard_scene() -> void:
 	var window_before := get_window().size
 	get_window().size = Vector2i(1280, 720)
 	await get_tree().process_frame
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -4090,7 +4122,7 @@ func test_keyboard_scene() -> void:
 	check(not get_tree().paused, "freeing the map never leaves the tree paused")
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_keyboard_scene")
 
 
@@ -4351,8 +4383,11 @@ func test_stuck_music() -> void:
 
 ## A scene with all six words found and, unless `pick_all` is false, every target
 ## letter in the basket. `units` sets the hearts the scene starts with.
-func _stuck_map(units := {}, pick_all := true) -> Node3D:
-	GameState.new_hike()
+func _stuck_map(units := {}, pick_all := true, with_kit := false) -> Node3D:
+	if with_kit:
+		GameState.new_hike()  # the real start of a hike, the 수첩 in the backpack
+	else:
+		_bare_hike()
 	for id in units:
 		GameState.heart_units[id] = units[id]
 	GameState.controlled = "fernanda"
@@ -4444,7 +4479,7 @@ func test_stuck_playtest() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_stuck_playtest")
 
 
@@ -4591,7 +4626,7 @@ func test_stuck_scene() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_stuck_scene")
 
 
@@ -4703,7 +4738,7 @@ func test_stuck_monster() -> void:
 	get_tree().current_scene = original_scene
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_stuck_monster")
 
 
@@ -4745,7 +4780,7 @@ func test_stuck_real_events() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_stuck_real_events")
 
 
@@ -4958,7 +4993,7 @@ func test_pause_menu_scene() -> void:
 	check(not get_tree().paused, "freeing the map never leaves the tree paused")
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_pause_menu_scene")
 
 
@@ -4988,7 +5023,7 @@ func test_pause_menu_ignored() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_pause_menu_ignored")
 
 
@@ -5093,7 +5128,7 @@ func test_pause_menu_input() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_pause_menu_input")
 
 
@@ -5154,7 +5189,7 @@ func test_pause_menu_restart() -> void:
 	get_tree().current_scene = original_scene
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_pause_menu_restart")
 
 
@@ -5169,14 +5204,14 @@ const KO_FONT_FILE := "NotoSansKR-VariableFont_wght.ttf"
 
 func test_items_data() -> void:
 	var file: Array = Content.load_json(Content.ITEMS_PATH).get("items", [])
-	check(file.size() == 5 and Content.items.size() == 5, "items.json lists five items and all five loaded")
-	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm", "ddeok"], "the ids load in file order")
+	check(file.size() == 12 and Content.items.size() == 13, "items.json lists twelve items and all of them loaded, plus the one note registered from data/notes")
+	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm", "ddeok", "plant_ma", "plant_meoru", "plant_minari", "plant_gosari", "plant_gobi", "plant_siromi", "sucheop", "hallasan_exit_sumin"], "the ids load in file order, the registered notes after them")
 	for id in Content.items:
 		var item: Dictionary = Content.item(id)
 		check(item["id"] == id and Content.ITEM_KINDS.has(item["kind"]), "%s has its id and a valid kind" % id)
-		check(item["name_en"] is String and item["name_en"] != "" and item["description_en"] is String and item["description_en"] != "", "%s has an English name and description" % id)
+		check(item["name_en"] is String and item["name_en"] != "" and item["description_en"] is String and (item["description_en"] != "" or item["kind"] == "note"), "%s has an English name and description (a note has no description: it never has a row)" % id)
 		check(item["name_ko"] is String, "%s has a name_ko (possibly empty)" % id)
-	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note", "currency"], "the kinds are elixir, charm, hint, note and currency")
+	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note", "currency", "plant", "notebook"], "the kinds are elixir, charm, hint, note, currency, plant and notebook")
 	var a: Dictionary = Content.item("ssanghwatang")
 	check(a["kind"] == "elixir" and a["name_ko"] == "쌍화탕" and a["name_en"] == "Ssanghwatang" and a["description_en"] == "Herbal tonic. Restores half a heart." and a["heal_units"] == 1, "ssanghwatang is as briefed")
 	var b: Dictionary = Content.item("gongjindan")
@@ -5252,7 +5287,7 @@ func test_inventory_logic() -> void:
 func test_inventory_game_state() -> void:
 	GameState.new_hike(0)
 	var inv = GameState.inventory
-	check(inv.is_empty(), "a new hike starts with an empty backpack")
+	check(inv.items() == [{"id": "sucheop", "count": 1}], "a new hike starts with the starting kit only: the 수첩")
 	inv.add("ssanghwatang")
 	inv.add("gongjindan", 2)
 	GameState.begin_scene("foraging")
@@ -5265,7 +5300,7 @@ func test_inventory_game_state() -> void:
 	inv.changed.connect(count_changes)
 	GameState.restart_scene()
 	inv.changed.disconnect(count_changes)
-	check(inv.items() == [{"id": "ssanghwatang", "count": 1}, {"id": "gongjindan", "count": 2}], "a restart puts the backpack back as the scene began: later items gone, an item used is back")
+	check(inv.items() == [{"id": "sucheop", "count": 1}, {"id": "ssanghwatang", "count": 1}, {"id": "gongjindan", "count": 2}], "a restart puts the backpack back as the scene began: later items gone, an item used is back")
 	check(inv.count("spelling_hint") == 0 and fired[0] == 1, "the item found during the scene is gone, and the restore was announced")
 	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "hearts are restored as before")
 	check(GameState.inventory == inv, "it is the same Inventory object throughout (HUDs stay connected)")
@@ -5276,11 +5311,11 @@ func test_inventory_game_state() -> void:
 	GameState.begin_scene("animals")
 	inv.clear()
 	GameState.restart_scene()
-	check(inv.items() == [{"id": "ssanghwatang", "count": 1}, {"id": "gongjindan", "count": 2}, {"id": "slow_time_charm", "count": 1}], "the next scene's snapshot is its own start: what was held when it began, the earlier items included")
+	check(inv.items() == [{"id": "sucheop", "count": 1}, {"id": "ssanghwatang", "count": 1}, {"id": "gongjindan", "count": 2}, {"id": "slow_time_charm", "count": 1}], "the next scene's snapshot is its own start: what was held when it began, the earlier items included")
 	GameState.new_hike()
-	check(GameState.inventory.is_empty(), "a new hike empties the backpack")
+	check(GameState.inventory.items() == [{"id": "sucheop", "count": 1}], "a new hike empties the backpack down to the starting kit")
 	GameState.restart_scene()
-	check(GameState.inventory.is_empty(), "and its scene-start snapshot is empty too")
+	check(GameState.inventory.items() == [{"id": "sucheop", "count": 1}], "and its scene-start snapshot is the starting kit too")
 	_section_done("test_inventory_game_state")
 
 
@@ -5320,7 +5355,7 @@ func test_backpack_logic() -> void:
 
 ## A map with the backpack's starting contents already in the bag when the scene begins.
 func _backpack_map(held := {}) -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	for id in held:
 		GameState.inventory.add(id, held[id])
 	GameState.controlled = "fernanda"
@@ -5488,7 +5523,7 @@ func test_backpack_scene() -> void:
 	check(not get_tree().paused, "freeing the map never leaves the tree paused")
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_backpack_scene")
 
 
@@ -5561,7 +5596,7 @@ func test_backpack_ignored() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_backpack_ignored")
 
 
@@ -5591,7 +5626,7 @@ func test_backpack_restart() -> void:
 	check(GameState.inventory.snapshot() == held, "a death returns the backpack to what the scene began with")
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_backpack_restart")
 
 
@@ -5648,9 +5683,9 @@ func test_ddeok_item() -> void:
 	check(Content.item_problem({"id": "n", "kind": "note"}, {}) == "" and Content.item_problem({"id": "n", "kind": "note", "icon": "baekseolgi"}, {}) == "", "the icon field is optional")
 	check(Content.item_problem({"id": "n", "kind": "note", "icon": ""}, {}) != "" and Content.item_problem({"id": "n", "kind": "note", "icon": 3}, {}) != "", "an icon that is not a name is rejected")
 	check(not Content.item("ssanghwatang").has("icon"), "the other items have no icon")
-	GameState.new_hike(0)
+	_bare_hike(0)
 	check(GameState.inventory.add("ddeok", 1000) and GameState.inventory.count("ddeok") == 1000, "ddeok stacks with no cap")
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_ddeok_item")
 
 
@@ -5719,7 +5754,7 @@ func test_reward_table() -> void:
 
 ## A map for the decoy tests, built with the backpack holding `held` and `controlled` picking.
 func _decoy_map(controlled := "fernanda", held := {}) -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	for id in held:
 		GameState.inventory.add(id, held[id])
 	GameState.controlled = controlled
@@ -5793,7 +5828,7 @@ func test_reward_pick() -> void:
 	map.pick_plant(_plant_of(map, "decoy_reward", 0))
 	check(GameState.inventory.is_empty() and map.find_children("*", "CPUParticles3D", false, false).size() == 1, "a bad table gives nothing but the steam still plays")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_reward_pick")
 
 
@@ -5846,7 +5881,7 @@ func test_harm_pick() -> void:
 	check(GameState.heart_units["fernanda"] == GameState.max_units() and GameState.heart_units["nestor"] == GameState.max_units(), "hearts are restored to the scene start")
 	check(GameState.inventory.snapshot() == {"ddeok": 1}, "the backpack is restored to the scene-start contents")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_harm_pick")
 
 
@@ -5868,7 +5903,7 @@ func test_backpack_icons() -> void:
 	map.close_backpack()
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_backpack_icons")
 
 
@@ -6056,7 +6091,7 @@ func test_decoy_gore_scene() -> void:
 	check(label != null and label.text == "+1 DDEOK" and label.no_depth_test and label.billboard == BaseMaterial3D.BILLBOARD_ENABLED, "the label still reads '+1 DDEOK', billboarded, with no depth test")
 	check(label != null and label.render_priority == int(_config()["decoy_rewards"]["floating_label"]["render_priority"]) and label.render_priority > 0 and label.outline_render_priority < label.render_priority, "the label sorts in front of the steam; its outline stays behind its text")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoy_gore_scene")
 
 
@@ -6092,7 +6127,7 @@ func test_decoy_gore_gating() -> void:
 		check(map.picking.basket.size() == 1, tag + "and a pick works again")
 		map.free()
 		get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoy_gore_gating")
 
 
@@ -6117,7 +6152,7 @@ func test_decoy_gore_countdown() -> void:
 	check(map.music_playing and map.music_stops == 0, "the music never stopped")
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoy_gore_countdown")
 
 
@@ -6178,7 +6213,7 @@ func test_decoy_gore_lethal() -> void:
 	_pick_harm(map, "butsunnamu")
 	check(not map.decoy_gore.active and GameState.heart_units["fernanda"] == GameState.max_units() - 1 and map.picks_allowed(), "without a gore table a harm pick only costs the half heart")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoy_gore_lethal")
 
 
@@ -6219,7 +6254,7 @@ func test_decoy_gore_restart() -> void:
 		check(not map.is_death_beat_playing() and GameState.heart_units["fernanda"] == GameState.max_units(), tag + "it restarts normally")
 		map.free()
 		get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoy_gore_restart")
 
 
@@ -6227,7 +6262,7 @@ func test_decoy_gore_restart() -> void:
 
 ## A map whose scene begins with `held` in the bag and the travelers on `nestor_units` and `fernanda_units` (half-units).
 func _drink_map(held: Dictionary, nestor_units := 10, fernanda_units := 10) -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	GameState.heart_units["nestor"] = nestor_units
 	GameState.heart_units["fernanda"] = fernanda_units
 	for id in held:
@@ -6367,7 +6402,7 @@ func test_drink_logic() -> void:
 		["gongjindan", 10, 0, 2, "Fernanda drank 공진단: wasted (already full)"],
 	]
 	for c in cases:
-		GameState.new_hike()
+		_bare_hike()
 		GameState.heart_units["fernanda"] = c[1]
 		var held = InventoryScript.new()
 		held.add(c[0], 3)
@@ -6385,7 +6420,7 @@ func test_drink_logic() -> void:
 		check(BackpackScript.message_for(r, words) == c[4], "%s: the message reads '%s' (%s)" % [label, c[4], BackpackScript.message_for(r, words)])
 		check(not drinker.choosing, "%s: the question is closed" % label)
 		check(seen.size() == 1 and seen[0][0] == "fernanda", "%s: GameState.heal() announced one change" % label)
-	GameState.new_hike()
+	_bare_hike()
 	GameState.heart_units["nestor"] = 3
 	var many = InventoryScript.new()
 	many.add("gongjindan", 2)
@@ -6409,7 +6444,7 @@ func test_drink_logic() -> void:
 	check(not cur.select("ddeok", held.items()) and not cur.drink(held, "fernanda")["ok"] and held.count("ddeok") == 1, "DDEOK can't be drunk")
 	again.select("ssanghwatang", held.items())
 	check(not again.drink(held, "stranger")["ok"] and held.count("ssanghwatang") == 1, "an unknown traveler can't drink")
-	GameState.new_hike()
+	_bare_hike()
 
 	# Amounts and the message timer.
 	check(BackpackScript.amount_text(1, words) == "½ heart" and BackpackScript.amount_text(2, words) == "1 heart" and BackpackScript.amount_text(3, words) == "1½ hearts" and BackpackScript.amount_text(4, words) == "2 hearts", "amounts read ½ heart, 1 heart, 1½ hearts, 2 hearts")
@@ -6533,7 +6568,7 @@ func test_drink_scene() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_drink_scene")
 
 
@@ -6616,7 +6651,7 @@ func test_drink_input() -> void:
 	map.free()
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_drink_input")
 
 
@@ -6663,7 +6698,7 @@ func test_drink_restart() -> void:
 	check(map.backpack.selected == "" and not map.backpack.choosing and map.backpack.message == "", "a new scene starts with no selection, question or message")
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_drink_restart")
 
 
@@ -6758,7 +6793,7 @@ func _layout_key(decoys: Array) -> String:
 
 ## A map built with a pinned placement seed (the 7d sections run with the legacy layout off).
 func _seeded_map(seed_value: int, held := {}, controlled := "fernanda") -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	for id in held:
 		GameState.inventory.add(id, held[id])
 	GameState.controlled = controlled
@@ -6937,7 +6972,7 @@ func test_placement_data() -> void:
 	check(amounts_got == [[1, 10], [2, 4], [3, 2], [10, 1]], "amount_table is 1:10, 2:4, 3:2, 10:1")
 	check(chaos["item"] == "ddeok" and Content.has_item("ddeok"), "piles hold the ddeok item")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_placement_data")
 
 
@@ -7306,7 +7341,7 @@ func _world_snapshot(map: Node3D) -> String:
 
 ## A map reloaded the way a restart does it: the map becomes the current scene.
 func _current_map(seed_value: int) -> Node3D:
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	Foraging.legacy_layout = false
 	Foraging.seed_override = seed_value
@@ -7350,7 +7385,7 @@ func test_placement_timing() -> void:
 	get_tree().paused = false
 
 	# Without an override every scene start picks its own seed.
-	GameState.new_hike()
+	_bare_hike()
 	Foraging.legacy_layout = false
 	var seeds := {}
 	for n in 6:
@@ -7436,7 +7471,7 @@ func test_placement_timing() -> void:
 	get_tree().current_scene = original_scene
 	get_tree().paused = false
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_placement_timing")
 
 
@@ -7448,7 +7483,7 @@ func test_legacy_default() -> void:
 	# The scene, loaded normally (no seed, the flag as the 7d sections leave it): the random layout.
 	Foraging.legacy_layout = false
 	Foraging.seed_override = -1
-	GameState.new_hike()
+	_bare_hike()
 	GameState.controlled = "fernanda"
 	var map: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
 	add_child(map)
@@ -7457,7 +7492,7 @@ func test_legacy_default() -> void:
 	check(n >= 2 and n <= 16 and map.plants.size() == 28 + n, "and it has 2 to 16 decoys (%d) on top of the 28 targets" % n)
 	check(map.decoy_placement.is_valid() and map.placement_rolls == 1 and map.pile_roll.size() == map.piles.size(), "and rolled once, with piles from the chaos pile roll")
 	map.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_legacy_default")
 
 
@@ -7527,7 +7562,7 @@ func test_decoys_at_any_position() -> void:
 			_finish_gore(map)
 		map.free()
 		get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoys_at_any_position")
 
 
@@ -7576,7 +7611,7 @@ func test_decoy_outcome_picks() -> void:
 			_finish_gore(map)
 			map.free()
 			get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_decoy_outcome_picks")
 
 
@@ -7844,7 +7879,7 @@ func test_new_gore_scene() -> void:
 	solo.finish()
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_new_gore_scene")
 
 
@@ -7938,7 +7973,7 @@ func test_new_gore_flow() -> void:
 		map.tick_beat(100.0)
 		map.free()
 		get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_new_gore_flow")
 
 
@@ -7977,7 +8012,7 @@ func test_gore_captions() -> void:
 		_finish_gore(map)
 		map.free()
 		get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_gore_captions")
 
 
@@ -8062,7 +8097,7 @@ func test_hidden_outcome() -> void:
 		check(hits[0] == hits[1] and hits[0][0], "and both are found by the pointer and by Space the same way")
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_hidden_outcome")
 
 
@@ -8110,7 +8145,7 @@ func test_slot_generator() -> void:
 	check(FileAccess.get_md5(data_path) == before, "the real data file was not touched by --write to a copy")
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(copy_path))
 	tool.free()
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_slot_generator")
 
 
@@ -8258,7 +8293,7 @@ func test_pile_pickup() -> void:
 		check(refused and m.piles[0] == target and GameState.inventory.is_empty() and m.picking.piles_left() == m.piles.size(), "%s: a pile cannot be picked" % state)
 		m.free()
 		get_tree().paused = false
-		GameState.new_hike()
+		_bare_hike()
 
 	# A click walks the human traveler to the pile and picks it on arrival.
 	map = await _seeded_map(seed_value)
@@ -8281,7 +8316,7 @@ func test_pile_pickup() -> void:
 	check(_bookkeeping(map, false) == before_walk, "walking to and picking a pile changed no letters, spares, hearts or stuck state")
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 
 	# Piles change neither the word flow nor the stuck verdict.
 	map = await _seeded_map(seed_value)
@@ -8298,7 +8333,7 @@ func test_pile_pickup() -> void:
 	check(GameState.inventory.count("ddeok") == total and total > 0, "all piles together gave exactly their amounts (%d)" % total)
 	map.free()
 	get_tree().paused = false
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_pile_pickup")
 
 
@@ -8339,7 +8374,7 @@ func test_pile_restart() -> void:
 	var keys := {}
 	var placement := _new_placement()
 	var piles := _new_piles()
-	GameState.new_hike()
+	_bare_hike()
 	Foraging.legacy_layout = false
 	for n in 8:
 		var m: Node3D = load("res://scenes/foraging/foraging.tscn").instantiate()
@@ -8350,5 +8385,643 @@ func test_pile_restart() -> void:
 	print("  %d distinct pile layouts in 8 random scene starts" % keys.size())
 	check(keys.size() >= 3, "piles re-roll at every scene start (%d distinct of 8)" % keys.size())
 	get_window().size = window_before
-	GameState.new_hike()
+	_bare_hike()
 	_section_done("test_pile_restart")
+
+
+# ---- Prompt 8a: plant items, the 수첩 (notebook), notes ----
+
+const NotebookScript := preload("res://scenes/foraging/notebook.gd")
+const KO_FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
+
+## The exit note exactly as briefed (line breaks and blank lines included).
+const EXIT_NOTE_TEXT := "To 민수 ♡\n\nOkay. I'm not lost anymore. I'm only a LITTLE lost.\nI found 머루 and 미나리!! I ate the 머루 and almost cried,\nit was so good. I saved you some. Not a lot. Sorry ♡\n\nA hiking man with like a hundred pockets told me\nreal wild 노루 live up top. Rare ones!!\nHe also told me where he pooped. So. 50% trust.\n\nGo up the hill to the big dead 나무.\nThe white twisty one, like a skeleton doing yoga.\nWalk right through it and keep climbing.\nI'll wait for you up there~ probably!!\n(Do 노루 eat people?? Don't answer that.)\n\nSome plants here won't tell you their name.\nI picked one. My face is fine now. Mostly.\n\n— 수민\np.s. you still owe me 고기 from MT"
+
+const PLANT_ITEMS := [
+	["plant_ma", "마", "Chinese yam", "Slimy when cut. Good for stamina, they say."],
+	["plant_meoru", "머루", "Wild grape", "Small, sour, and purple. Stains everything."],
+	["plant_minari", "미나리", "Water dropwort", "Grows where your feet get wet. Crunchy."],
+	["plant_gosari", "고사리", "Bracken fern", "Curled up like it's hiding. Never eat it raw."],
+	["plant_gobi", "고비", "Royal fern", "Fuzzy little fist. Bracken's fancier cousin."],
+	["plant_siromi", "시로미", "Crowberry", "Tiny black berries from the windy top."],
+]
+## The target word (kind id) each plant item belongs to.
+const PLANT_WORDS := {"ma": "plant_ma", "meoru": "plant_meoru", "minari": "plant_minari", "gosari": "plant_gosari", "gobi": "plant_gobi", "simiro": "plant_siromi"}
+
+
+## Two short notes (and a long one) registered next to the real one, for tests that
+## need an order or a page that scrolls. `_remove_test_notes` takes them out again.
+func _add_test_notes() -> void:
+	var long_text := ""
+	for i in 60:
+		long_text += "Line %d of a long test note that keeps going.\n" % i
+	for entry in [["test_note_a", "Page A\nfirst"], ["test_note_b", "Page B\nsecond"], ["test_note_long", long_text]]:
+		Content.notes[entry[0]] = {"id": entry[0], "writer": "song_sumin", "text": entry[1]}
+		Content.items[entry[0]] = {"id": entry[0], "kind": "note", "name_ko": "", "name_en": "Note", "description_en": ""}
+
+
+func _remove_test_notes() -> void:
+	for id in ["test_note_a", "test_note_b", "test_note_long"]:
+		Content.notes.erase(id)
+		Content.items.erase(id)
+
+
+func _book_ids() -> Array[String]:
+	return NotebookScript.note_ids(GameState.inventory.items())
+
+
+func test_plant_items_data() -> void:
+	for entry in PLANT_ITEMS:
+		var item: Dictionary = Content.item(entry[0])
+		check(item.get("kind") == "plant" and item.get("name_ko") == entry[1] and item.get("name_en") == entry[2] and item.get("description_en") == entry[3], "%s is as briefed (%s, %s, %s)" % [entry[0], entry[1], entry[2], entry[3]])
+		check(not BackpackScript.is_selectable(entry[0]) and not item.has("icon"), "%s is view-only" % entry[0])
+	var book: Dictionary = Content.item("sucheop")
+	check(book.get("kind") == "notebook" and book.get("name_ko") == "수첩" and book.get("name_en") == "Notebook" and book.get("description_en") == "A gift from the old lady. The pages smell like incense.", "sucheop is as briefed")
+	check(BackpackScript.is_selectable("sucheop") and BackpackScript.is_notebook("sucheop") and not BackpackScript.is_elixir("sucheop"), "the 수첩 row is selectable, and it is not an elixir")
+	var rewards: Dictionary = _config()["word_rewards"]
+	check(int(rewards["word_reward_count"]) == 2 and float(rewards["label_height"]) > 0.0, "a finished word gives 2 of its plant (word_rewards.word_reward_count)")
+	check(rewards["item_by_word"] == PLANT_WORDS, "every target word maps to its plant item")
+	var targets: Array = []
+	for kind in _config()["plants"]["kinds"]:
+		if kind["kind"] == "target":
+			targets.append(kind["id"])
+	check(targets.size() == 6 and rewards["item_by_word"].keys() == targets, "all six target words, and only they, have an item")
+	for id in PLANT_WORDS:
+		check(Content.has_item(PLANT_WORDS[id]), "%s's item exists in items.json" % id)
+	# The starting kit.
+	check(Content.starting_kit() == [{"item": "sucheop", "count": 1}], "the starting kit is the 수첩 x1 (rules.json starting_kit)")
+	GameState.new_hike()
+	GameState.inventory.add("plant_ma", 2)
+	GameState.inventory.add(Content.notes.keys()[0])
+	GameState.new_hike()
+	check(GameState.inventory.snapshot() == {"sucheop": 1}, "new_hike() leaves exactly the starting kit: sucheop x1")
+	GameState.restart_scene()
+	check(GameState.inventory.snapshot() == {"sucheop": 1}, "and the kit is in the scene-start snapshot")
+	# Writers.
+	var writers: Array = Content.load_json(Content.NOTE_WRITERS_PATH)["writers"]
+	check(writers.map(func(w): return w["id"]) == ["old_lady", "dong_cheolsu", "song_sumin", "bong_minsu"], "note_writers.json has the four writers")
+	check(writers.map(func(w): return w["name_ko"]) == ["", "동철수", "송수민", "봉민수"], "with their Korean names (the old lady has none)")
+	check(writers[0]["note"] == "The quiet 무당. Never called \"grandma\" in game text." and writers[1]["note"] == "The over-equipped 등산 아저씨." and writers[2]["note"] == "University student, lost on an MT hike." and writers[3]["note"] == "University student, lost on an MT hike.", "and their notes")
+	check(Content.note_writers.size() == 4 and Content.note_writers.has("song_sumin"), "the writers are loaded into Content")
+	# The exit note.
+	var raw: Array = Content.load_json("res://data/notes/hallasan.json")["notes"]
+	check(raw.size() == 1 and raw[0]["id"] == "hallasan_exit_sumin" and raw[0]["writer"] == "song_sumin", "data/notes/hallasan.json has the one exit note, by song_sumin")
+	check(raw[0]["text"] == EXIT_NOTE_TEXT, "the exit note's text in data matches the brief exactly, line breaks and blank lines included")
+	check(EXIT_NOTE_TEXT.count("\n\n") == 5 and EXIT_NOTE_TEXT.split("\n").size() == 21, "(sanity) it has 21 lines and 5 blank lines between its 6 paragraphs")
+	check(Content.notes.has("hallasan_exit_sumin") and Content.notes["hallasan_exit_sumin"]["text"] == EXIT_NOTE_TEXT, "Content registers the note")
+	check(Content.item("hallasan_exit_sumin").get("kind") == "note" and not BackpackScript.is_selectable("hallasan_exit_sumin"), "and as an item of kind note, which is not selectable")
+	check(GameState.inventory.add("hallasan_exit_sumin") and GameState.inventory.remove("hallasan_exit_sumin"), "the Inventory takes a note like any item")
+	# Note validation.
+	var writer_ids := {"song_sumin": true}
+	check(Content.note_problem({"id": "n1", "writer": "song_sumin", "text": "hi"}, {}, {}, writer_ids) == "", "a valid note passes")
+	check(Content.note_problem({"id": "n1", "writer": "nobody", "text": "hi"}, {}, {}, writer_ids).contains("unknown writer"), "an unknown writer is rejected")
+	check(Content.note_problem({"id": "n1", "writer": "song_sumin", "text": "  "}, {}, {}, writer_ids).contains("no text"), "a note with no text is rejected")
+	check(Content.note_problem({"id": "n1", "writer": "song_sumin", "text": "hi"}, {"n1": {}}, {}, writer_ids).contains("already used") and Content.note_problem({"id": "ddeok", "writer": "song_sumin", "text": "hi"}, {}, Content.items, writer_ids).contains("already used"), "a repeated note id, or an item's id, is rejected")
+	check(Content.note_problem({"writer": "song_sumin", "text": "hi"}, {}, {}, writer_ids) != "" and Content.note_problem("x", {}, {}, writer_ids) != "", "a note without an id is rejected")
+	# The look data.
+	var look: Dictionary = Content.notebook
+	check(look["empty_text"] == "No notes yet." and int(look["font_size"]) > 0 and int(look["scroll_step"]) > 0 and int(look["page_margin"]) >= 0, "notebook.json has the empty text, a font size, a scroll step and a margin")
+	check(_is_color(look["page_color"]) and _is_color(look["page_text_color"]) and _is_color(look["page_empty_text_color"]) and _is_color(look["arrow_color"]), "its colours are r, g, b")
+	var page_light: float = Color(look["page_color"][0], look["page_color"][1], look["page_color"][2]).get_luminance()
+	var text_light: float = Color(look["page_text_color"][0], look["page_text_color"][1], look["page_text_color"][2]).get_luminance()
+	check(page_light > 0.7 and text_light < 0.3, "a cream (light) page with dark text")
+	# Glyphs: the font that draws the pages has every character of the note.
+	check(KO_FONT.has_char(0x2661) and KO_FONT.has_char(0x7E) and KO_FONT.has_char(0x2014), "Noto Sans KR has ♡ (U+2661), ~ (U+007E) and — (U+2014)")
+	var missing: Array[String] = []
+	for ch in EXIT_NOTE_TEXT:
+		if ch != "\n" and not KO_FONT.has_char(ch.unicode_at(0)):
+			missing.append(ch)
+	check(missing.is_empty(), "every character of the exit note is in the font (missing: %s)" % str(missing))
+	check(KO_FONT.has_char(String(look["arrow_previous"]).unicode_at(0)) and KO_FONT.has_char(String(look["arrow_next"]).unicode_at(0)), "and so are the flip indicators")
+	# The debug flag's parser.
+	check(NotebookScript.debug_notes_from_args(PackedStringArray(["--other", "--debug-notes"])) and not NotebookScript.debug_notes_from_args(PackedStringArray(["--placement-seed=3"])) and not NotebookScript.debug_notes_from_args(PackedStringArray()) and not NotebookScript.debug_notes_from_args(PackedStringArray(["--debug-notes=1"])), "--debug-notes is read as a plain flag")
+	GameState.new_hike()
+	_section_done("test_plant_items_data")
+
+
+func test_notebook_logic() -> void:
+	_add_test_notes()
+	var inv = InventoryScript.new()
+	var book = NotebookScript.new()
+	check(book.current_id(inv.items()) == "" and book.page_text(inv.items()) == "" and not book.has_previous(inv.items()) and not book.has_next(inv.items()) and not book.flip(-1, inv.items()), "no notes: no page, no flipping")
+	inv.add("sucheop")
+	inv.add("test_note_a")
+	inv.add("plant_ma", 2)
+	inv.add("test_note_b")
+	check(NotebookScript.note_ids(inv.items()) == ["test_note_a", "test_note_b"], "note_ids lists the notes in the order gained, plants and the 수첩 left out")
+	book.open(inv.items())
+	check(book.current_id(inv.items()) == "test_note_b" and book.page_text(inv.items()) == "Page B\nsecond", "A then B: B shows first")
+	check(book.has_previous(inv.items()) and not book.has_next(inv.items()), "there is a page before it, and none after")
+	check(book.flip(-1, inv.items()) and book.current_id(inv.items()) == "test_note_a", "previous reaches A")
+	check(not book.has_previous(inv.items()) and book.has_next(inv.items()) and not book.flip(-1, inv.items()), "A is the oldest: no previous")
+	check(book.flip(1, inv.items()) and book.current_id(inv.items()) == "test_note_b" and not book.flip(1, inv.items()), "next goes back to B and stops there")
+	# Order survives a snapshot and a restore.
+	var snap: Dictionary = inv.snapshot()
+	inv.clear()
+	inv.restore(snap)
+	book.open(inv.items())
+	check(NotebookScript.note_ids(inv.items()) == ["test_note_a", "test_note_b"] and book.current_id(inv.items()) == "test_note_b", "the order survives snapshot and restore: B still first")
+	var restored = InventoryScript.new()
+	restored.restore(snap)
+	check(restored.items() == inv.items(), "(sanity) a second inventory restored from the snapshot lists the same")
+	# A lost note.
+	book.open(inv.items())
+	inv.remove("test_note_b")
+	book.sync(inv.items())
+	check(book.current_id(inv.items()) == "test_note_a" and not book.has_next(inv.items()), "if the shown note is lost the page falls back to the newest one left")
+	# Re-gaining a note puts it last (newest).
+	inv.add("test_note_b")
+	book.open(inv.items())
+	check(book.current_id(inv.items()) == "test_note_b", "a note gained again is the newest")
+	# The backpack's own logic for the new states.
+	var pack = BackpackScript.new()
+	check(pack.open_notebook_quick(true, "notebook_p1", inv.items()) and pack.is_open and pack.notebook_open and pack.notebook_quick and pack.notebook_key == "notebook_p1", "a quick key opens the panel on the notebook")
+	check(pack.toggle(true) == "" and pack.is_open, "a backpack key does nothing over it")
+	check(not pack.open_notebook_quick(true, "notebook_p2", inv.items()) and not pack.show_notebook(inv.items()), "it can't be opened twice")
+	check(pack.escape() == "close" and not pack.is_open and not pack.notebook_open and not pack.notebook_quick, "Esc closes it entirely")
+	pack.open(true)
+	var row_items: Array = [{"id": "sucheop", "count": 1}, {"id": "plant_ma", "count": 2}]
+	check(pack.key("down", row_items) == "selected" and pack.selected == "sucheop" and pack.key("place", row_items) == "notebook", "from the list: the first key selects the 수첩, place opens it")
+	check(pack.show_notebook(inv.items()) and pack.notebook_open and not pack.notebook_quick and pack.key("down", row_items) == "", "show_notebook() opens it over the list, and the list keys stop")
+	check(pack.escape() == "close_notebook" and pack.is_open and not pack.notebook_open and pack.selected == "sucheop", "Esc goes back to the list with the 수첩 still selected")
+	check(pack.escape() == "close" and not pack.is_open, "the next Esc closes the panel")
+	check(pack.key("down", [{"id": "plant_ma", "count": 2}]) == "" and not BackpackScript.selectable_ids([{"id": "plant_ma", "count": 1}, {"id": "test_note_a", "count": 1}]).has("test_note_a"), "plants and notes are never selected")
+	_remove_test_notes()
+	_section_done("test_notebook_logic")
+
+
+## A map that starts with the real starting kit (the 수첩), all six target letters picked.
+func _kit_map(pick_all := true) -> Node3D:
+	return await _stuck_map({}, pick_all, true)
+
+
+func test_word_rewards() -> void:
+	var map: Node3D = await _kit_map()
+	var expected := {"sucheop": 1}
+	check(GameState.inventory.snapshot() == expected, "(setup) the backpack holds the 수첩 only")
+	var words := _target_words()
+	var names: Array = []
+	for id in PLANT_WORDS:
+		check(words.has(id), "(setup) %s is a target word" % id)
+		var item_id: String = PLANT_WORDS[id]
+		var ko: String = Content.item(item_id)["name_ko"]
+		var result := _spell(map, id)
+		check(result.get("result") == "complete" and map.spelling.is_done(id), "%s: spelled through the real Spelling" % id)
+		expected[item_id] = 2
+		check(GameState.inventory.snapshot() == expected and GameState.inventory.count(item_id) == 2, "%s: exactly 2 %s went into the backpack, nothing else changed" % [id, item_id])
+		var label: Label3D
+		for l in map.find_children("*", "Label3D", false, false):
+			if l.text == "+2 " + ko:
+				label = l
+		check(label != null, "%s: a '+2 %s' label floats" % [id, ko])
+		if label != null:
+			var traveler: Node3D = map.player
+			check(Vector2(label.global_position.x, label.global_position.z).distance_to(Vector2(traveler.global_position.x, traveler.global_position.z)) < 0.01 and label.global_position.y > traveler.global_position.y + 1.0, "%s: it starts above the traveler who spelled it" % id)
+			check(label.font == map.PLANT_FONT and String(label.font.resource_path).ends_with(KO_FONT_FILE), "%s: it is drawn in Noto Sans KR" % id)
+			check(label.font_size == int(map.reward_label_config["font_size"]) and label.render_priority == int(map.reward_label_config["render_priority"]), "%s: in the existing floating-label style" % id)
+		names.append(ko)
+		get_tree().paused = false
+	check(names == ["마", "머루", "미나리", "고사리", "고비", "시로미"], "all six words were checked, in order")
+	check(map.spelling.is_done("ma") and GameState.inventory.count("plant_ma") == 2, "(sanity) finished words stay finished and keep their plants")
+	map.free()
+	get_tree().paused = false
+	# A failed syllable gives nothing; finishing a word twice is impossible.
+	map = await _kit_map()
+	check(not _fail_block(map).is_empty() and GameState.inventory.snapshot() == {"sucheop": 1}, "a failed syllable gives no plants")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_word_rewards")
+
+
+func test_scene_loot_rules() -> void:
+	_add_test_notes()
+	# A death.
+	var map: Node3D = await _kit_map()
+	_spell(map, "ma")
+	_spell(map, "gosari")
+	GameState.inventory.add("test_note_a")
+	GameState.inventory.add("hallasan_exit_sumin")
+	check(GameState.inventory.count("plant_ma") == 2 and GameState.inventory.count("plant_gosari") == 2 and _book_ids().size() == 2, "(setup) plants and notes are in the backpack")
+	map.begin_death_beat()
+	map.tick_beat(100.0)
+	check(GameState.inventory.snapshot() == {"sucheop": 1}, "a death removes the plants and the notes; the 수첩 stays")
+	map.free()
+	get_tree().paused = false
+	# Restart scene from the pause menu.
+	map = await _kit_map()
+	_spell(map, "meoru")
+	GameState.inventory.add("test_note_b")
+	check(GameState.inventory.count("plant_meoru") == 2 and GameState.inventory.count("test_note_b") == 1, "(setup) a plant and a note were gained in the scene")
+	check(map.open_pause_menu(), "(setup) the pause menu is open")
+	map.pause_hud.choose(1)
+	map.pause_hud.choose(0)
+	check(GameState.inventory.snapshot() == {"sucheop": 1}, "Restart scene removes the plants and the notes; the 수첩 stays")
+	map.free()
+	get_tree().paused = false
+	# Plants and notes held when a scene begins are part of its start (as for any item).
+	GameState.new_hike()
+	GameState.inventory.add("plant_ma", 2)
+	GameState.begin_scene("next")
+	GameState.inventory.add("plant_gobi", 2)
+	GameState.restart_scene()
+	check(GameState.inventory.snapshot() == {"sucheop": 1, "plant_ma": 2}, "a later scene's snapshot keeps what was held when it began")
+	_remove_test_notes()
+	GameState.new_hike()
+	_section_done("test_scene_loot_rules")
+
+
+func test_backpack_notebook_rows() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	_add_test_notes()
+	var map: Node3D = await _kit_map()
+	var viewport := map.get_viewport()
+	var hud = map.backpack_hud
+	var pack = map.backpack
+	_spell(map, "ma")
+	GameState.inventory.add("test_note_a")
+	GameState.inventory.add("ssanghwatang")
+	GameState.inventory.add("test_note_b")
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	check(pack.is_open and get_tree().paused and hud.row_count() == 3, "(setup) the backpack is open with three rows (the 수첩, a plant, an elixir)")
+	var ids: Array = []
+	for i in hud.row_count():
+		ids.append(hud.row_id(i))
+	check(ids == ["sucheop", "plant_ma", "ssanghwatang"], "the rows are the 수첩, the plant and the elixir (%s)" % str(ids))
+	check(not ids.has("test_note_a") and not ids.has("test_note_b") and not ids.has("hallasan_exit_sumin"), "notes never produce a row")
+	check(_row_texts(hud, 0) == ["수첩", "Notebook", "×1", "A gift from the old lady. The pages smell like incense."], "the 수첩 row reads as briefed (%s)" % str(_row_texts(hud, 0)))
+	check(_row_texts(hud, 1) == ["마", "Chinese yam", "×2", "Slimy when cut. Good for stamina, they say."], "the plant row reads as briefed (%s)" % str(_row_texts(hud, 1)))
+	check(hud._rows.get_child(0).mouse_filter == Control.MOUSE_FILTER_STOP and hud._rows.get_child(1).mouse_filter == Control.MOUSE_FILTER_IGNORE and hud._rows.get_child(2).mouse_filter == Control.MOUSE_FILTER_STOP, "the 수첩 and the elixir take clicks; the plant does not")
+	check(hud.row_label(1, "NameKo").get_theme_font("font") == KO_FONT, "the plant's Korean name is drawn in Noto Sans KR")
+	# A click on the plant row does nothing.
+	_click_at(viewport, hud.row_rect(1).get_center())
+	await _settle_layout()
+	check(pack.selected == "" and not pack.notebook_open and not pack.choosing, "a click on a plant row selects nothing")
+	# Keys: the cursor starts on the 수첩 (the first selectable row), the plant is skipped.
+	_tap(viewport, KEY_S)
+	check(pack.selected == "sucheop" and hud.row_selected(0), "the first key shows the cursor on the 수첩 row")
+	_tap(viewport, KEY_S)
+	check(pack.selected == "ssanghwatang", "the next key skips the plant row")
+	_tap(viewport, KEY_W)
+	check(pack.selected == "sucheop", "and back")
+	# Space opens the notebook inside the panel.
+	_tap(viewport, KEY_SPACE)
+	await _settle_layout()
+	check(pack.notebook_open and not pack.notebook_quick and hud.notebook_visible() and not hud._scroll.visible and hud.title_text() == "Notebook" and hud.close_text() == "Back", "Space on the 수첩 row opens the notebook in the panel, with a Back button")
+	check(hud.notebook_text() == "Page B\nsecond", "it shows the newest note")
+	check(hud.panel_rect().position == Vector2(float(_config()["backpack_hud"]["position"][0]), float(_config()["backpack_hud"]["position"][1])), "it is the backpack's own panel")
+	# Esc returns to the list; the next Esc closes the panel.
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	check(pack.is_open and not pack.notebook_open and pack.selected == "sucheop" and not hud.notebook_visible() and hud._scroll.visible and hud.title_text() == "Fernanda's backpack" and hud.close_text() == "Close" and get_tree().paused, "Esc returns to the backpack list, the 수첩 still selected")
+	check(not map.pause_menu.is_open, "and that Esc did not open the pause menu")
+	# Enter (P2) and a click do the same.
+	_tap(viewport, KEY_ENTER)
+	check(pack.notebook_open, "P2's Enter opens it too")
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	_click_at(viewport, hud.row_rect(0).get_center())
+	await _settle_layout()
+	check(pack.notebook_open and hud.notebook_visible(), "a click on the 수첩 row opens it")
+	# The Back button returns to the list.
+	_click_at(viewport, hud.close_button_rect().get_center())
+	await _settle_layout()
+	check(pack.is_open and not pack.notebook_open and hud._scroll.visible, "the Back button returns to the list")
+	_tap(viewport, KEY_SPACE)
+	check(pack.notebook_open, "(setup) open again")
+	# Tab from the notebook-from-the-list closes the whole panel.
+	_tap(viewport, KEY_TAB)
+	check(not pack.is_open and not get_tree().paused and not pack.notebook_open, "Tab over a notebook opened from the list closes the panel and resumes the map")
+	_tap(viewport, KEY_TAB)
+	check(pack.is_open and not pack.notebook_open and pack.selected == "", "reopened, the list is back with nothing selected")
+	_tap(viewport, KEY_ESCAPE)
+	_remove_test_notes()
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_backpack_notebook_rows")
+
+
+func test_notebook_pages_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	_add_test_notes()
+	var map: Node3D = await _kit_map(false)
+	var viewport := map.get_viewport()
+	var hud = map.backpack_hud
+	# Empty state.
+	_tap(viewport, KEY_N)
+	await _settle_layout()
+	check(hud.notebook_visible() and hud.notebook_empty_text() == "No notes yet." and hud.notebook_text() == "", "no notes: the page says 'No notes yet.'")
+	check(not hud.notebook_arrow_visible(-1) and not hud.notebook_arrow_visible(1), "and there is nothing to flip to")
+	_tap(viewport, KEY_A)
+	_tap(viewport, KEY_RIGHT)
+	check(hud.notebook_empty_text() == "No notes yet.", "flipping on the empty page does nothing")
+	_tap(viewport, KEY_N)
+	check(not map.backpack.is_open and not get_tree().paused, "(setup) closed")
+	# Two notes, A then B.
+	GameState.inventory.add("test_note_a")
+	GameState.inventory.add("plant_ma", 2)
+	GameState.inventory.add("test_note_b")
+	_tap(viewport, KEY_N)
+	await _settle_layout()
+	check(hud.notebook_text() == "Page B\nsecond" and hud.notebook_empty_text() == "", "B, gained last, shows first")
+	check(hud.notebook_arrow_visible(-1) and not hud.notebook_arrow_visible(1) and hud.notebook_arrow_text(-1) == "◀" and hud.notebook_arrow_text(1) == "▶", "◀ shows because an older page exists; ▶ is hidden")
+	_tap(viewport, KEY_A)
+	await _settle_layout()
+	check(hud.notebook_text() == "Page A\nfirst" and not hud.notebook_arrow_visible(-1) and hud.notebook_arrow_visible(1), "A (P1) reaches A; now only ▶ shows")
+	_tap(viewport, KEY_A)
+	check(hud.notebook_text() == "Page A\nfirst", "no page before A")
+	_tap(viewport, KEY_RIGHT)
+	check(hud.notebook_text() == "Page B\nsecond", "Right (P2) goes back to B")
+	_tap(viewport, KEY_LEFT)
+	check(hud.notebook_text() == "Page A\nfirst", "Left (P2) reaches A")
+	_tap(viewport, KEY_D)
+	check(hud.notebook_text() == "Page B\nsecond", "D (P1) goes to B")
+	_tap(viewport, KEY_D)
+	check(hud.notebook_text() == "Page B\nsecond", "no page after B")
+	# The page shows only the text.
+	var page_labels: Array = hud._book_page.find_children("*", "Label", true, false).filter(func(l): return l.is_visible_in_tree())
+	check(page_labels.size() == 1 and page_labels[0].text == "Page B\nsecond", "the page draws one label, the note's text, and no title, writer, date or page number")
+	var look: Dictionary = Content.notebook
+	var style: StyleBoxFlat = hud._book_page.get_theme_stylebox("panel")
+	check(style.bg_color.is_equal_approx(Color(look["page_color"][0], look["page_color"][1], look["page_color"][2])) and hud.notebook_text_label().get_theme_color("font_color").is_equal_approx(Color(look["page_text_color"][0], look["page_text_color"][1], look["page_text_color"][2])), "the page is the data's cream with the data's dark text")
+	check(hud.notebook_text_label().get_theme_font("font") == KO_FONT and hud.notebook_text_label().get_theme_font_size("font_size") == int(look["font_size"]), "the text is Noto Sans KR at the data's size")
+	# Order survives a death-style restore and reopening.
+	_tap(viewport, KEY_N)
+	check(not get_tree().paused, "(setup) closed")
+	var snap: Dictionary = GameState.inventory.snapshot()
+	GameState.inventory.clear()
+	GameState.inventory.restore(snap)
+	_tap(viewport, KEY_SLASH)
+	await _settle_layout()
+	check(hud.notebook_text() == "Page B\nsecond", "after a snapshot and restore B still shows first")
+	_tap(viewport, KEY_SLASH)
+	# A short page needs no scroll, and its keys do nothing.
+	_tap(viewport, KEY_N)
+	await _settle_layout()
+	check(hud.notebook_scroll_max() == 0 and not hud.scroll_notebook(1), "a short page has nothing to scroll")
+	_tap(viewport, KEY_N)
+	# The notes of the debug/exit kind are plain items, so removing one changes the pages.
+	GameState.inventory.remove("test_note_b")
+	_tap(viewport, KEY_N)
+	check(hud.notebook_text() == "Page A\nfirst" and not hud.notebook_arrow_visible(1) and not hud.notebook_arrow_visible(-1), "with B gone, A is the only page")
+	_tap(viewport, KEY_N)
+	_remove_test_notes()
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_notebook_pages_scene")
+
+
+func test_notebook_fit() -> void:
+	var window_before := get_window().size
+	for size in [Vector2i(1280, 720), Vector2i(1920, 1080)]:
+		get_window().size = size
+		await get_tree().process_frame
+		await get_tree().process_frame
+		var tag := "%dx%d: " % [size.x, size.y]
+		_add_test_notes()
+		var map: Node3D = await _kit_map(false)
+		GameState.inventory.add("hallasan_exit_sumin")
+		var viewport := map.get_viewport()
+		var hud = map.backpack_hud
+		_tap(viewport, KEY_N)
+		await _settle_layout()
+		await _settle_layout()
+		var screen := Rect2(Vector2.ZERO, Vector2(size))
+		check(hud.notebook_visible() and hud.notebook_text() == EXIT_NOTE_TEXT, tag + "the exit note shows, word for word")
+		check(screen.encloses(hud.panel_rect()), tag + "the panel is on the screen")
+		var label: Label = hud.notebook_text_label()
+		var scroll: ScrollContainer = hud.notebook_scroll_container()
+		check(label.get_line_count() >= EXIT_NOTE_TEXT.split("\n").size(), tag + "line breaks are kept (%d lines drawn for %d)" % [label.get_line_count(), EXIT_NOTE_TEXT.split("\n").size()])
+		check(label.size.x <= scroll.size.x + 0.5, tag + "no line runs past the page's width (%.0f in %.0f)" % [label.size.x, scroll.size.x])
+		var max_scroll: int = hud.notebook_scroll_max()
+		print("  %s the exit note is %.0f px tall in a %.0f px page: %s" % [tag, label.size.y, scroll.size.y, "fits" if max_scroll == 0 else "scrolls by %d px" % max_scroll])
+		if max_scroll == 0:
+			check(label.size.y <= scroll.size.y + 0.5, tag + "it fits in the page")
+		else:
+			check(hud.notebook_scroll() == 0, tag + "a long page starts at its top")
+			var steps := 0
+			while hud.notebook_scroll() < max_scroll and steps < 100:
+				_tap(viewport, KEY_S)
+				steps += 1
+			check(hud.notebook_scroll() == max_scroll and steps > 0, tag + "S scrolls to the end of the page in %d steps" % steps)
+			await _settle_layout()
+			var bottom_visible: bool = label.get_global_rect().end.y - scroll.get_global_rect().end.y <= 1.0
+			check(bottom_visible, tag + "and the last line is then inside the page")
+			_tap(viewport, KEY_S)
+			check(hud.notebook_scroll() == max_scroll, tag + "scrolling stops at the end")
+			_tap(viewport, KEY_UP)
+			check(hud.notebook_scroll() < max_scroll, tag + "Up (P2) scrolls back")
+			while hud.notebook_scroll() > 0 and steps < 200:
+				_tap(viewport, KEY_W)
+				steps += 1
+			check(hud.notebook_scroll() == 0, tag + "W (P1) scrolls back to the top")
+		# A page of 60 lines always scrolls, and a flip starts the next page at its top.
+		GameState.inventory.add("test_note_long")
+		hud.refresh()
+		_tap(viewport, KEY_N)
+		_tap(viewport, KEY_N)
+		await _settle_layout()
+		hud.refresh()
+		check(hud.notebook_text().begins_with("Line 0 of") and hud.notebook_scroll_max() > 0, tag + "a 60-line note scrolls")
+		_tap(viewport, KEY_S)
+		check(hud.notebook_scroll() == int(Content.notebook["scroll_step"]), tag + "one press scrolls by scroll_step")
+		_tap(viewport, KEY_A)
+		await _settle_layout()
+		check(hud.notebook_text() == EXIT_NOTE_TEXT and hud.notebook_scroll() == 0, tag + "flipping to another page starts at its top")
+		_tap(viewport, KEY_N)
+		_remove_test_notes()
+		map.free()
+		get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_notebook_fit")
+
+
+func test_notebook_input() -> void:
+	check(_bound_keys("notebook_p1") == [[KEY_N, 0]] and _bound_keys("notebook_p2") == [[KEY_SLASH, 0]], "notebook_p1 is bound to N only and notebook_p2 to / only")
+	var n := _key_event(KEY_N)
+	var slash := _key_event(KEY_SLASH)
+	check(n.is_action_pressed("notebook_p1") and not n.is_action_pressed("notebook_p2") and slash.is_action_pressed("notebook_p2") and not slash.is_action_pressed("notebook_p1"), "N is P1's key and / is P2's")
+	check(BackpackHudScript.notebook_action(n) == "notebook_p1" and BackpackHudScript.notebook_action(slash) == "notebook_p2" and BackpackHudScript.notebook_action(_key_event(KEY_TAB)) == "" and BackpackHudScript.notebook_action(_key_event(KEY_N, false)) == "", "notebook_action() names the key, and a release or another key is nothing")
+	var clash: Array[String] = []
+	for action in InputMap.get_actions():
+		if action == "notebook_p1" or action == "notebook_p2":
+			continue
+		for key_event in [n, slash]:
+			if InputMap.event_is_action(key_event, action):
+				clash.append("%s/%s" % [action, key_event.as_text_physical_keycode()])
+	check(clash.is_empty(), "neither N nor / is bound to any other input action (%s)" % str(clash))
+	_section_done("test_notebook_input")
+
+
+func test_notebook_quick_keys() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _kit_map(false)
+	var viewport := map.get_viewport()
+	var hud = map.backpack_hud
+	var pack = map.backpack
+	for case in [["P1 N", KEY_N, "notebook_p1"], ["P2 /", KEY_SLASH, "notebook_p2"]]:
+		var tag: String = case[0] + ": "
+		_tap(viewport, case[1])
+		await _settle_layout()
+		check(pack.is_open and pack.notebook_open and pack.notebook_quick and pack.notebook_key == case[2] and hud.notebook_visible() and get_tree().paused, tag + "opens the notebook and pauses the map")
+		check(map.countdown.paused and hud.close_text() == "Close" and hud.title_text() == "Notebook" and not hud._scroll.visible, tag + "the countdown is held; the panel has no list behind it")
+		_tap(viewport, case[1])
+		check(not pack.is_open and not pack.notebook_open and not hud.notebook_visible() and not get_tree().paused and not map.countdown.paused, tag + "the same key closes it and the map resumes")
+		_tap(viewport, case[1])
+		_tap(viewport, KEY_ESCAPE)
+		check(not pack.is_open and not hud.notebook_visible() and not get_tree().paused and not map.pause_menu.is_open, tag + "Esc closes it entirely and resumes (the pause menu stays shut)")
+		# The other player's quick key, and the backpack keys, do nothing over it.
+		_tap(viewport, case[1])
+		var other_key: Key = KEY_SLASH if case[1] == KEY_N else KEY_N
+		_tap(viewport, other_key)
+		check(pack.is_open and pack.notebook_open, tag + "the other player's quick key does not close it")
+		_tap(viewport, KEY_TAB)
+		_tap(viewport, KEY_SHIFT, KEY_LOCATION_RIGHT)
+		_tap(viewport, KEY_CTRL, KEY_LOCATION_RIGHT)
+		check(pack.is_open and pack.notebook_open and pack.notebook_quick and get_tree().paused, tag + "Tab, right Shift and right Ctrl do nothing while it is open")
+		_tap(viewport, case[1])
+		check(not pack.is_open and not get_tree().paused, tag + "(setup) closed")
+	# Over the backpack list or a notebook opened from it, the quick keys do nothing.
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_SLASH)
+	check(pack.is_open and not pack.notebook_open and not pack.notebook_quick, "over the backpack list the quick keys do nothing")
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_SPACE)
+	check(pack.notebook_open and not pack.notebook_quick, "(setup) the notebook opened from the list")
+	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_SLASH)
+	check(pack.is_open and pack.notebook_open and not pack.notebook_quick, "over it the quick keys do nothing either")
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_ESCAPE)
+	check(not pack.is_open and not get_tree().paused, "(setup) closed with two Escs")
+	# Gating: the same states the backpack refuses, for both keys.
+	var keys := [KEY_N, KEY_SLASH]
+	check(map.open_spelling("ma") and get_tree().paused, "(setup) the spelling view is open")
+	for k in keys:
+		_tap(viewport, k)
+	check(not pack.is_open and not hud.notebook_visible() and map.spelling_hud.is_open() and not map.open_notebook("notebook_p1"), "N and / don't open it over the spelling view")
+	map.spelling_hud.close()
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open, "(setup) the pause menu is open")
+	for k in keys:
+		_tap(viewport, k)
+	check(not pack.is_open and map.pause_menu.is_open and not map.pause_menu.confirming and map.pause_menu.focus == 0 and not map.open_notebook("notebook_p2"), "N and / don't open it over the pause menu, and the menu's focus is untouched")
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_SPACE)
+	check(map.pause_menu.confirming, "(setup) the restart question is up")
+	for k in keys:
+		_tap(viewport, k)
+	check(not pack.is_open and map.pause_menu.confirming and map.pause_menu.restart_requests == 0, "nor over the pause menu's question")
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.pause_menu.is_open and not get_tree().paused, "(setup) resumed")
+	map.restarting = true
+	for k in keys:
+		_tap(viewport, k)
+	check(not pack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "while `restarting` they do nothing")
+	map.restarting = false
+	map.pause_menu.restart_requests = 1
+	check(not map.open_notebook("notebook_p1") and not pack.is_open, "once a restart has been asked for it can't open")
+	map.pause_menu.restart_requests = 0
+	GameState.heart_units["nestor"] = 0
+	check(not map.open_notebook("notebook_p1") and not pack.is_open, "with a traveler dead it can't open")
+	GameState.heart_units["nestor"] = GameState.max_units()
+	_tap(viewport, KEY_N)
+	check(pack.is_open, "(control) with all of that cleared the same key opens it")
+	_tap(viewport, KEY_N)
+	map.free()
+	get_tree().paused = false
+	# Gore.
+	map = await _decoy_map("fernanda", {"ddeok": 1})
+	viewport = map.get_viewport()
+	_pick_harm(map, "keuncheonnamseong")
+	check(map.is_gore_playing(), "(setup) a gore beat is playing")
+	for k in keys:
+		_tap(viewport, k)
+	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "N and / do nothing during a gore beat")
+	_finish_gore(map)
+	map.free()
+	get_tree().paused = false
+	# The last second, the monster, the death beat.
+	map = await _stuck_map()
+	viewport = map.get_viewport()
+	check(_fail_until_stuck(map) > 0 and map.countdown.running, "(setup) stuck, the countdown runs")
+	_run(map, 39.2, 0.05)
+	check(map.countdown.is_locked() and map.restarting and map.kill == null, "(setup) the last second")
+	for k in keys:
+		_tap(viewport, k)
+	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p2"), "N and / are ignored in the last second")
+	_run(map, 1.0, 0.05)
+	check(map.kill != null and map.deer != null and not map.is_death_beat_playing(), "(setup) the monster sequence runs")
+	for k in keys:
+		_tap(viewport, k)
+	check(not map.backpack.is_open and not get_tree().paused and not map.open_notebook("notebook_p1"), "N and / are ignored during the monster sequence")
+	var guard := 0
+	while not map.is_death_beat_playing() and guard < 100:
+		_run(map, 0.1, 0.05)
+		guard += 1
+	check(map.is_death_beat_playing(), "(setup) the death beat is playing")
+	for k in keys:
+		_tap(viewport, k)
+	check(not map.backpack.is_open and not get_tree().paused and not map.backpack_hud.notebook_visible() and not map.open_notebook("notebook_p1"), "N and / are ignored during the death beat")
+	map.free()
+	get_tree().paused = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_notebook_quick_keys")
+
+
+func test_debug_notes() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	# Without the flag no note exists.
+	Foraging.debug_notes_override = false
+	var map: Node3D = await _kit_map(false)
+	check(GameState.inventory.snapshot() == {"sucheop": 1} and _book_ids().is_empty(), "without --debug-notes normal play gains no notes")
+	map.free()
+	# With it the note is in the backpack at scene start, as if gained in the scene.
+	Foraging.debug_notes_override = true
+	map = await _kit_map(false)
+	var viewport := map.get_viewport()
+	check(GameState.inventory.snapshot() == {"sucheop": 1, "hallasan_exit_sumin": 1}, "with --debug-notes the exit note is in the backpack at scene start")
+	_tap(viewport, KEY_N)
+	await _settle_layout()
+	check(map.backpack_hud.notebook_text() == EXIT_NOTE_TEXT, "N shows 수민's note, word for word")
+	_tap(viewport, KEY_N)
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	check(map.backpack_hud.row_count() == 1 and map.backpack_hud.row_id(0) == "sucheop", "the note has no row in the backpack")
+	_tap(viewport, KEY_TAB)
+	# A death removes it ...
+	map.begin_death_beat()
+	map.tick_beat(100.0)
+	check(GameState.inventory.snapshot() == {"sucheop": 1}, "a death removes the debug note, as any scene loot")
+	map.free()
+	get_tree().paused = false
+	# ... and the next scene start adds it again.
+	map = await _kit_map(false)
+	check(GameState.inventory.count("hallasan_exit_sumin") == 1, "the next scene start adds it again")
+	check(map.open_pause_menu(), "(setup) the pause menu is open")
+	map.pause_hud.choose(1)
+	map.pause_hud.choose(0)
+	check(GameState.inventory.snapshot() == {"sucheop": 1}, "Restart scene removes it too")
+	map.free()
+	get_tree().paused = false
+	Foraging.debug_notes_override = false
+	get_window().size = window_before
+	GameState.new_hike()
+	_section_done("test_debug_notes")
