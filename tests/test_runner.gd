@@ -136,11 +136,15 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_ending_landing_spots",
 	"test_ending_exit",
 	"test_ending_leftovers",
+	"test_animals_data",
+	"test_animals_crossing",
+	"test_animals_scene",
+	"test_animals_handoff",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3115
+const MIN_CHECKS := 3239
 
 
 func check(condition: bool, label: String) -> void:
@@ -314,6 +318,11 @@ func _ready() -> void:
 	await test_ending_landing_spots()
 	await test_ending_exit()
 	await test_ending_leftovers()
+	print("== Animal sightseeing scene (skeleton) ==")
+	test_animals_data()
+	test_animals_crossing()
+	await test_animals_scene()
+	await test_animals_handoff()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -9052,6 +9061,14 @@ const EndingScript := preload("res://scenes/foraging/ending.gd")
 const EXIT_ITEM := "hallasan_exit_sumin"
 const NEXT_ID := "cutscene_foraging_to_animals"
 const DT := 1.0 / 60.0
+const ANIMALS_PATH := "res://scenes/animals/animals.tscn"
+
+
+## Gives a map's ending a copy of its data with no scene paths, so its exit holds on black
+## (the real data now hands off to the animal scene).
+func _empty_scene_paths(map: Node3D) -> void:
+	map.ending_logic.config = map.ending_logic.config.duplicate(true)
+	map.ending_logic.config["scene_paths"] = {}
 
 
 ## A map with the real kit, optional extra items and DDEOK held at the scene start, and every
@@ -9117,7 +9134,7 @@ func test_ending_data() -> void:
 	var config := _config()
 	var ending: Dictionary = config["ending"]
 	check(is_equal_approx(float(ending["note_delay_s"]), 1.5) and is_equal_approx(float(ending["flight_s"]), 5.0) and is_equal_approx(float(ending["fade_s"]), 1.0), "the note waits 1.5 s, flies 5 s, and the fade takes 1 s")
-	check(ending["next"] == NEXT_ID and ending["scene_paths"] is Dictionary and ending["scene_paths"].is_empty(), "the next scene is the animals cutscene, which is not built")
+	check(ending["next"] == NEXT_ID and ending["scene_paths"] is Dictionary and ending["scene_paths"] == {NEXT_ID: ANIMALS_PATH}, "the next scene is the animals cutscene, which loads the animal scene (Prompt 9a hand-off)")
 	check(ending["hold_text"] == "next: %s (not built)", "the debug line text is in the data")
 	var paper: Dictionary = ending["note"]
 	check(paper["item"] == EXIT_ITEM and Content.notes.has(EXIT_ITEM) and Content.has_item(EXIT_ITEM), "the note gives 수민's exit note of data/notes/hallasan.json")
@@ -9271,7 +9288,11 @@ func test_ending_logic() -> void:
 	var tree: Vector2 = e.tree_position()
 	check(is_equal_approx(gap.size.y, e.gap_width()) and is_equal_approx(gap.get_center().y, tree.y) and gap.end.x > trigger.end.x - 0.001, "the gap runs through the tree to the end of the walkable strip")
 	check(trigger.position.x > tree.x and trigger.end.x <= gap.end.x + 0.001 and trigger.position.y >= gap.position.y - 0.001 and trigger.end.y <= gap.end.y + 0.001, "the trigger lies inside the gap strip, beyond the tree")
-	check(e.next_id() == NEXT_ID and e.scene_path(NEXT_ID) == "" and e.hold_text(NEXT_ID) == "next: cutscene_foraging_to_animals (not built)", "the target does not resolve; the hold line reads 'next: <id> (not built)'")
+	var unbuilt: Dictionary = data.duplicate(true)
+	unbuilt["scene_paths"] = {}  # (the data now builds the animals scene; the hold path is tested with none)
+	var e_unbuilt = EndingScript.new(unbuilt)
+	check(e.next_id() == NEXT_ID and e_unbuilt.scene_path(NEXT_ID) == "" and e_unbuilt.hold_text(NEXT_ID) == "next: cutscene_foraging_to_animals (not built)", "with no scene path the target does not resolve; the hold line reads 'next: <id> (not built)'")
+	check(e.scene_path(NEXT_ID) == ANIMALS_PATH, "...and the real data resolves it to the animal scene")
 	var built: Dictionary = data.duplicate(true)
 	built["scene_paths"] = {"made": "res://scenes/foraging/foraging.tscn", "lost": "res://scenes/nowhere.tscn"}
 	var e2 = EndingScript.new(built)
@@ -9528,6 +9549,7 @@ func test_ending_exit() -> void:
 	await get_tree().process_frame
 	_add_test_notes()
 	var map: Node3D = await _held_kit_map({"plant_ma": 1, "test_note_a": 1}, 50)
+	_empty_scene_paths(map)  # this part tests the hold on black, which needs a target with no scene
 	GameState.heart_units["nestor"] = 7
 	GameState.begin_scene("foraging")
 	var start_inventory := GameState.inventory.snapshot()
@@ -9617,6 +9639,7 @@ func test_ending_exit() -> void:
 	# The exit works without the note, and with it picked.
 	for take_note in [false, true]:
 		map = await _held_kit_map()
+		_empty_scene_paths(map)
 		_finish_words(map)
 		_run(map, 6.8)
 		check(map.ending_logic.phase == "landed", "(setup) the note has landed")
@@ -9720,3 +9743,535 @@ func test_ending_leftovers() -> void:
 	get_tree().paused = false
 	GameState.new_hike()
 	_section_done("test_ending_leftovers")
+
+
+# ---- Prompt 9a: the animal sightseeing scene (skeleton) ----
+
+const AnimalsScript := preload("res://scenes/animals/animals.gd")
+const CrossingScript := preload("res://scenes/animals/crossing.gd")
+## The sizes before Prompt 9a-ii (the map is now 3x, the lake twice the pond's half-longer-side).
+const OLD_STAGE := Vector2(48.0, 24.0)
+const OLD_POND_SIZE := Vector2(12.0, 7.0)
+const OLD_SPAWN_GAPS := Vector2(4.0, 9.0)
+const HABITAT_NAMES: Array = ["lake", "shore", "forest", "grass", "air"]
+const ANIMAL_NAMES: Array[String] = ["노루", "고라니", "사슴", "멧돼지", "들개", "검독수리", "큰부리까마귀", "오소리", "제주족제비", "비바리뱀", "오리"]
+
+
+func _animals_config() -> Dictionary:
+	return Content.mountain("hallasan")["animals"]
+
+
+func _kind_named(name_ko: String) -> Dictionary:
+	for kind in _animals_config()["kinds"]:
+		if kind["name_ko"] == name_ko:
+			return kind
+	return {}
+
+
+func test_animals_data() -> void:
+	var cfg := _animals_config()
+	check(cfg.has("_note") and String(cfg["_note"]) != "", "the animals section has a _note")
+	check(cfg["begin_id"] == NEXT_ID, "its begin_id is the id foraging hands off to")
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	check(is_equal_approx(width, OLD_STAGE.x * 3.0) and is_equal_approx(depth, OLD_STAGE.y * 3.0), "the map is 3x the old size each way (%.0f x %.0f m)" % [width, depth])
+	var points: Array = cfg["terrain"]["points"]
+	var flat := points.size() >= 2
+	var ascending := true
+	var steepest := 0.0
+	for i in points.size():
+		flat = flat and absf(float(points[i][1])) <= 0.5
+		if i > 0:
+			ascending = ascending and float(points[i][0]) > float(points[i - 1][0])
+			steepest = maxf(steepest, absf(float(points[i][1]) - float(points[i - 1][1])) / (float(points[i][0]) - float(points[i - 1][0])))
+	check(flat and ascending and steepest < 0.05 and float(points[0][0]) <= 0.0 and float(points[points.size() - 1][0]) >= width, "the terrain is nearly flat (within 0.5 m, slope %.3f) and spans the stage" % steepest)
+	var margin := float(cfg["walk_limit"]["margin"])
+	var bounds := Rect2(Vector2(margin, -depth / 2.0 + margin), Vector2(width - 2.0 * margin, depth - 2.0 * margin))
+	var lake: Dictionary = cfg["lake"]
+	var lake_center := Vector2(float(lake["center"][0]), float(lake["center"][1]))
+	var lake_radius := float(lake["radius"])
+	check(lake["name_ko"] == "백록담" and is_equal_approx(lake_radius, 2.0 * maxf(OLD_POND_SIZE.x, OLD_POND_SIZE.y) / 2.0), "the lake radius is 2x half the old pond's longer side (%.1f m)" % lake_radius)
+	check(is_equal_approx(lake_center.x, width / 2.0) and is_equal_approx(lake_center.y, depth / 2.0), "...centred on the bottom edge, horizontally centred (%s)" % str(lake_center))
+	check(float(lake["height"]) > 0.0 and float(lake["wall_height"]) > 0.0 and lake["color"].size() == 3 and float(lake["clearance_m"]) > 0.0 and lake_radius < width / 2.0, "...with a height, a wall height, a colour and a clearance; it fits in the map")
+	for id in GameState.TRAVELERS:
+		var start := Vector2(float(cfg["start"][id][0]), float(cfg["start"][id][1]))
+		check(bounds.has_point(start) and start.distance_to(lake_center) > lake_radius + 0.5, "%s starts inside the walk limits and clear of the lake" % id)
+	# Habitats.
+	var habitats: Dictionary = cfg["habitats"]
+	check(habitats.keys() == HABITAT_NAMES, "the habitats are lake, shore, forest, grass and air (%s)" % str(habitats.keys()))
+	check(is_equal_approx(float(habitats["shore"]["band_frac"]), 0.15) and is_equal_approx(float(habitats["forest"]["top_frac"]), 0.35), "the shore band is 0.15 and the forest 0.35 of the map")
+	var edges_ok := true
+	for habitat_name in habitats:
+		for edge in habitats[habitat_name]["edges"]:
+			edges_ok = edges_ok and ["west", "east", "far", "near"].has(edge)
+	check(edges_ok and habitats["air"]["edges"].size() == 4 and habitats["forest"]["edges"].has("far"), "habitat edges are map edges; air uses all four, forest includes the top")
+	# Spawn.
+	var spawn: Dictionary = cfg["spawn"]
+	check(is_equal_approx(float(spawn["interval_min_s"]), OLD_SPAWN_GAPS.x * 0.6) and is_equal_approx(float(spawn["interval_max_s"]), OLD_SPAWN_GAPS.y * 0.6) and int(spawn["max_alive"]) == 5, "spawn: gaps 40%% shorter than the old 4-9 s, at most 5 alive")
+	check(float(cfg["linger"]["min_s"]) == 4.0 and float(cfg["linger"]["max_s"]) == 8.0 and int(cfg["linger"]["duck_waypoints_min"]) == 2 and int(cfg["linger"]["duck_waypoints_max"]) == 3, "linger 4-8 s; ducks swim to 2-3 waypoints")
+	check(float(spawn["interval_min_s"]) > 0.0 and float(spawn["interval_max_s"]) >= float(spawn["interval_min_s"]) and int(spawn["max_alive"]) >= 1 and float(spawn["first_spawn_s"]) >= 0.0, "spawn numbers are valid")
+	var path: Dictionary = cfg["path"]
+	check(is_equal_approx(float(path["fly_height"]), 4.0) and float(path["wobble_amplitude_m"]) > 0.0 and float(path["wobble_amplitude_m"]) < 2.0 and float(path["wobble_wavelength_m"]) > 0.0, "flyers cross 4 m up; the wobble is gentle")
+	# Kinds.
+	var kinds: Array = cfg["kinds"]
+	var names: Array[String] = []
+	var kind_ids := {}
+	var fields_ok := true
+	var tiers_seen := {}
+	for kind in kinds:
+		names.append(kind["name_ko"])
+		kind_ids[kind["id"]] = true
+		tiers_seen[kind["tier"]] = true
+		var size: Array = kind["size"]
+		var color: Array = kind["color"]
+		fields_ok = fields_ok and String(kind["id"]) != "" and ["extinct", "endangered", "common"].has(kind["tier"]) and kind["predator"] is bool and kind["flies"] is bool \
+				and size.size() == 3 and float(size[0]) > 0.0 and float(size[1]) > 0.0 and float(size[2]) > 0.0 and float(kind["speed"]) > 0.0 \
+				and color.size() == 3 and float(color[0]) >= 0.0 and float(color[0]) <= 1.0 and float(color[1]) >= 0.0 and float(color[1]) <= 1.0 and float(color[2]) >= 0.0 and float(color[2]) <= 1.0 \
+				and float(kind["weight"]) > 0.0 and kind["habitat"] is Array and not kind["habitat"].is_empty()
+	check(names == ANIMAL_NAMES, "the kinds are the eleven animals, in order (%s)" % str(names))
+	check(fields_ok and kind_ids.size() == kinds.size(), "every kind has an id, name_ko, tier, predator, flies, size, speed, colour and weight, all valid")
+	check(tiers_seen.size() == 3, "all three tiers are used")
+	var decided := {"고라니": "extinct", "사슴": "extinct", "노루": "endangered", "비바리뱀": "endangered", "검독수리": "endangered",
+			"멧돼지": "common", "들개": "common", "큰부리까마귀": "common", "오소리": "common", "제주족제비": "common", "오리": "common"}
+	for kind in kinds:
+		check(decided.get(kind["name_ko"], "") == kind["tier"], "%s is %s" % [kind["name_ko"], decided.get(kind["name_ko"], "?")])
+	check(decided.size() == kinds.size(), "every kind has a decided tier")
+	var predators: Array[String] = []
+	var flyers: Array[String] = []
+	for kind in kinds:
+		if kind["predator"]:
+			predators.append(kind["name_ko"])
+		if kind["flies"]:
+			flyers.append(kind["name_ko"])
+	check(predators == ["멧돼지", "들개", "검독수리"], "the predators are 멧돼지, 들개 and 검독수리 (%s)" % str(predators))
+	check(flyers == ["검독수리", "큰부리까마귀"], "the flyers are the eagle and the crow (%s)" % str(flyers))
+	var wanted := {"오리": ["lake"], "고라니": ["shore"], "비바리뱀": ["shore"], "제주족제비": ["shore"], "노루": ["forest", "grass"], "사슴": ["forest", "grass"],
+			"멧돼지": ["forest"], "오소리": ["forest"], "들개": ["grass"], "검독수리": ["air"], "큰부리까마귀": ["air"]}
+	for kind in kinds:
+		var listed := true
+		for h in kind["habitat"]:
+			listed = listed and habitats.has(h)
+		check(listed and kind["habitat"] == wanted[kind["name_ko"]], "%s has habitat %s and every habitat name exists" % [kind["name_ko"], str(kind["habitat"])])
+	var ui_from: String = cfg["ui_from"]
+	var ui: Dictionary = Content.mountain("hallasan")[ui_from]
+	check(ui.has("pause_menu") and ui.has("backpack_hud") and ui.has("hearts_hud"), "the HUD configs it reuses exist in %s" % ui_from)
+	_section_done("test_animals_data")
+
+
+## Runs a Crossing for `seconds` and returns its events as [event, id, kind, entry, exit].
+func _crossing_events(cfg: Dictionary, seed_value: int, seconds: float, dt := 0.05) -> Array:
+	var crossing = CrossingScript.new(cfg, seed_value)
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var events := []
+	for i in roundi(seconds / dt):
+		for event in crossing.tick(dt):
+			var walker = event["walker"]
+			events.append([event["event"], walker.id, walker.kind["id"], walker.entry["id"], walker.exit["id"]])
+	return events
+
+
+func test_animals_crossing() -> void:
+	var cfg := _animals_config()
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var spawn_count := 0
+	# Seeds.
+	var first := _crossing_events(cfg, 42, 300.0)
+	var second := _crossing_events(cfg, 42, 300.0)
+	var other := _crossing_events(cfg, 43, 300.0)
+	check(first.size() > 20 and first == second, "the same seed gives the same sequence (%d events)" % first.size())
+	check(first != other, "another seed gives another sequence")
+	var found: Dictionary = CrossingScript.seed_from_args(PackedStringArray(["--seed=17"]))
+	check(found == {"found": true, "seed": 17, "problem": ""}, "--seed=17 is read")
+	found = CrossingScript.seed_from_args(PackedStringArray(["--other", "--seed=-3"]))
+	check(found["found"] and found["seed"] == -3, "...a negative seed too")
+	found = CrossingScript.seed_from_args(PackedStringArray(["--seed=abc"]))
+	check(not found["found"] and found["problem"] != "", "a seed that is not a whole number is a problem")
+	found = CrossingScript.seed_from_args(PackedStringArray(["--placement-seed=4"]))
+	check(not found["found"] and found["problem"] == "", "no --seed argument is not a problem (and --placement-seed is not it)")
+	# Edges.
+	check(CrossingScript.edge_of(Vector2(0.0, 3.0), width, depth) == "west" and CrossingScript.edge_of(Vector2(width, 3.0), width, depth) == "east" and CrossingScript.edge_of(Vector2(5.0, -depth / 2.0), width, depth) == "far" and CrossingScript.edge_of(Vector2(5.0, depth / 2.0), width, depth) == "near" and CrossingScript.edge_of(Vector2(5.0, 3.0), width, depth) == "", "edge_of names the edge a point is on")
+	# A busy map: spawn as fast as the cap allows.
+	var busy := cfg.duplicate(true)
+	busy["spawn"]["interval_min_s"] = 0.1
+	busy["spawn"]["interval_max_s"] = 0.1
+	var crossing = CrossingScript.new(busy, 7)
+	var peak := 0
+	var over_cap := false
+	var exits_ok := true
+	var entries_ok := true
+	var exit_differs := true
+	var other_edge := true
+	var flyers_high := true
+	var flyers_seen := 0
+	var ground_seen := 0
+	var exits := 0
+	for i in 2400:  # 120 s
+		for event in crossing.tick(0.05):
+			var walker = event["walker"]
+			if event["event"] == CrossingScript.SPAWN:
+				spawn_count += 1
+				entries_ok = entries_ok and walker.position().distance_to(walker.from) < 0.001 and is_zero_approx(walker.travelled)
+				if walker.habitat != "lake":
+					exit_differs = exit_differs and walker.exit["edge"] != walker.entry["edge"]
+					other_edge = other_edge and CrossingScript.edge_of(walker.from, width, depth) != CrossingScript.edge_of(walker.to, width, depth)
+				if walker.kind["flies"]:
+					flyers_seen += 1
+					flyers_high = flyers_high and is_equal_approx(walker.altitude, 4.0)
+				else:
+					ground_seen += 1
+					flyers_high = flyers_high and is_zero_approx(walker.altitude)
+			else:
+				exits += 1
+				exits_ok = exits_ok and walker.is_done() and not crossing.alive.has(walker) and walker.position().distance_to(walker.to) < 0.001
+		peak = maxi(peak, crossing.alive.size())
+		over_cap = over_cap or crossing.alive.size() > 5
+	check(not over_cap and peak == 5, "never more than 5 alive, and the busy map reaches 5 (peak %d)" % peak)
+	check(spawn_count > 10 and exits > 5 and crossing.spawned == spawn_count and crossing.exited == exits and crossing.spawned - crossing.exited == crossing.alive.size(), "animals are spawned and leave (%d spawned, %d left, %d alive)" % [spawn_count, exits, crossing.alive.size()])
+	check(exits_ok, "every animal that leaves has reached its exit and is no longer alive")
+	check(entries_ok, "every animal starts exactly at its entry")
+	check(exit_differs and other_edge, "land and air animals leave by a different edge than they came in (ducks leave by the rim)")
+	check(flyers_seen > 0 and ground_seen > 0 and flyers_high, "flyers cross at 4 m (%d seen), the others on the ground" % flyers_seen)
+	# Paths and speed.
+	var c = CrossingScript.new(cfg, 3)
+	var lone
+	for i in 200:
+		lone = c.spawn()
+		if lone.kind["flies"]:
+			break
+		c.alive.clear()
+	var side := Vector2(-lone.direction().y, lone.direction().x)
+	var most := 0.0
+	var on_line := true
+	var travelled := 0.0
+	while travelled <= lone.length:
+		lone.travelled = travelled
+		var lateral: float = (lone.position() - lone.from).dot(side)
+		most = maxf(most, absf(lateral))
+		on_line = on_line and absf(lateral) <= float(cfg["path"]["wobble_amplitude_m"]) + 0.0001
+		travelled += 0.25
+	check(on_line and most > 0.1 and lone.length > 10.0, "a flyer's path wobbles sideways by up to %.2f m (limit %.1f)" % [most, float(cfg["path"]["wobble_amplitude_m"])])
+	lone.travelled = lone.length
+	check(lone.position().distance_to(lone.to) < 0.001, "...and ends exactly at the exit")
+	lone.travelled = 0.0
+	c.tick(0.5)
+	check(is_equal_approx(lone.travelled, float(lone.kind["speed"]) * 0.5), "an animal moves at its kind's speed (%s: %.1f m/s)" % [lone.kind["name_ko"], float(lone.kind["speed"])])
+	check(c.spawn() != null and c.alive.size() == 2, "(setup) a second animal")
+	var full = CrossingScript.new(cfg, 3)
+	for i in 5:
+		full.spawn()
+	check(full.spawn() == null and full.alive.size() == 5, "spawn() on a full map adds nothing")
+	# Habitats: 30 seeds x 200 visits, walked in 1 s steps.
+	var lake_c := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	var lake_r := float(cfg["lake"]["radius"])
+	var in_habitat := true
+	var kind_habitat := true
+	var ground_clear := true
+	var segments_clear := true
+	var ducks_wet := true
+	var different_edge := true
+	var lingers := true
+	var ducks := 0
+	var grounds := 0
+	var shore_walkers := 0
+	var seen_habitats := {}
+	var nearest := INF
+	for seed_value in range(1, 31):
+		var hc = CrossingScript.new(cfg, seed_value)
+		for n in 200:
+			var w = hc.spawn()
+			hc.alive.clear()
+			seen_habitats[w.habitat] = true
+			kind_habitat = kind_habitat and w.kind["habitat"].has(w.habitat)
+			if w.kind["flies"]:
+				var t := 0.0
+				while t <= w.length:
+					w.travelled = t
+					nearest = minf(nearest, w.position().distance_to(lake_c))
+					t += 1.0
+				continue
+			in_habitat = in_habitat and hc.zone_contains(w.habitat, w.target)
+			var steps := 0
+			var is_duck: bool = w.habitat == "lake"
+			if is_duck:
+				ducks += 1
+			else:
+				grounds += 1
+				different_edge = different_edge and w.entry["edge"] != w.exit["edge"]
+				if w.habitat == "shore":
+					shore_walkers += 1
+				for i in range(1, w.route.size()):
+					segments_clear = segments_clear and not hc._hits_lake(w.route[i - 1], w.route[i])
+			lingers = lingers and w.linger >= 4.0 and w.linger <= 8.0
+			while true:
+				var spot: Vector2 = w.position()
+				if is_duck:
+					ducks_wet = ducks_wet and hc.zone_contains("lake", spot) and spot.distance_to(lake_c) < lake_r
+				else:
+					ground_clear = ground_clear and spot.distance_to(lake_c) >= lake_r
+				if w.is_done():
+					break
+				w.advance(1.0)
+				steps += 1
+			var expected: float = w.length / float(w.kind["speed"]) + w.linger
+			lingers = lingers and absf(float(steps) - expected) <= 2.0
+	check(in_habitat and kind_habitat, "6000 visits (seeds 1-30): every ground target is inside its habitat, and each habitat is one of the kind's")
+	check(ground_clear and segments_clear, "...no ground animal is ever in the lake (%d walked), and no route leg crosses it" % grounds)
+	check(ducks_wet and ducks > 100, "...every 오리 stays inside the lake (%d ducks)" % ducks)
+	check(different_edge and shore_walkers > 100, "...ground animals leave by a different edge (%d on the shore)" % shore_walkers)
+	check(lingers, "...each lingers 4-8 s, and the visit takes walking time plus linger")
+	check(seen_habitats.size() == 5, "...all five habitats are visited")
+	check(nearest < lake_r, "flyers cross over the lake as well (closest pass %.1f m from its centre)" % nearest)
+	# Weights.
+	var weights = CrossingScript.new(cfg, 11)
+	var counts := {}
+	for i in 4000:
+		var w = weights.spawn()
+		counts[w.kind["id"]] = int(counts.get(w.kind["id"], 0)) + 1
+		weights.alive.clear()
+	check(counts.size() == 11 and counts["noru"] > counts["geomdokseuri"] * 2, "kinds are picked by weight: all 11 appear, 노루 (%d) far more than 검독수리 (%d)" % [counts["noru"], counts["geomdokseuri"]])
+	_section_done("test_animals_crossing")
+
+
+## A fresh animal scene on a new hike (the starting kit), with the crossing seed pinned.
+func _animals_map(seed_value := 5) -> Node3D:
+	GameState.controlled = "fernanda"
+	AnimalsScript.seed_override = seed_value
+	var map: Node3D = load("res://scenes/animals/animals.tscn").instantiate()
+	add_child(map)
+	AnimalsScript.seed_override = -1
+	map.set_physics_process(false)
+	map.set_process(false)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	return map
+
+
+## Both travelers teleported (the next physics frame must pass before they walk).
+func _place_pair(map: Node3D, lead: Vector2, rear: Vector2) -> void:
+	_put(map, map.player, lead.x, lead.y)
+	_put(map, map.partner, rear.x, rear.y)
+	await get_tree().physics_frame
+
+
+func _walk_checked(map: Node3D, input: Vector2, seconds: float) -> Dictionary:
+	var in_bounds := true
+	var out_of_pond := true
+	var bounds: Rect2 = map.walk_bounds().grow(0.001)
+	for i in roundi(seconds / DT):
+		map.step(input, DT)
+		for t in [map.player, map.partner]:
+			in_bounds = in_bounds and bounds.has_point(_xz(t))
+			out_of_pond = out_of_pond and not map.in_lake(_xz(t))
+	return {"in_bounds": in_bounds, "out_of_pond": out_of_pond}
+
+
+func test_animals_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var cfg := _animals_config()
+	GameState.new_hike()
+	var map: Node3D = await _animals_map()
+	check(map.travelers.size() == 2 and map.player == map.travelers["fernanda"] and map.partner == map.travelers["nestor"], "the scene instantiates with Fernanda as the player and Nestor as the partner")
+	check(GameState.current_scene == NEXT_ID and GameState.heart_units == {"nestor": 10, "fernanda": 10} and GameState.inventory.snapshot() == {"sucheop": 1}, "run directly it is a fresh hike: full hearts and the starting kit")
+	check(map.crossing_seed == 5 and map.crossing.rng.seed == 5, "the crossing seed is the pinned one")
+	check(map.hearts_hud != null and map.pause_hud != null and map.backpack_hud != null and map.camera.current, "the HUDs and the camera are there")
+	var bounds: Rect2 = map.walk_bounds()
+	var lc: Vector2 = map.lake_center
+	var lr: float = map.lake_radius
+	var margin := float(cfg["walk_limit"]["margin"])
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	check(is_equal_approx(bounds.size.x, width - 2.0 * margin) and is_equal_approx(bounds.size.y, depth - 2.0 * margin), "the walk limits are the stage inset by the margin")
+	# Bounds: walk into each stage edge for 14 s.
+	var edges := {
+		"west": [Vector2(-1.0, 0.0), Vector2(12.0, 8.0), Vector2(14.0, 8.0)],
+		"east": [Vector2(1.0, 0.0), Vector2(width - 4.0, 8.0), Vector2(width - 6.0, 8.0)],
+		"far": [Vector2(0.0, -1.0), Vector2(10.0, -depth / 2.0 + 6.0), Vector2(10.0, -depth / 2.0 + 8.0)],
+		"near": [Vector2(0.0, 1.0), Vector2(10.0, depth / 2.0 - 6.0), Vector2(10.0, depth / 2.0 - 8.0)],
+	}
+	for edge in edges:
+		var plan: Array = edges[edge]
+		await _place_pair(map, plan[1], plan[2])
+		var result := _walk_checked(map, plan[0], 14.0)
+		check(result["in_bounds"] and result["out_of_pond"], "walking into the %s edge, both travelers stay inside the walk limits and out of the lake" % edge)
+	# The lake, from the west, the east and the top.
+	var approaches := {
+		"west": [Vector2(lc.x - lr - 3.0, lc.y - 6.0), Vector2(lc.x - lr - 7.0, lc.y - 6.0), Vector2(1.0, 0.0)],
+		"east": [Vector2(lc.x + lr + 3.0, lc.y - 6.0), Vector2(lc.x + lr + 7.0, lc.y - 6.0), Vector2(-1.0, 0.0)],
+		"top": [Vector2(lc.x, lc.y - lr - 3.0), Vector2(lc.x, lc.y - lr - 7.0), Vector2(0.0, 1.0)],
+	}
+	for side in approaches:
+		var plan: Array = approaches[side]
+		await _place_pair(map, plan[0], plan[1])
+		var result := _walk_checked(map, plan[2], 8.0)
+		check(result["in_bounds"] and result["out_of_pond"], "walking into the lake from the %s, nobody enters it" % side)
+		check(_xz(map.player).distance_to(lc) >= lr and _xz(map.player).distance_to(lc) <= lr + 10.0, "...the player is held at its edge (slid along it) (%s)" % str(_xz(map.player)))
+	# Pushed into the lake: set down in the water, a traveler ends up outside it.
+	await _place_pair(map, Vector2(lc.x + 3.0, lc.y - 5.0), Vector2(lc.x - 4.0, lc.y - 3.0))
+	check(map.in_lake(_xz(map.player)) and map.in_lake(_xz(map.partner)), "(setup) both travelers are in the water")
+	map.step(Vector2.ZERO, DT)
+	check(not map.in_lake(_xz(map.player)) and not map.in_lake(_xz(map.partner)), "a traveler put into the lake ends up outside it (%s)" % str(_xz(map.player)))
+	# Nestor follows, the camera stays over the map.
+	await _place_pair(map, Vector2(6.0, 5.0), Vector2(8.0, 7.0))
+	map.update_camera(0.0, true)
+	_walk_checked(map, Vector2(1.0, 0.0), 6.0)
+	var apart: float = map.player.global_position.distance_to(map.partner.global_position)
+	check(map.player.global_position.x > 20.0 and apart <= float(cfg["partner_stop_distance"]) + 0.6, "Nestor follows Fernanda (%.1f m apart)" % apart)
+	var half: float = map.camera_half_width()
+	var ground: Rect2 = map.ground_rect
+	var viewport_rect := get_viewport().get_visible_rect()
+	var camera_ok := true
+	for spot in [Vector2(1.0, 0.0), Vector2(width - 2.0, 0.0), Vector2(10.0, -depth / 2.0 + 2.0), Vector2(10.0, depth / 2.0 - 2.0)]:
+		await _place_pair(map, spot, spot + Vector2(0.0, 1.5 if spot.y < 5.0 else -1.5))
+		for i in 240:
+			map.step(Vector2.ZERO, DT)
+		var on_screen: bool = viewport_rect.has_point(map.camera.unproject_position(map.player.global_position))
+		camera_ok = camera_ok and on_screen and map.camera.global_position.x >= ground.position.x + half - 0.01 and map.camera.global_position.x <= ground.end.x - half + 0.01
+	check(camera_ok, "the camera keeps the player on screen and stays over the map at every edge")
+	# Animals over time.
+	GameState.new_hike()
+	map.free()
+	map = await _animals_map(5)
+	var peak := 0
+	var consistent := true
+	var heights_ok := true
+	var labels_ok := true
+	var entry_ids := {}
+	var dt := 1.0 / 30.0
+	for i in roundi(120.0 / dt):
+		map.step(Vector2.ZERO, dt)
+		peak = maxi(peak, map.animal_nodes.size())
+		consistent = consistent and map.animal_nodes.size() == map.crossing.alive.size() and map.get_node("Animals").get_child_count() == map.animal_nodes.size()
+		for walker in map.animal_nodes:
+			var node: Node3D = map.animal_nodes[walker]
+			entry_ids[walker.entry["id"]] = true
+			var ground_y: float = map.terrain.height_at(node.global_position.x)
+			heights_ok = heights_ok and is_equal_approx(node.global_position.y, ground_y + (4.0 if walker.kind["flies"] else 0.0))
+			labels_ok = labels_ok and node.label.text == walker.kind["name_ko"] and node.label.position.y > node.box.mesh.size.y and node.box.mesh.size == Vector3(float(walker.kind["size"][0]), float(walker.kind["size"][1]), float(walker.kind["size"][2]))
+	check(map.crossing.spawned >= 10 and map.crossing.exited >= 5, "over two minutes animals come and go (%d spawned, %d left)" % [map.crossing.spawned, map.crossing.exited])
+	check(peak <= 5 and peak >= 2 and consistent, "never more than 5 on the map (peak %d), and every live animal has exactly one node; the left ones are gone" % peak)
+	check(heights_ok and labels_ok, "animals stand on the ground (flyers 4 m up), each box has its kind's size and a name_ko label above it")
+	check(entry_ids.size() >= 3, "animals entered from several different entries (%d)" % entry_ids.size())
+	# Menus.
+	var viewport := map.get_viewport()
+	await _settle_layout()
+	var player_before := _xz(map.player)
+	var crossing_before: int = map.crossing.spawned
+	var travelled_before := {}
+	for walker in map.animal_nodes:
+		travelled_before[walker] = walker.travelled
+	_tap(viewport, KEY_ESCAPE)
+	await _settle_layout()
+	check(map.pause_menu.is_open and get_tree().paused and map.pause_hud.root_visible(), "Esc opens the pause menu and pauses the map")
+	map.step(Vector2(1.0, 0.0), 1.0)
+	var frozen: bool = _xz(map.player) == player_before and map.crossing.spawned == crossing_before
+	for walker in map.animal_nodes:
+		frozen = frozen and is_equal_approx(walker.travelled, travelled_before[walker])
+	check(frozen, "...nobody walks and no animal moves while it is open")
+	_tap(viewport, KEY_TAB)
+	check(not map.backpack.is_open, "Tab does nothing over the pause menu")
+	check(map.pause_hud._buttons[0].text == "Resume" and map.pause_hud._buttons[1].text == "Restart scene", "the menu offers Resume and Restart scene")
+	_tap(viewport, KEY_SPACE)  # P1 pick on Resume
+	check(not map.pause_menu.is_open and not get_tree().paused, "Resume closes it")
+	_tap(viewport, KEY_TAB)
+	await _settle_layout()
+	check(map.backpack.is_open and not map.backpack.notebook_open and get_tree().paused and map.backpack_hud.panel_visible(), "Tab opens the backpack")
+	check(map.backpack_hud.row_count() == 1 and map.backpack_hud.row_id(0) == "sucheop", "...and lists the starting kit, the 수첩")
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.backpack.is_open and not get_tree().paused and not map.pause_menu.is_open, "Esc closes the backpack (and does not open the menu)")
+	_tap(viewport, KEY_Q)
+	await _settle_layout()
+	check(map.backpack.is_open and map.backpack.notebook_open and map.backpack.notebook_quick and map.backpack_hud.notebook_visible() and get_tree().paused, "Q opens the 수첩")
+	_tap(viewport, KEY_Q)
+	check(not map.backpack.is_open and not get_tree().paused, "Q again closes it")
+	_tap(viewport, KEY_TAB)
+	check(map.backpack.is_open, "(setup) Tab opens it again")
+	_tap(viewport, KEY_TAB)
+	check(not map.backpack.is_open and not get_tree().paused, "Tab again closes the backpack")
+	# Restart scene.
+	var start_ddeok := GameState.ddeok
+	GameState.damage_units("nestor", 3)
+	GameState.inventory.add("plant_ma", 2)
+	GameState.add_ddeok(9)
+	check(GameState.heart_units["nestor"] == 7 and GameState.inventory.count("plant_ma") == 2, "(setup) hearts and the backpack changed in the scene")
+	var restarts: Array = []
+	map.restarted.connect(func() -> void: restarts.append(true))
+	_tap(viewport, KEY_ESCAPE)
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_SPACE)  # Restart scene: asks
+	check(map.pause_menu.confirming and restarts.is_empty() and GameState.heart_units["nestor"] == 7, "Restart scene asks first")
+	map.pause_hud.choose(0)  # Yes
+	check(restarts.size() == 1 and not get_tree().paused, "Yes restarts the scene")
+	check(GameState.heart_units == {"nestor": 10, "fernanda": 10} and GameState.inventory.snapshot() == {"sucheop": 1} and GameState.ddeok == start_ddeok, "...with the hearts, DDEOK and backpack of the scene start")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	get_window().size = window_before
+	_section_done("test_animals_scene")
+
+
+func test_animals_handoff() -> void:
+	# Foraging's exit asks for the animal scene (via exit_handoff) and keeps the bank for it.
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var map: Node3D = await _held_kit_map({"plant_ma": 1}, 20)
+	GameState.damage_units("nestor", 3)
+	GameState.begin_scene("foraging")
+	var handoffs: Array = []
+	map.exit_handoff.connect(func(id: String, path: String) -> void: handoffs.append([id, path]))
+	_finish_words(map)
+	var trigger: Rect2 = map.ending_logic.trigger_rect()
+	_put(map, map.player, trigger.position.x + 0.2, map.ending_logic.tree_position().y)
+	map.step(Vector2.ZERO, DT)
+	map.step(Vector2.ZERO, 1.1)
+	check(handoffs == [[NEXT_ID, ANIMALS_PATH]] and map.exit_state == "handed_off" and map.ending_hud.line_text() == "", "the exit hands off to the animal scene's path, with no debug line")
+	check(ResourceLoader.exists(ANIMALS_PATH) and GameState.has_pending_bank() and GameState.pending_bank["target"] == NEXT_ID, "...the scene file exists and the bank waits for it")
+	var bank_inventory: Dictionary = GameState.pending_bank["inventory"].duplicate()
+	var bank_units: Dictionary = GameState.pending_bank["units"].duplicate()
+	var bank_ddeok: int = GameState.pending_bank["ddeok"]
+	check(bank_inventory.get("plant_ma", 0) > 1 and bank_units["nestor"] == 7, "(sanity) the bank holds what was gained and lost in foraging")
+	map.free()
+	get_tree().paused = false
+	# The animal scene applies a pending bank stored for it.
+	GameState.heart_units = {"nestor": 10, "fernanda": 10}  # the live state is wiped; only the pending bank remembers
+	GameState.inventory.clear()
+	GameState.ddeok = 0
+	var animals: Node3D = await _animals_map()
+	check(GameState.heart_units == bank_units and GameState.inventory.snapshot() == bank_inventory and GameState.ddeok == bank_ddeok and not GameState.has_pending_bank(), "the animal scene starts with the hearts, backpack and DDEOK foraging banked")
+	check(animals.hearts_hud.drawn_states("nestor") == animals.hearts_hud.states_for(7) and animals.backpack_hud.row_count() >= 1, "...and its HUDs show them")
+	# Restart scene returns to the banked start, not to a fresh hike.
+	GameState.damage_units("fernanda", 4)
+	GameState.inventory.add("plant_gobi", 1)
+	animals.pause_menu.open(true)
+	animals.pause_hud.choose(1)
+	animals.pause_hud.choose(0)
+	check(GameState.heart_units == bank_units and GameState.inventory.snapshot() == bank_inventory, "Restart scene restores the banked start")
+	animals.free()
+	get_tree().paused = false
+	# A bank for another scene is left alone.
+	GameState.new_hike()
+	GameState.store_pending_bank("somewhere_else")
+	animals = await _animals_map()
+	check(GameState.has_pending_bank() and GameState.pending_bank["target"] == "somewhere_else" and GameState.heart_units == {"nestor": 10, "fernanda": 10}, "a bank stored for another scene is not taken")
+	animals.free()
+	GameState.new_hike()
+	# The hold path still works with no scene paths.
+	map = await _held_kit_map()
+	_empty_scene_paths(map)
+	var held: Array = []
+	map.exit_handoff.connect(func(id: String, path: String) -> void: held.append([id, path]))
+	_finish_words(map)
+	trigger = map.ending_logic.trigger_rect()
+	_put(map, map.player, trigger.position.x + 0.2, map.ending_logic.tree_position().y)
+	map.step(Vector2.ZERO, DT)
+	map.step(Vector2.ZERO, 1.1)
+	check(held.is_empty() and map.exit_state == "hold" and map.ending_hud.line_text() == "next: cutscene_foraging_to_animals (not built)", "with empty scene_paths the exit holds on black and nothing is handed off")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	get_window().size = window_before
+	_section_done("test_animals_handoff")

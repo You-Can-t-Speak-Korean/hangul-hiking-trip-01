@@ -300,7 +300,7 @@
       "flight_s": 5.0,
       "fade_s": 1.0,
       "next": "cutscene_foraging_to_animals",
-      "scene_paths": {},
+      "scene_paths": {"cutscene_foraging_to_animals": "res://scenes/animals/animals.tscn"},
       "hold_text": "next: %s (not built)",
       "hold_font_size": 18,
       "hold_color": [0.62, 0.62, 0.66],
@@ -341,5 +341,45 @@
         "keep_out_step": 1.5
       }
     }
+  },
+  "animals": {
+    "_note": "The animal sightseeing scene near 백록담 (Prompt 9a, skeleton; 9a-ii: map 3x, half-circle lake, habitats). Coordinates as in foraging: x 0..stage.width, z -depth/2 (far) .. +depth/2 (near, the bottom edge), 1 unit = 1 m. 'begin_id' is passed to GameState.begin_scene. 'ui_from' names the section whose HUD configs are reused. 'lake' is the 백록담: a half disc of 'radius' m centred on 'center' (on the bottom edge, horizontally centred), only the part with z <= center z exists; travelers and ground animals never enter it ('clearance_m' is the steering margin); ducks swim inside it (rim inset and waypoint inset in m). 'habitats': lake = inside the half disc; shore = a band band_frac x stage depth wide outside the lake edge (animals stand at least inset_m from the water); forest = the top top_frac of the map; grass = the rest (outside forest and shore); air = everywhere. 'edges' are the map edges (west, east, far, near) a kind of that habitat may enter and leave by; margin_m keeps targets off the map edge. Each kind lists its 'habitat' names (one is drawn per visit). Ground animals walk entry -> one target in the habitat -> linger (linger.min_s..max_s) -> a different edge, steering round the lake; ducks start at the rim, swim to duck_waypoints_min..max waypoints, linger at the last and swim back to the rim. Flyers cross a straight line at fly_height. 'spawn': a new animal every interval_min_s..interval_max_s seconds, never more than max_alive. 'path': sideways wobble (m, zero at the ends). 'kinds': tier is extinct / endangered / common; predator and flies are flags; size is the box [w, h, length] in metres; speed m/s; weight the pick chance; colour rgb. All numbers are placeholders.",
+    "begin_id": "cutscene_foraging_to_animals",
+    "ui_from": "foraging",
+    "stage": {"width": 144.0, "depth": 72.0},
+    "apron": {"sides": 12.0, "far": 3.0},
+    "walk_limit": {"margin": 1.2},
+    "terrain": {"points": [[0, 0.0], [48, 0.15], [96, -0.1], [144, 0.0]]},
+    "start": {"nestor": [24.0, 18.0], "fernanda": [18.0, 12.0]},
+    "partner_stop_distance": 1.6,
+    "traveler_colors": {"nestor": [0.36, 0.45, 0.65], "fernanda": [0.95, 0.55, 0.70]},
+    "camera": {"pitch_deg": 28.0, "distance": 30.0, "size": 9.0, "follow_rate": 6.0, "lead": 4.0},
+    "backdrop_color": [0.62, 0.72, 0.8],
+    "ground_color": [0.42, 0.55, 0.32],
+    "lake": {"name_ko": "백록담", "center": [72.0, 36.0], "radius": 12.0, "height": 0.1, "wall_height": 3.0, "color": [0.15, 0.4, 0.78], "clearance_m": 0.3, "arc_steps": 48, "duck_rim_inset_m": 0.3, "duck_waypoint_inset_m": 1.5},
+    "habitats": {
+      "lake": {"edges": []},
+      "shore": {"band_frac": 0.15, "inset_m": 0.5, "edges": ["west", "east"]},
+      "forest": {"top_frac": 0.35, "margin_m": 2.0, "edges": ["west", "east", "far"]},
+      "grass": {"margin_m": 2.0, "edges": ["west", "east"]},
+      "air": {"edges": ["west", "east", "far", "near"]}
+    },
+    "spawn": {"interval_min_s": 2.4, "interval_max_s": 5.4, "max_alive": 5, "first_spawn_s": 1.0},
+    "linger": {"min_s": 4.0, "max_s": 8.0, "duck_waypoints_min": 2, "duck_waypoints_max": 3},
+    "path": {"wobble_amplitude_m": 0.8, "wobble_wavelength_m": 10.0, "fly_height": 4.0},
+    "label": {"lift": 0.5, "font_size": 48, "pixel_size": 0.008, "color": [1.0, 1.0, 1.0], "outline_size": 12},
+    "kinds": [
+      {"id": "noru", "name_ko": "노루", "tier": "endangered", "predator": false, "flies": false, "size": [0.5, 0.9, 1.1], "speed": 3.5, "color": [0.72, 0.52, 0.32], "habitat": ["forest", "grass"], "weight": 10},
+      {"id": "goraeni", "name_ko": "고라니", "tier": "extinct", "predator": false, "flies": false, "size": [0.5, 0.8, 1.0], "speed": 3.5, "color": [0.62, 0.48, 0.3], "habitat": ["shore"], "weight": 8},
+      {"id": "saseum", "name_ko": "사슴", "tier": "extinct", "predator": false, "flies": false, "size": [0.6, 1.2, 1.4], "speed": 3.0, "color": [0.55, 0.38, 0.22], "habitat": ["forest", "grass"], "weight": 3},
+      {"id": "meotdwaeji", "name_ko": "멧돼지", "tier": "common", "predator": true, "flies": false, "size": [0.7, 0.8, 1.3], "speed": 3.0, "color": [0.25, 0.2, 0.18], "habitat": ["forest"], "weight": 5},
+      {"id": "deulgae", "name_ko": "들개", "tier": "common", "predator": true, "flies": false, "size": [0.4, 0.7, 0.9], "speed": 4.0, "color": [0.55, 0.5, 0.42], "habitat": ["grass"], "weight": 4},
+      {"id": "geomdokseuri", "name_ko": "검독수리", "tier": "endangered", "predator": true, "flies": true, "size": [1.4, 0.4, 0.8], "speed": 7.0, "color": [0.2, 0.15, 0.1], "habitat": ["air"], "weight": 2},
+      {"id": "keunburikkamagwi", "name_ko": "큰부리까마귀", "tier": "common", "predator": false, "flies": true, "size": [0.6, 0.3, 0.5], "speed": 5.0, "color": [0.08, 0.08, 0.1], "habitat": ["air"], "weight": 6},
+      {"id": "osori", "name_ko": "오소리", "tier": "common", "predator": false, "flies": false, "size": [0.5, 0.45, 0.8], "speed": 1.5, "color": [0.4, 0.4, 0.42], "habitat": ["forest"], "weight": 5},
+      {"id": "jejujokjebi", "name_ko": "제주족제비", "tier": "common", "predator": false, "flies": false, "size": [0.2, 0.2, 0.6], "speed": 3.0, "color": [0.7, 0.45, 0.2], "habitat": ["shore"], "weight": 3},
+      {"id": "bibaribaem", "name_ko": "비바리뱀", "tier": "endangered", "predator": false, "flies": false, "size": [0.12, 0.12, 1.0], "speed": 1.0, "color": [0.3, 0.55, 0.25], "habitat": ["shore"], "weight": 2},
+      {"id": "ori", "name_ko": "오리", "tier": "common", "predator": false, "flies": false, "size": [0.3, 0.35, 0.5], "speed": 1.5, "color": [0.45, 0.55, 0.35], "habitat": ["lake"], "weight": 6}
+    ]
   }
 }
