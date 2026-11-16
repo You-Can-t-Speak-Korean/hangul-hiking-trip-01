@@ -293,6 +293,7 @@ func _ready() -> void:
 	spelling = Spelling.new(config["spelling_view"], plants_cfg, picking.basket)
 	discovery_hud.setup(discovery, spelling)
 	discovery_hud.entry_pressed.connect(open_spelling)
+	discovery_hud.open_gate = _word_select_allowed
 	_build_ring()
 	_build_piles(config, plants_cfg)
 	basket_hud = BasketHud.new()
@@ -400,11 +401,17 @@ func _unhandled_input(event: InputEvent) -> void:
 ## without a keyboard.
 func step(input: Vector2, delta: float) -> void:
 	var walk := input
+	if discovery_hud.word_select.is_open():
+		if picks_allowed():
+			walk = Vector2.ZERO  # the movement keys only move the highlight
+			picking.cancel_walk()
+		else:
+			discovery_hud.close_word_select()  # a death, a restart or the exit took over
 	if not input.is_zero_approx() or not picks_allowed():
 		picking.cancel_walk()  # the keys take over
 	elif picking.is_walking():
 		walk = _walk_step(delta)
-	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing() and exit_state == "":  # the last second, the kill, the gore, the death beat, the menus and the exit: nobody walks
+	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing() and exit_state == "" and not discovery_hud.word_select.is_open():  # the last second, the kill, the gore, the death beat, the menus and the exit: nobody walks
 		player.drive(walk, delta)
 		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
 	update_camera(delta)
@@ -437,6 +444,7 @@ func picks_allowed() -> bool:
 ## the word cannot be opened: restarting, a traveler is dead, the view is up
 ## already (or showing a failure), the word is done or not a target.
 func open_spelling(id: String) -> bool:
+	discovery_hud.close_word_select()  # a click or a confirm both end keyboard selection
 	if spelling_hud.is_open() or not spelling.open(id, picks_allowed()):
 		return false
 	picking.cancel_walk()
@@ -447,6 +455,13 @@ func open_spelling(id: String) -> bool:
 	stuck_hud.refresh(countdown, true)  # the view covers the number
 	get_tree().paused = true
 	return true
+
+
+## True if E may open word selection now: nothing is paused or open over the map
+## and picks are allowed (not restarting, dead, in a gore beat or leaving).
+func _word_select_allowed() -> bool:
+	return not get_tree().paused and not spelling_hud.is_open() and not pause_menu.is_open \
+			and not backpack.is_open and picks_allowed() and _dim == null and kill == null
 
 
 func _on_spelling_changed() -> void:
@@ -1580,7 +1595,7 @@ func _tick_stuck(delta: float) -> void:
 ## scene is restarting (the last second, the kill, the death beat), a traveler is
 ## dead or the menu is open already.
 func open_pause_menu() -> bool:
-	if spelling_hud.is_open() or (not picks_allowed() and exit_state != "hold") or _dim != null or kill != null:  # (Esc opens it over the black of the hold)
+	if spelling_hud.is_open() or discovery_hud.word_select.is_open() or (not picks_allowed() and exit_state != "hold") or _dim != null or kill != null:  # (Esc opens it over the black of the hold)
 		return false
 	if not pause_menu.open(true):
 		return false
@@ -1620,7 +1635,7 @@ func open_notebook(action: String) -> bool:
 
 ## True if the backpack panel (or the notebook) may open now, apart from being open already.
 func _panel_allowed() -> bool:
-	return not (spelling_hud.is_open() or not picks_allowed() or _dim != null or kill != null or pause_menu.restart_requests > 0)
+	return not (spelling_hud.is_open() or discovery_hud.word_select.is_open() or not picks_allowed() or _dim != null or kill != null or pause_menu.restart_requests > 0)
 
 
 ## The panel has just opened: the map, the countdown and the music stand still.

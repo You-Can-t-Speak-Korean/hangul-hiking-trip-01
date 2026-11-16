@@ -8,6 +8,14 @@ extends CanvasLayer
 ## The id of the entry clicked.
 signal entry_pressed(id: String)
 
+const WordSelect := preload("res://scripts/word_select.gd")
+const SELECT_BORDER := Color(1.0, 0.88, 0.4)
+
+## Keyboard word selection (E opens it). `open_gate` is asked before it opens and
+## returns false while the map may not (a menu is up, restarting, dead, ...).
+var word_select := WordSelect.new()
+var open_gate: Callable
+
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 const NAME_FONT_SIZE := 24
@@ -33,6 +41,70 @@ func setup(discovery, spelling = null) -> void:
 	add_child(_box)
 
 
+## The discovered words that are not finished, in list order.
+func spellable_ids() -> Array[String]:
+	var ids: Array[String] = []
+	if _spelling == null:
+		return ids
+	for entry in _discovery.entries:
+		if not _spelling.is_done(entry["id"]):
+			ids.append(entry["id"])
+	return ids
+
+
+## E: opens word selection on the first spellable word. False (nothing happens)
+## if the gate refuses, or no word can be spelled.
+func open_word_select() -> bool:
+	if word_select.is_open() or (open_gate.is_valid() and not open_gate.call()):
+		return false
+	if not word_select.open(spellable_ids()):
+		return false
+	refresh()
+	return true
+
+
+func close_word_select() -> void:
+	if word_select.is_open():
+		word_select.close()
+		refresh()
+
+
+## Applies one action from WordSelect.action_for. True if the key was used.
+func word_action(action: String) -> bool:
+	if word_select.is_open():
+		match action:
+			"up", "down", "left", "right":
+				word_select.move(action)
+			"confirm":
+				var id := word_select.confirm()
+				refresh()
+				entry_pressed.emit(id)
+			"cancel", "open":
+				close_word_select()
+			_:
+				return false
+		refresh()
+		return true
+	if action == "open":
+		return open_word_select()
+	return false
+
+
+## While selection is open every selection key is taken here (before the map's
+## unhandled input), so none also walks, picks or opens a menu.
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed:
+		close_word_select()  # the mouse took over; the click itself goes on
+		return
+	if not event is InputEventKey or not event.pressed:
+		return
+	var action := WordSelect.action_for(event)
+	if action == "" or (event.echo and action in ["confirm", "cancel", "open"]):
+		return
+	if word_action(action):
+		get_viewport().set_input_as_handled()
+
+
 ## Adds a row for each new entry and sets every row's fade. Call after each
 ## Discovery.update().
 func refresh() -> void:
@@ -44,6 +116,13 @@ func refresh() -> void:
 		_rows[entry["id"]].modulate.a = _discovery.opacity(entry)
 		if _spelling != null:
 			_show_progress(_rows[entry["id"]], entry["id"])
+		_show_highlight(_rows[entry["id"]], word_select.highlighted() == entry["id"])
+
+
+func _show_highlight(row: PanelContainer, on: bool) -> void:
+	var back: StyleBoxFlat = row.get_theme_stylebox("panel")
+	back.set_border_width_all(3 if on else 0)
+	back.border_color = SELECT_BORDER
 
 
 func _make_row(entry: Dictionary) -> PanelContainer:

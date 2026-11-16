@@ -126,6 +126,8 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_notebook_fit",
 	"test_notebook_input",
 	"test_notebook_quick_keys",
+	"test_word_select_logic",
+	"test_word_select_scene",
 	"test_debug_notes",
 	"test_ending_data",
 	"test_pending_bank",
@@ -149,7 +151,7 @@ const EXPECTED_SECTIONS: Array[String] = [
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3331
+const MIN_CHECKS := 3393
 
 
 func check(condition: bool, label: String) -> void:
@@ -312,6 +314,9 @@ func _ready() -> void:
 	await test_notebook_fit()
 	test_notebook_input()
 	await test_notebook_quick_keys()
+	print("== Keyboard word selection ==")
+	test_word_select_logic()
+	await test_word_select_scene()
 	await test_debug_notes()
 	print("== Ending ==")
 	test_ending_data()
@@ -10865,3 +10870,167 @@ func test_animals_cover() -> void:
 		margin_ok = margin_ok and c.get_luminance() > 0.01
 	check(margin_ok, "the corners of the drawn ground are coloured too")
 	_section_done("test_animals_cover")
+
+
+const WordSelect := preload("res://scripts/word_select.gd")
+
+
+func test_word_select_logic() -> void:
+	var expected := {
+		"spell_open": [KEY_E],
+		"select_up": [KEY_W, KEY_UP],
+		"select_down": [KEY_S, KEY_DOWN],
+		"select_left": [KEY_A, KEY_LEFT],
+		"select_right": [KEY_D, KEY_RIGHT],
+		"select_confirm": [KEY_SPACE, KEY_ENTER, KEY_KP_ENTER],
+		"select_cancel": [KEY_ESCAPE],
+	}
+	for action in expected:
+		check(InputMap.has_action(action), "%s exists in the Input Map" % action)
+		var codes: Array = _bound_keys(action).map(func(k): return k[0])
+		codes.sort()
+		var want: Array = expected[action].duplicate()
+		want.sort()
+		check(codes == want, "%s is bound to exactly the listed keys" % action)
+	var ws := WordSelect.new()
+	check(not ws.is_open() and ws.highlighted() == "" and not ws.open([]) and not ws.is_open(), "opening with no spellable words does nothing")
+	check(not ws.move("down") and ws.confirm() == "" and ws.cancel() == "", "a closed selection ignores moves, confirm and cancel")
+	check(ws.open(["a", "b", "c"]) and ws.highlighted() == "a", "opening highlights the first spellable word")
+	check(not ws.open(["x"]) and ws.highlighted() == "a", "opening again changes nothing")
+	ws.move("down")
+	check(ws.highlighted() == "b", "down moves to the next row")
+	ws.move("down")
+	ws.move("down")
+	check(ws.highlighted() == "a", "down wraps from the last row to the first")
+	ws.move("up")
+	check(ws.highlighted() == "c", "up wraps from the first row to the last")
+	ws.move("left")
+	ws.move("right")
+	check(ws.highlighted() == "c", "left and right do nothing in a single column")
+	check(ws.confirm() == "c" and not ws.is_open(), "confirm returns the highlighted word and closes")
+	check(ws.open(["a", "b"]) and ws.cancel() == "" and not ws.is_open(), "cancel returns nothing and closes")
+	# Words side by side: two per row.
+	ws.columns = 2
+	ws.open(["a", "b", "c", "d", "e"])
+	ws.move("right")
+	check(ws.highlighted() == "b", "right moves along the row")
+	ws.move("right")
+	check(ws.highlighted() == "a", "right wraps inside the row")
+	ws.move("left")
+	check(ws.highlighted() == "b", "left wraps inside the row")
+	ws.move("down")
+	check(ws.highlighted() == "d", "down keeps the column")
+	ws.move("down")
+	check(ws.highlighted() == "e", "down onto a shorter row lands on its last word")
+	ws.move("down")
+	check(ws.highlighted() == "a", "down wraps to the first row")
+	ws.move("up")
+	check(ws.highlighted() == "e", "up wraps to the last row")
+	ws.move("right")
+	check(ws.highlighted() == "e", "a one-word row stays put")
+	ws.close()
+	for case in [[KEY_E, "open"], [KEY_W, "up"], [KEY_DOWN, "down"], [KEY_A, "left"], [KEY_RIGHT, "right"], [KEY_SPACE, "confirm"], [KEY_ENTER, "confirm"], [KEY_KP_ENTER, "confirm"], [KEY_ESCAPE, "cancel"], [KEY_Q, ""]]:
+		check(WordSelect.action_for(_key_event(case[0])) == case[1], "key %d means '%s'" % [case[0], case[1]])
+	_section_done("test_word_select_logic")
+
+
+func test_word_select_scene() -> void:
+	var map: Node3D = await _kit_map(false)
+	var viewport := map.get_viewport()
+	var hud = map.discovery_hud
+	var ids: Array[String] = hud.spellable_ids()
+	check(ids.size() == 6, "(setup) six words can be spelled")
+	var probe := KeyProbe.new()
+	probe.process_mode = Node.PROCESS_MODE_ALWAYS
+	add_child(probe)
+	# E opens on the first word; Esc and E close.
+	_tap(viewport, KEY_E)
+	check(hud.word_select.is_open() and hud.word_select.highlighted() == ids[0], "E opens word selection on the first word")
+	check(hud._rows[ids[0]].get_theme_stylebox("panel").border_width_left == 3 and hud._rows[ids[1]].get_theme_stylebox("panel").border_width_left == 0, "only the highlighted row is outlined")
+	_tap(viewport, KEY_ESCAPE)
+	check(not hud.word_select.is_open() and not map.pause_menu.is_open and not get_tree().paused and not map.spelling.is_open(), "Esc closes it and opens nothing else")
+	_tap(viewport, KEY_E)
+	_tap(viewport, KEY_E)
+	check(not hud.word_select.is_open() and not get_tree().paused, "E again closes it")
+	# Movement keys move the highlight, wrap, and don't walk.
+	_tap(viewport, KEY_E)
+	var before: Vector3 = map.player.global_position
+	_tap(viewport, KEY_S)
+	check(hud.word_select.highlighted() == ids[1], "S moves down")
+	_tap(viewport, KEY_UP)
+	check(hud.word_select.highlighted() == ids[0], "Up moves up")
+	_tap(viewport, KEY_W)
+	check(hud.word_select.highlighted() == ids[5], "W wraps from the first word to the last")
+	_tap(viewport, KEY_DOWN)
+	check(hud.word_select.highlighted() == ids[0], "Down wraps from the last word to the first")
+	_tap(viewport, KEY_A)
+	_tap(viewport, KEY_RIGHT)
+	check(hud.word_select.highlighted() == ids[0], "left and right keep a single column in place")
+	for i in 5:
+		map.step(Vector2(1.0, 0.0), 0.1)
+	check(map.player.global_position.is_equal_approx(before), "a movement step leaves Fernanda where she was while selecting")
+	# Nothing else opens.
+	_tap(viewport, KEY_TAB)
+	_tap(viewport, KEY_Q)
+	_tap(viewport, KEY_SLASH)
+	check(hud.word_select.is_open() and not map.backpack.is_open and not get_tree().paused, "Tab, Q and / open nothing over it")
+	check(not map.open_backpack() and not map.open_notebook("notebook_p1") and not map.open_pause_menu(), "the backpack, notebook and pause menu refuse while selecting")
+	# Space is taken by the selection: it confirms and reaches no unhandled input.
+	probe.seen = 0
+	_tap(viewport, KEY_SPACE)
+	check(probe.seen == 0, "Space reached no unhandled input (%d)" % probe.seen)
+	check(map.spelling_hud.is_open() and get_tree().paused and not hud.word_select.is_open() and map.spelling.open_id == ids[0], "Space opens the highlighted word's spelling view")
+	probe.queue_free()
+	var keyboard_state := [map.spelling.open_id, map.spelling.placed.duplicate(), map.spelling.current_block()]
+	_tap(viewport, KEY_ESCAPE)
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "(setup) closed")
+	hud.entry_pressed.emit(ids[0])  # what a mouse click on the row does
+	check([map.spelling.open_id, map.spelling.placed.duplicate(), map.spelling.current_block()] == keyboard_state, "keyboard and mouse enter the same letter-selection state")
+	_tap(viewport, KEY_ESCAPE)
+	# Enter selects too, on another word.
+	_tap(viewport, KEY_E)
+	_tap(viewport, KEY_S)
+	_tap(viewport, KEY_ENTER)
+	check(map.spelling.open_id == ids[1], "Enter selects the highlighted word")
+	_tap(viewport, KEY_ESCAPE)
+	# A mouse click ends keyboard selection.
+	_tap(viewport, KEY_E)
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = Vector2(1270, 10)
+	viewport.push_input(click)
+	check(not hud.word_select.is_open() and not map.spelling.is_open(), "a mouse click ends keyboard selection")
+	# A finished word is skipped; gates.
+	map.spelling._words[ids[0]]["solved"] = _full_solved(map, ids[0])
+	check(hud.spellable_ids() == ids.slice(1), "a finished word is no longer spellable")
+	_tap(viewport, KEY_E)
+	check(hud.word_select.highlighted() == ids[1], "selection starts on the first unfinished word")
+	_tap(viewport, KEY_ESCAPE)
+	map.restarting = true
+	_tap(viewport, KEY_E)
+	check(not hud.word_select.is_open(), "E does nothing while restarting")
+	map.restarting = false
+	_tap(viewport, KEY_ESCAPE)
+	check(map.pause_menu.is_open, "with selection closed, Esc opens the pause menu as before")
+	_tap(viewport, KEY_E)
+	check(not hud.word_select.is_open(), "E does nothing over the pause menu")
+	map.free()
+	get_tree().paused = false
+	# Nothing to spell: E does nothing.
+	map = await _kit_map(false)
+	map.discovery.entries.clear()
+	map.discovery_hud.refresh()
+	_tap(map.get_viewport(), KEY_E)
+	check(not map.discovery_hud.word_select.is_open() and not get_tree().paused and not map.pause_menu.is_open, "with no discovered word, E does nothing")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	_section_done("test_word_select_scene")
+
+
+func _full_solved(map: Node3D, id: String) -> Array[String]:
+	var done: Array[String] = []
+	for i in map.spelling.block_count(id):
+		done.append(map.spelling.target_syllable(id, i))
+	return done
