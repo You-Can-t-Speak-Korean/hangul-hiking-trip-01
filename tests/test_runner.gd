@@ -140,11 +140,16 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_animals_crossing",
 	"test_animals_scene",
 	"test_animals_handoff",
+	"test_animals_ground",
+	"test_animals_props",
+	"test_animals_edges",
+	"test_animals_offscreen",
+	"test_animals_cover",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3239
+const MIN_CHECKS := 3331
 
 
 func check(condition: bool, label: String) -> void:
@@ -323,6 +328,14 @@ func _ready() -> void:
 	test_animals_crossing()
 	await test_animals_scene()
 	await test_animals_handoff()
+	print("== Animal ground and props ==")
+	test_animals_ground()
+	await test_animals_props()
+	await test_animals_water()
+	print("== Animal screen edges, lake, off-screen entries ==")
+	await test_animals_edges()
+	test_animals_offscreen()
+	await test_animals_cover()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -9749,6 +9762,7 @@ func test_ending_leftovers() -> void:
 
 const AnimalsScript := preload("res://scenes/animals/animals.gd")
 const CrossingScript := preload("res://scenes/animals/crossing.gd")
+const TravelerScript := preload("res://scenes/foraging/traveler.gd")
 ## The sizes before Prompt 9a-ii (the map is now 3x, the lake twice the pond's half-longer-side).
 const OLD_STAGE := Vector2(48.0, 24.0)
 const OLD_POND_SIZE := Vector2(12.0, 7.0)
@@ -9785,14 +9799,16 @@ func test_animals_data() -> void:
 			ascending = ascending and float(points[i][0]) > float(points[i - 1][0])
 			steepest = maxf(steepest, absf(float(points[i][1]) - float(points[i - 1][1])) / (float(points[i][0]) - float(points[i - 1][0])))
 	check(flat and ascending and steepest < 0.05 and float(points[0][0]) <= 0.0 and float(points[points.size() - 1][0]) >= width, "the terrain is nearly flat (within 0.5 m, slope %.3f) and spans the stage" % steepest)
-	var margin := float(cfg["walk_limit"]["margin"])
-	var bounds := Rect2(Vector2(margin, -depth / 2.0 + margin), Vector2(width - 2.0 * margin, depth - 2.0 * margin))
+	check(not cfg.has("walk_limit"), "the animal scene has no extra walk margin: travelers may reach the map edge less their radius")
+	var radius_t: float = TravelerScript.RADIUS
+	var bounds := Rect2(Vector2(radius_t, -depth / 2.0 + radius_t), Vector2(width - 2.0 * radius_t, depth - 2.0 * radius_t))
+	check(float(cfg["offscreen_m"]) >= 3.0 and float(cfg["camera"]["far_overshoot_m"]) >= 0.0 and float(cfg["camera"]["far_overshoot_m"]) <= float(cfg["offscreen_m"]) - 1.0 and float(cfg["camera"]["far_overshoot_m"]) <= float(cfg["apron"]["far"]), "offscreen_m is at least 3, and the view may pass the far edge by less than offscreen_m - 1 and by no more than the far apron")
 	var lake: Dictionary = cfg["lake"]
 	var lake_center := Vector2(float(lake["center"][0]), float(lake["center"][1]))
 	var lake_radius := float(lake["radius"])
 	check(lake["name_ko"] == "백록담" and is_equal_approx(lake_radius, 2.0 * maxf(OLD_POND_SIZE.x, OLD_POND_SIZE.y) / 2.0), "the lake radius is 2x half the old pond's longer side (%.1f m)" % lake_radius)
 	check(is_equal_approx(lake_center.x, width / 2.0) and is_equal_approx(lake_center.y, depth / 2.0), "...centred on the bottom edge, horizontally centred (%s)" % str(lake_center))
-	check(float(lake["height"]) > 0.0 and float(lake["wall_height"]) > 0.0 and lake["color"].size() == 3 and float(lake["clearance_m"]) > 0.0 and lake_radius < width / 2.0, "...with a height, a wall height, a colour and a clearance; it fits in the map")
+	check(float(lake["height"]) > 0.0 and float(lake["wall_height"]) > 0.0 and float(lake["clearance_m"]) > 0.0 and lake_radius < width / 2.0, "...with a height, a wall height and a clearance; it fits in the map")
 	for id in GameState.TRAVELERS:
 		var start := Vector2(float(cfg["start"][id][0]), float(cfg["start"][id][1]))
 		check(bounds.has_point(start) and start.distance_to(lake_center) > lake_radius + 0.5, "%s starts inside the walk limits and clear of the lake" % id)
@@ -9859,6 +9875,18 @@ func test_animals_data() -> void:
 
 
 ## Runs a Crossing for `seconds` and returns its events as [event, id, kind, entry, exit].
+## The edge a point outside the stage lies beyond ("" if it is inside): the one it is farthest past.
+func _outside_edge(point: Vector2, width: float, depth: float) -> String:
+	var past := {"west": -point.x, "east": point.x - width, "far": -point.y - depth / 2.0, "near": point.y - depth / 2.0}
+	var best := ""
+	var most := 0.0
+	for edge in past:
+		if past[edge] > most:
+			most = past[edge]
+			best = edge
+	return best
+
+
 func _crossing_events(cfg: Dictionary, seed_value: int, seconds: float, dt := 0.05) -> Array:
 	var crossing = CrossingScript.new(cfg, seed_value)
 	var width := float(cfg["stage"]["width"])
@@ -9913,12 +9941,13 @@ func test_animals_crossing() -> void:
 			if event["event"] == CrossingScript.SPAWN:
 				spawn_count += 1
 				entries_ok = entries_ok and walker.position().distance_to(walker.from) < 0.001 and is_zero_approx(walker.travelled)
-				if walker.habitat != "lake":
-					exit_differs = exit_differs and walker.exit["edge"] != walker.entry["edge"]
-					other_edge = other_edge and CrossingScript.edge_of(walker.from, width, depth) != CrossingScript.edge_of(walker.to, width, depth)
+				exit_differs = exit_differs and walker.exit["edge"] != walker.entry["edge"]
+				other_edge = other_edge and _outside_edge(walker.from, width, depth) == walker.entry["edge"] and _outside_edge(walker.to, width, depth) == walker.exit["edge"]
 				if walker.kind["flies"]:
 					flyers_seen += 1
 					flyers_high = flyers_high and is_equal_approx(walker.altitude, 4.0)
+				elif walker.habitat == "lake":
+					flyers_high = flyers_high and is_equal_approx(walker.altitude, 4.0)  # a duck comes in high
 				else:
 					ground_seen += 1
 					flyers_high = flyers_high and is_zero_approx(walker.altitude)
@@ -9931,8 +9960,8 @@ func test_animals_crossing() -> void:
 	check(spawn_count > 10 and exits > 5 and crossing.spawned == spawn_count and crossing.exited == exits and crossing.spawned - crossing.exited == crossing.alive.size(), "animals are spawned and leave (%d spawned, %d left, %d alive)" % [spawn_count, exits, crossing.alive.size()])
 	check(exits_ok, "every animal that leaves has reached its exit and is no longer alive")
 	check(entries_ok, "every animal starts exactly at its entry")
-	check(exit_differs and other_edge, "land and air animals leave by a different edge than they came in (ducks leave by the rim)")
-	check(flyers_seen > 0 and ground_seen > 0 and flyers_high, "flyers cross at 4 m (%d seen), the others on the ground" % flyers_seen)
+	check(exit_differs and other_edge, "everybody leaves by a different edge than it came in, and enters and leaves outside the map by that edge")
+	check(flyers_seen > 0 and ground_seen > 0 and flyers_high, "flyers cross at 4 m (%d seen), ducks come in at 4 m, the others on the ground" % flyers_seen)
 	# Paths and speed.
 	var c = CrossingScript.new(cfg, 3)
 	var lone
@@ -9970,6 +9999,8 @@ func test_animals_crossing() -> void:
 	var ground_clear := true
 	var segments_clear := true
 	var ducks_wet := true
+	var ducks_landed := true
+	var ducks_by_air := true
 	var different_edge := true
 	var lingers := true
 	var ducks := 0
@@ -9996,6 +10027,24 @@ func test_animals_crossing() -> void:
 			var is_duck: bool = w.habitat == "lake"
 			if is_duck:
 				ducks += 1
+				var landed := true
+				var left_by_air := true
+				var dist := 0.0
+				while dist <= w.length:
+					w.travelled = dist
+					var at: Vector2 = w.position()
+					var wet: bool = hc.zone_contains("lake", at) and at.distance_to(lake_c) < lake_r
+					var alt: float = w.altitude_at(dist)
+					landed = landed and (alt > 0.0 or wet)  # down only on the water
+					left_by_air = left_by_air and (wet or alt > 0.0)
+					dist += 0.5
+				w.travelled = w.land_at
+				var touch: Vector2 = w.position()
+				landed = landed and is_zero_approx(w.altitude_at(w.land_at)) and hc.zone_contains("lake", touch) and touch.distance_to(lake_c) < lake_r
+				landed = landed and is_equal_approx(w.altitude_at(0.0), 4.0) and is_equal_approx(w.altitude_at(w.length), 4.0) and is_zero_approx(w.altitude_at(w.stop_dist))
+				ducks_landed = ducks_landed and landed
+				ducks_by_air = ducks_by_air and left_by_air and is_equal_approx(w.takeoff_at, w.stop_dist) and w.altitude_at(w.stop_dist + 1.0) > 0.0
+				w.travelled = 0.0
 			else:
 				grounds += 1
 				different_edge = different_edge and w.entry["edge"] != w.exit["edge"]
@@ -10007,7 +10056,7 @@ func test_animals_crossing() -> void:
 			while true:
 				var spot: Vector2 = w.position()
 				if is_duck:
-					ducks_wet = ducks_wet and hc.zone_contains("lake", spot) and spot.distance_to(lake_c) < lake_r
+					ducks_wet = ducks_wet and (w.altitude > 0.0 or (hc.zone_contains("lake", spot) and spot.distance_to(lake_c) < lake_r))
 				else:
 					ground_clear = ground_clear and spot.distance_to(lake_c) >= lake_r
 				if w.is_done():
@@ -10018,7 +10067,9 @@ func test_animals_crossing() -> void:
 			lingers = lingers and absf(float(steps) - expected) <= 2.0
 	check(in_habitat and kind_habitat, "6000 visits (seeds 1-30): every ground target is inside its habitat, and each habitat is one of the kind's")
 	check(ground_clear and segments_clear, "...no ground animal is ever in the lake (%d walked), and no route leg crosses it" % grounds)
-	check(ducks_wet and ducks > 100, "...every 오리 stays inside the lake (%d ducks)" % ducks)
+	check(ducks_wet and ducks > 100, "...every 오리 is inside the lake whenever it is down (%d ducks)" % ducks)
+	check(ducks_landed, "...every 오리 flies in at 4 m, comes down inside the lake, and is on the water only at height 0")
+	check(ducks_by_air, "...and takes off at its last waypoint and leaves by air (never outside the lake on the ground)")
 	check(different_edge and shore_walkers > 100, "...ground animals leave by a different edge (%d on the shore)" % shore_walkers)
 	check(lingers, "...each lingers 4-8 s, and the visit takes walking time plus linger")
 	check(seen_habitats.size() == 5, "...all five habitats are visited")
@@ -10046,6 +10097,32 @@ func _animals_map(seed_value := 5) -> Node3D:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	return map
+
+
+## Whether nothing of the animal (its box corners and its label, 1.2 m round it) is on screen.
+func _hidden_from_camera(map: Node3D, walker) -> bool:
+	var cfg := _animals_config()
+	var spot: Vector2 = walker.position()
+	var base_y: float = map.terrain.height_at(spot.x) + walker.altitude + (float(cfg["lake"]["water_y"]) if walker.habitat == "lake" else 0.0)
+	var view: Rect2 = map.get_viewport().get_visible_rect()
+	var top: float = float(walker.kind["size"][1]) + float(cfg["label"]["lift"]) + float(cfg["label"]["font_size"]) * float(cfg["label"]["pixel_size"])
+	for dx in [-1.2, 0.0, 1.2]:
+		for dz in [-1.2, 0.0, 1.2]:
+			for h in [0.0, top]:
+				if view.has_point(map.camera.unproject_position(Vector3(spot.x + dx, base_y + h, spot.y + dz))):
+					return false
+	return true
+
+
+## Where the ray through a screen point meets the terrain (cut here from the camera's own
+## ray, not with the scene's ground_hit).
+func _ray_on_ground(map: Node3D, screen: Vector2) -> Vector2:
+	var origin: Vector3 = map.camera.project_ray_origin(screen)
+	var direction: Vector3 = map.camera.project_ray_normal(screen)
+	var hit := origin
+	for i in 12:
+		hit = origin + direction * ((map.terrain.height_at(hit.x) - origin.y) / direction.y)
+	return Vector2(hit.x, hit.z)
 
 
 ## Both travelers teleported (the next physics frame must pass before they walk).
@@ -10081,10 +10158,10 @@ func test_animals_scene() -> void:
 	var bounds: Rect2 = map.walk_bounds()
 	var lc: Vector2 = map.lake_center
 	var lr: float = map.lake_radius
-	var margin := float(cfg["walk_limit"]["margin"])
+	var margin: float = TravelerScript.RADIUS
 	var width := float(cfg["stage"]["width"])
 	var depth := float(cfg["stage"]["depth"])
-	check(is_equal_approx(bounds.size.x, width - 2.0 * margin) and is_equal_approx(bounds.size.y, depth - 2.0 * margin), "the walk limits are the stage inset by the margin")
+	check(is_equal_approx(bounds.size.x, width - 2.0 * margin) and is_equal_approx(bounds.size.y, depth - 2.0 * margin), "the walk limits are the stage inset by the traveler's radius only")
 	# Bounds: walk into each stage edge for 14 s.
 	var edges := {
 		"west": [Vector2(-1.0, 0.0), Vector2(12.0, 8.0), Vector2(14.0, 8.0)],
@@ -10129,7 +10206,7 @@ func test_animals_scene() -> void:
 		for i in 240:
 			map.step(Vector2.ZERO, DT)
 		var on_screen: bool = viewport_rect.has_point(map.camera.unproject_position(map.player.global_position))
-		camera_ok = camera_ok and on_screen and map.camera.global_position.x >= ground.position.x + half - 0.01 and map.camera.global_position.x <= ground.end.x - half + 0.01
+		camera_ok = camera_ok and on_screen and map.camera.global_position.x >= half - 0.01 and map.camera.global_position.x <= width - half + 0.01
 	check(camera_ok, "the camera keeps the player on screen and stays over the map at every edge")
 	# Animals over time.
 	GameState.new_hike()
@@ -10141,20 +10218,32 @@ func test_animals_scene() -> void:
 	var labels_ok := true
 	var entry_ids := {}
 	var dt := 1.0 / 30.0
+	var unseen := true
+	var changes := 0
 	for i in roundi(120.0 / dt):
+		var before: Array = map.animal_nodes.keys()
 		map.step(Vector2.ZERO, dt)
+		for walker in before:
+			if not map.animal_nodes.has(walker):
+				changes += 1
+				unseen = unseen and _hidden_from_camera(map, walker)
+		for walker in map.animal_nodes:
+			if not before.has(walker):
+				changes += 1
+				unseen = unseen and _hidden_from_camera(map, walker)
 		peak = maxi(peak, map.animal_nodes.size())
 		consistent = consistent and map.animal_nodes.size() == map.crossing.alive.size() and map.get_node("Animals").get_child_count() == map.animal_nodes.size()
 		for walker in map.animal_nodes:
 			var node: Node3D = map.animal_nodes[walker]
 			entry_ids[walker.entry["id"]] = true
 			var ground_y: float = map.terrain.height_at(node.global_position.x)
-			heights_ok = heights_ok and is_equal_approx(node.global_position.y, ground_y + (4.0 if walker.kind["flies"] else 0.0))
+			heights_ok = heights_ok and is_equal_approx(node.global_position.y, ground_y + walker.altitude + (float(cfg["lake"]["water_y"]) if walker.habitat == "lake" else 0.0))
 			labels_ok = labels_ok and node.label.text == walker.kind["name_ko"] and node.label.position.y > node.box.mesh.size.y and node.box.mesh.size == Vector3(float(walker.kind["size"][0]), float(walker.kind["size"][1]), float(walker.kind["size"][2]))
 	check(map.crossing.spawned >= 10 and map.crossing.exited >= 5, "over two minutes animals come and go (%d spawned, %d left)" % [map.crossing.spawned, map.crossing.exited])
 	check(peak <= 5 and peak >= 2 and consistent, "never more than 5 on the map (peak %d), and every live animal has exactly one node; the left ones are gone" % peak)
-	check(heights_ok and labels_ok, "animals stand on the ground (flyers 4 m up), each box has its kind's size and a name_ko label above it")
+	check(heights_ok and labels_ok, "animals stand on the ground (flyers 4 m up, ducks on the water), each box has its kind's size and a name_ko label above it")
 	check(entry_ids.size() >= 3, "animals entered from several different entries (%d)" % entry_ids.size())
+	check(unseen and changes >= 20, "no animal appeared or vanished inside the camera's view, boxes and labels included (%d appearances and exits)" % changes)
 	# Menus.
 	var viewport := map.get_viewport()
 	await _settle_layout()
@@ -10275,3 +10364,504 @@ func test_animals_handoff() -> void:
 	GameState.new_hike()
 	get_window().size = window_before
 	_section_done("test_animals_handoff")
+
+
+# ---- Prompt 9a-iii: the generated ground and the props ----
+
+const GroundScript := preload("res://scenes/animals/ground.gd")
+const PropsScript := preload("res://scenes/animals/props.gd")
+const WaterScript := preload("res://scenes/animals/water.gd")
+
+
+## 500 seeded points well inside a zone (more than blend_m from any border).
+func _interior_points(zone: String, cfg: Dictionary, count: int) -> Array[Vector2]:
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var blend := float(cfg["ground"]["blend_m"]) + 0.1
+	var lc := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	var radius := float(cfg["lake"]["radius"])
+	var band := float(cfg["habitats"]["shore"]["band_frac"]) * depth
+	var forest_end := -depth / 2.0 + float(cfg["habitats"]["forest"]["top_frac"]) * depth
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99
+	var points: Array[Vector2] = []
+	while points.size() < count:
+		var p := Vector2(rng.randf_range(0.0, width), rng.randf_range(-depth / 2.0, depth / 2.0))
+		var d := p.distance_to(lc)
+		var ok := false
+		match zone:
+			"forest":
+				ok = p.y < forest_end - blend
+			"lake":
+				ok = d < radius - blend and p.y < lc.y - blend
+			"shore":
+				ok = d > radius + blend and d < radius + band - blend and p.y < lc.y - blend
+			"grass":
+				ok = p.y > forest_end + blend and (d > radius + band + blend or p.y > lc.y + blend)
+		if ok:
+			points.append(p)
+	return points
+
+
+func test_animals_ground() -> void:
+	var cfg := _animals_config()
+	var ground: Dictionary = cfg["ground"]
+	var max_luma := float(ground["max_luma"])
+	var palettes_ok := true
+	var weights_ok := true
+	var parse_ok := true
+	for zone in ["forest", "grass", "shore"]:
+		palettes_ok = palettes_ok and ground["palettes"].has(zone) and ground["palettes"][zone].size() > 0
+		for entry in ground["palettes"][zone]:
+			parse_ok = parse_ok and String(entry[0]).is_valid_html_color()
+			weights_ok = weights_ok and float(entry[1]) > 0.0
+	for key in ["deep", "rim", "under", "mud", "basalt"]:
+		parse_ok = parse_ok and String(cfg["lake"][key]).is_valid_html_color()
+	for habitat_name in cfg["habitats"]:
+		if habitat_name != "air":
+			palettes_ok = palettes_ok and (ground["palettes"].has(habitat_name) or habitat_name == "lake")
+	check(palettes_ok and not ground.has("lake"), "every habitat zone has a ground palette (the lake's colours are in animals.lake)")
+	check(parse_ok, "every palette colour parses")
+	check(weights_ok, "every palette weight is above 0")
+	check(int(ground["px_per_m"]) == 4 and is_equal_approx(float(ground["blend_m"]), 4.0) and is_equal_approx(max_luma, 0.65), "the defaults: 4 px/m, 4 m blend, luminance cap 0.65")
+	# Interior colours stay inside each palette's channel range.
+	var lake_colors := [Color.html(String(cfg["lake"]["under"]))]
+	for zone in ["forest", "grass", "shore", "lake"]:
+		var colors: Array = lake_colors if zone == "lake" else []
+		if zone != "lake":
+			for entry in ground["palettes"][zone]:
+				colors.append(Color.html(String(entry[0])))
+		var low := Color(1.0, 1.0, 1.0)
+		var high := Color(0.0, 0.0, 0.0)
+		for c in colors:
+			low = Color(minf(low.r, c.r), minf(low.g, c.g), minf(low.b, c.b))
+			high = Color(maxf(high.r, c.r), maxf(high.g, c.g), maxf(high.b, c.b))
+		var within := true
+		var pure := true
+		var bright := true
+		var distinct := {}
+		for p in _interior_points(zone, cfg, 500):
+			var c := GroundScript.color_at(p.x, p.y, cfg, 7)
+			var e := 0.002
+			within = within and c.r >= low.r - e and c.r <= high.r + e and c.g >= low.g - e and c.g <= high.g + e and c.b >= low.b - e and c.b <= high.b + e
+			bright = bright and c.get_luminance() <= max_luma + 0.0001
+			pure = pure and is_equal_approx(float(GroundScript.zone_weights(p.x, p.y, cfg)[zone]), 1.0)
+			distinct[c.to_html(false)] = true
+		check(within, "500 points inside the %s: every colour channel is within the palette's range" % zone)
+		check(pure and bright, "...they are pure %s (no neighbour weight) and no brighter than the cap" % zone)
+		check(distinct.size() >= 6 or zone == "lake", "...the %s ground is varied (%d colours)" % [zone, distinct.size()])
+	var lc := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	# Borders blend: weights move smoothly and sum to 1.
+	var forest_end := -float(cfg["stage"]["depth"]) / 2.0 + float(cfg["habitats"]["forest"]["top_frac"]) * float(cfg["stage"]["depth"])
+	var sums_ok := true
+	var steps_ok := true
+	var last := -1.0
+	for i in 81:
+		var z := forest_end - 4.0 + 0.1 * i
+		var w := GroundScript.zone_weights(60.0, z, cfg)
+		sums_ok = sums_ok and is_equal_approx(float(w["lake"]) + float(w["shore"]) + float(w["forest"]) + float(w["grass"]), 1.0)
+		if last >= 0.0:
+			steps_ok = steps_ok and absf(float(w["forest"]) - last) < 0.1
+		last = float(w["forest"])
+	check(sums_ok and steps_ok, "the forest/grass border blends over a few metres: weights sum to 1 and change by < 0.1 per 0.1 m")
+	var mid := GroundScript.zone_weights(60.0, forest_end, cfg)
+	check(is_equal_approx(float(mid["forest"]), 0.5) and is_equal_approx(float(mid["grass"]), 0.5), "exactly on the border both zones weigh half")
+	# The whole texture: size, cap, and the seed.
+	var started := Time.get_ticks_msec()
+	var first := GroundScript.image(cfg, 1)
+	var elapsed := Time.get_ticks_msec() - started
+	print("  ground texture generation: %d ms (%dx%d)" % [elapsed, first.get_width(), first.get_height()])
+	var rect := GroundScript.texture_rect(cfg)
+	check(first.get_width() == ceili(rect.size.x * 4.0) and first.get_height() == ceili(rect.size.y * 4.0) and first.get_format() == Image.FORMAT_RGB8, "the texture covers the whole drawn ground at 4 px/m (%dx%d)" % [first.get_width(), first.get_height()])
+	check(rect.encloses(Rect2(0.0, -float(cfg["stage"]["depth"]) / 2.0, float(cfg["stage"]["width"]), float(cfg["stage"]["depth"]))), "...and encloses the whole stage")
+	var data := first.get_data()
+	var capped := true
+	for i in range(0, data.size(), 3):
+		var luma := 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+		if luma > max_luma * 255.0 + 1.0:
+			capped = false
+			break
+	check(capped, "no ground pixel is brighter than the luminance cap")
+	var again := GroundScript.image(cfg, 1)
+	check(GroundScript.image_hash(first) == GroundScript.image_hash(again) and first.get_data() == again.get_data(), "the same seed gives the same texture")
+	check(GroundScript.image_hash(first) != GroundScript.image_hash(GroundScript.image(cfg, 2)), "seeds 1 and 2 give different textures")
+	check(GroundScript.zone_contains("lake", lc + Vector2(0.0, -3.0), cfg) and not GroundScript.zone_contains("lake", lc + Vector2(0.0, 3.0), cfg), "the hard zone test knows the half-disc lake")
+	_section_done("test_animals_ground")
+
+
+func test_animals_props() -> void:
+	var cfg := _animals_config()
+	var props: Dictionary = cfg["props"]
+	var placed := PropsScript.place(cfg, 11)
+	var counts := {}
+	for type in placed:
+		counts[type] = placed[type].size()
+	check(counts == {"tree": 70, "tuft": 120, "reed": 60, "rock": 80}, "prop counts match the data (%s)" % str(counts))
+	var lc := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	var radius := float(cfg["lake"]["radius"])
+	var clear := float(props["start_clear_m"])
+	var starts: Array[Vector2] = []
+	for id in cfg["start"]:
+		starts.append(Vector2(float(cfg["start"][id][0]), float(cfg["start"][id][1])))
+	var dry := true
+	var far_from_start := true
+	var in_zone := true
+	var zone_of_type := {"tree": "forest", "tuft": "grass", "reed": "shore"}
+	var tint_ok := true
+	var tree_cap := true
+	var per_zone := {}
+	for type in placed:
+		for p in placed[type]:
+			dry = dry and not (p["pos"].distance_to(lc) < radius and p["pos"].y <= lc.y)
+			dry = dry and p["pos"].distance_to(lc) >= radius
+			for s in starts:
+				far_from_start = far_from_start and p["pos"].distance_to(s) >= clear
+			in_zone = in_zone and GroundScript.zone_contains(p["zone"], p["pos"], cfg) and (not zone_of_type.has(type) or p["zone"] == zone_of_type[type])
+			per_zone[p["zone"] + "/" + type] = per_zone.get(p["zone"] + "/" + type, 0) + 1
+			tint_ok = tint_ok and p["color"].r >= 0.0 and p["color"].r <= 1.0
+			if type == "tree":
+				tree_cap = tree_cap and p["size"].y <= float(props["tree_max_h"]) + 0.0001 and p["size"].y >= float(props["tree_min_h"]) - 0.0001
+	check(dry, "no prop is inside the lake circle")
+	check(far_from_start, "no prop is within 1.5 m of a start point")
+	check(in_zone and tint_ok, "every prop is inside its zone (trees in the forest, tufts on the grass, reeds on the shore)")
+	check(per_zone == {"forest/tree": 70, "forest/rock": 25, "grass/tuft": 120, "grass/rock": 30, "shore/reed": 60, "shore/rock": 25}, "counts per zone: forest 70 trees + 25 rocks, grass 120 tufts + 30 rocks, shore 60 reeds + 25 rocks (%s)" % str(per_zone))
+	check(tree_cap, "trees are no taller than tree_max_h (%.1f m)" % float(props["tree_max_h"]))
+	var basalt := Color.html(String(props["basalt"]))
+	var basalt_ok := true
+	for p in placed["rock"]:
+		if p["zone"] == "shore":
+			basalt_ok = basalt_ok and absf(p["color"].r / basalt.r - p["color"].g / basalt.g) < 0.05 and absf(p["color"].r / basalt.r - 1.0) <= float(props["tint_range"]) + 0.001
+	check(basalt_ok, "shore rocks are basalt grey, within the tint range")
+	var forest_end := -float(cfg["stage"]["depth"]) / 2.0 + float(cfg["habitats"]["forest"]["top_frac"]) * float(cfg["stage"]["depth"])
+	var upper := 0
+	var lower := 0
+	for seed_value in 5:
+		for p in PropsScript.place(cfg, 100 + seed_value)["tree"]:
+			if p["pos"].y < (forest_end - float(cfg["stage"]["depth"]) / 2.0) / 2.0:
+				upper += 1
+			else:
+				lower += 1
+	check(lower > 2 * upper, "trees are denser toward the forest's lower edge (%d lower vs %d upper over 5 seeds)" % [lower, upper])
+	var again := PropsScript.place(cfg, 11)
+	var same := true
+	for type in placed:
+		for i in placed[type].size():
+			same = same and placed[type][i]["pos"] == again[type][i]["pos"] and placed[type][i]["color"] == again[type][i]["color"]
+	check(same, "the same seed gives the same props")
+	var other := PropsScript.place(cfg, 12)
+	check(other["tree"][0]["pos"] != placed["tree"][0]["pos"], "another seed gives another layout")
+	# In the scene: MultiMeshes, no collision, the fade follows the travelers.
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(11)
+	var holder: Node = map.get_node("Props")
+	var multis := {}
+	var colliding := false
+	var queue: Array = [holder]
+	while not queue.is_empty():
+		var node: Node = queue.pop_back()
+		queue.append_array(node.get_children())
+		colliding = colliding or node is CollisionObject3D or node is CollisionShape3D
+		if node is MultiMeshInstance3D:
+			multis[node.name] = node.multimesh.instance_count
+	check(not colliding, "the props have no collision shapes (nobody is blocked)")
+	check(multis == {"TreeCanopies": 70, "TreeTrunks": 70, "Tufts": 120, "Reeds": 60, "Rocks": 80}, "one MultiMesh per prop type (the trees' trunks are a second one) (%s)" % str(multis))
+	var expected := PropsScript.place(cfg, 11)
+	check(expected["tree"][0]["pos"] == placed["tree"][0]["pos"] and map.props.instances["tree"].multimesh.instance_count == 70, "the scene uses the pinned seed's layout")
+	check(map.ground_image != null and map.ground_ms >= 0 and GroundScript.image_hash(map.ground_image) == GroundScript.image_hash(GroundScript.image(cfg, 11)), "the scene's floor texture is the seed's ground (made in %d ms)" % map.ground_ms)
+	var floor_material: StandardMaterial3D = map.get_node("Ground").get_child(0).material_override
+	check(floor_material.albedo_texture != null and floor_material.texture_filter == BaseMaterial3D.TEXTURE_FILTER_LINEAR, "the floor material uses the texture, filtered linearly")
+	check(map.get_node("Pond").get_child_count() == 1 and map.get_node("Pond").get_child(0) is StaticBody3D, "the lake's wall is the only node under Pond (the water is a separate mesh)")
+	_put(map, map.player, 30.0, 10.0)
+	_put(map, map.partner, 33.0, 10.0)
+	map.step(Vector2.ZERO, DT)
+	check(map.props.fade_material.get_shader_parameter("traveler_a") == map.player.global_position and map.props.fade_material.get_shader_parameter("traveler_b") == map.partner.global_position, "the tree fade follows both travelers")
+	var map_b: Node3D = await _animals_map(11)
+	check(GroundScript.image_hash(map.ground_image) == GroundScript.image_hash(map_b.ground_image), "two scenes with one --seed make the same ground")
+	map_b.free()
+	map.free()
+	GameState.new_hike()
+	_section_done("test_animals_props")
+
+
+## Prompt 9a-iv: the water surface, the bank and the floating ducks.
+func test_animals_water() -> void:
+	var cfg := _animals_config()
+	var lake: Dictionary = cfg["lake"]
+	var lc := Vector2(float(lake["center"][0]), float(lake["center"][1]))
+	var radius := float(lake["radius"])
+	var water_y := float(lake["water_y"])
+	# Data: the old keys are gone, the new ones are there.
+	check(not cfg.has("ground_color") and not lake.has("color"), "the data has no ground_color and no lake.color")
+	check(is_equal_approx(water_y, 0.02) and is_equal_approx(float(lake["roughness"]), 0.15) and is_equal_approx(float(lake["bank_m"]), 0.8) and Color.html(String(lake["deep"])) == Color.html("#1F4A4A") and Color.html(String(lake["rim"])) == Color.html("#4E6B5E"), "the lake data: water_y 0.02, roughness 0.15, bank 0.8 m, deep #1F4A4A, rim #4E6B5E")
+	# Node-free: the gradient.
+	check(GroundScript.lake_color(0.0, cfg) == Color.html("#1F4A4A") and GroundScript.lake_color(1.0, cfg) == Color.html("#4E6B5E"), "lake_color is deep at r=0 and rim at r=1")
+	var rising := true
+	var last_luma := -1.0
+	for i in 21:
+		var luma := GroundScript.lake_color(i / 20.0, cfg).get_luminance()
+		rising = rising and luma > last_luma
+		last_luma = luma
+	check(rising, "...and its luminance rises steadily from the centre to the rim")
+	# Node-free: the bank and the plain ground under the water.
+	var mud := Color.html(String(lake["mud"]))
+	var basalt := Color.html(String(lake["basalt"]))
+	var under := Color.html(String(lake["under"]))
+	var bank_m := float(lake["bank_m"])
+	var blend := float(lake["bank_blend_m"])
+	var bank_ok := true
+	var inside_ok := true
+	var mixed := {}
+	var e := 0.002
+	for i in 400:
+		var angle := PI * (i + 0.5) / 400.0
+		var direction := Vector2(cos(angle), -sin(angle))
+		var d := lerpf(0.02, bank_m - blend - 0.01, (i % 20) / 19.0)
+		var p := lc + direction * (radius + d)
+		var c := GroundScript.color_at(p.x, p.y, cfg, 7)
+		bank_ok = bank_ok and c.r >= minf(mud.r, basalt.r) - e and c.r <= maxf(mud.r, basalt.r) + e and c.g >= minf(mud.g, basalt.g) - e and c.g <= maxf(mud.g, basalt.g) + e and c.b >= minf(mud.b, basalt.b) - e and c.b <= maxf(mud.b, basalt.b) + e
+		mixed[c.to_html(false)] = true
+		var q := lc + direction * (radius - 0.05)
+		inside_ok = inside_ok and GroundScript.color_at(q.x, q.y, cfg, 7) == under
+	check(bank_ok, "400 samples in the bank band are within the mud and basalt channel ranges")
+	check(mixed.size() >= 4, "...and the bank is a mix, not one colour (%d colours)" % mixed.size())
+	check(inside_ok, "400 samples just inside the rim equal the plain under-water colour")
+	var crisp := lc + Vector2(0.0, -(radius + 0.05))
+	check(GroundScript.color_at(crisp.x, crisp.y, cfg, 7) != under or mud == under, "the bank starts right at the rim (no blend into the water)")
+	# The scene: the water node.
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(21)
+	var water := map.get_node_or_null("Water")
+	check(water is MeshInstance3D and water.material_override is ShaderMaterial, "the water node is a MeshInstance3D with a ShaderMaterial")
+	var colliding := false
+	var queue: Array = [water]
+	while not queue.is_empty():
+		var node: Node = queue.pop_back()
+		queue.append_array(node.get_children())
+		colliding = colliding or node is CollisionObject3D or node is CollisionShape3D
+	check(not colliding, "the water has no collision")
+	var code: String = water.material_override.shader.code
+	var mode_line := ""
+	for line in code.split("
+"):
+		if line.begins_with("render_mode"):
+			mode_line = line
+	check(not code.contains("ALPHA") and mode_line != "" and not mode_line.contains("blend_"), "the shader assigns no ALPHA and its render_mode has no blend_ mode (%s)" % mode_line)
+	check(not code.contains("hint_screen_texture") and not code.contains("hint_depth_texture") and not code.contains("SCREEN_TEXTURE") and not code.contains("DEPTH_TEXTURE"), "...and reads neither the screen nor the depth")
+	var material: ShaderMaterial = water.material_override
+	check(is_equal_approx(float(material.get_shader_parameter("light_scale")), float(cfg["ground"]["light_scale"])) and is_equal_approx(float(material.get_shader_parameter("water_roughness")), 0.15), "the shader uses the ground's light scale and the data's roughness")
+	check(material.get_shader_parameter("ripple_map") is Texture2D and water.position.is_equal_approx(Vector3(lc.x, 0.0, lc.y)), "the ripple map is set and the mesh sits at the lake centre")
+	var arrays: Array = water.mesh.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var on_ground := vertices.size() > 300 and arrays[Mesh.ARRAY_TANGENT] != null
+	var in_disc := true
+	var max_r := 0.0
+	for v in vertices:
+		on_ground = on_ground and absf(v.y - (map.terrain.height_at(v.x + lc.x) + water_y)) < 0.0001
+		in_disc = in_disc and v.z <= 0.0001 and Vector2(v.x, v.z).length() <= radius + 0.0001
+		max_r = maxf(max_r, Vector2(v.x, v.z).length())
+	check(on_ground, "every water vertex is water_y above the ground (%d vertices)" % vertices.size())
+	check(in_disc and absf(max_r - radius) < 0.001, "the mesh is the lake's half disc (largest radius %.3f)" % max_r)
+	# Ducks float: a seeded simulation.
+	var ducks := 0
+	var floating := true
+	var walked_ducks := {}
+	for i in 14000:
+		map.step(Vector2.ZERO, DT)
+		for walker in map.animal_nodes:
+			if walker.habitat != "lake":
+				continue
+			var node: Node3D = map.animal_nodes[walker]
+			ducks += 1
+			walked_ducks[walker] = true
+			var spot: Vector2 = walker.position()
+			floating = floating and is_equal_approx(node.global_position.y, map.terrain.height_at(spot.x) + water_y + walker.altitude)
+	check(floating and ducks > 100, "every 오리 stands water_y above the ground at its spot (%d poses, %d ducks)" % [ducks, walked_ducks.size()])
+	map.free()
+	GameState.new_hike()
+	_section_done("test_animals_water")
+
+
+# ---- Prompt 9a-v: screen edges, the lake at the bottom, off-screen entries ----
+
+## The camera sits flush with the map at the bottom, left and right; travelers reach the edges;
+## the lake is a half disc on the near edge.
+func test_animals_edges() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var cfg := _animals_config()
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var radius: float = TravelerScript.RADIUS
+	var far_limit := -depth / 2.0 - float(cfg["camera"]["far_overshoot_m"])
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(5)
+	var view: Vector2 = map.get_viewport().get_visible_rect().size
+	# The camera, clamped at the bottom, the sides and the top.
+	await _place_pair(map, Vector2(10.0, depth / 2.0 - radius), Vector2(9.0, depth / 2.0 - 2.0))
+	map.update_camera(0.0, true)
+	var bottom := _ray_on_ground(map, Vector2(view.x / 2.0, view.y))
+	check(absf(bottom.y - depth / 2.0) < 0.1, "clamped at the near edge, the bottom of the screen meets the ground on the map's near edge (z %.3f, edge %.1f)" % [bottom.y, depth / 2.0])
+	await _place_pair(map, Vector2(radius, 5.0), Vector2(2.0, 6.0))
+	map.update_camera(0.0, true)
+	var row: float = map.camera.unproject_position(map.player.global_position).y
+	var left := _ray_on_ground(map, Vector2(0.0, row))
+	check(absf(left.x) < 0.1, "clamped at the west edge, the screen's left edge at the travelers' row meets the ground on the map side (x %.3f)" % left.x)
+	check(map.get_viewport().get_visible_rect().has_point(map.camera.unproject_position(map.player.global_position)), "...and the player is on screen")
+	await _place_pair(map, Vector2(width - radius, 5.0), Vector2(width - 2.0, 6.0))
+	map.update_camera(0.0, true)
+	row = map.camera.unproject_position(map.player.global_position).y
+	var right := _ray_on_ground(map, Vector2(view.x, row))
+	check(absf(right.x - width) < 0.1, "clamped at the east edge, the screen's right edge meets the ground on the map side (x %.3f, side %.1f)" % [right.x, width])
+	await _place_pair(map, Vector2(10.0, -depth / 2.0 + radius), Vector2(9.0, -depth / 2.0 + 2.0))
+	map.update_camera(0.0, true)
+	var top := _ray_on_ground(map, Vector2(view.x / 2.0, 0.0))
+	check(absf(top.y - far_limit) < 0.1 and map.get_viewport().get_visible_rect().has_point(map.camera.unproject_position(map.player.global_position)), "at the far edge the view passes it by far_overshoot_m at most (z %.3f) and the player is on screen" % top.y)
+	# Every corner: the footprint stays inside the map (and the allowed overshoot), the player on screen.
+	var corners_ok := true
+	var on_screen := true
+	var low := Vector2(INF, INF)
+	var high := Vector2(-INF, -INF)
+	for spot in [Vector2(radius, depth / 2.0 - radius), Vector2(width - radius, depth / 2.0 - radius), Vector2(radius, -depth / 2.0 + radius), Vector2(width - radius, -depth / 2.0 + radius), Vector2(width / 2.0, 0.0), Vector2(30.0, depth / 2.0 - radius)]:
+		await _place_pair(map, spot, spot + Vector2(1.0 if spot.x < width / 2.0 else -1.0, 0.0))
+		for i in 120:
+			map.step(Vector2.ZERO, DT)
+		for corner in map.camera_footprint():
+			low = Vector2(minf(low.x, corner.x), minf(low.y, corner.y))
+			high = Vector2(maxf(high.x, corner.x), maxf(high.y, corner.y))
+			corners_ok = corners_ok and corner.x >= -0.1 and corner.x <= width + 0.1 and corner.y <= depth / 2.0 + 0.1 and corner.y >= far_limit - 0.1
+		on_screen = on_screen and map.get_viewport().get_visible_rect().has_point(map.camera.unproject_position(map.player.global_position))
+	check(corners_ok, "the camera never shows ground beyond the map's sides and near edge, nor beyond the far overshoot (reach x %.1f..%.1f, z %.1f..%.1f)" % [low.x, high.x, low.y, high.y])
+	check(on_screen, "the player is on screen at every corner and in the middle")
+	# Travelers walk up to each edge, less their radius.
+	var trials := {
+		"west": [Vector2(-1.0, 0.0), Vector2(12.0, 8.0), Vector2(14.0, 8.0)],
+		"east": [Vector2(1.0, 0.0), Vector2(width - 12.0, 8.0), Vector2(width - 14.0, 8.0)],
+		"far": [Vector2(0.0, -1.0), Vector2(20.0, -depth / 2.0 + 8.0), Vector2(22.0, -depth / 2.0 + 8.0)],
+		"near": [Vector2(0.0, 1.0), Vector2(20.0, depth / 2.0 - 8.0), Vector2(22.0, depth / 2.0 - 8.0)],
+	}
+	for edge in trials:
+		var plan: Array = trials[edge]
+		await _place_pair(map, plan[1], plan[2])
+		_walk_checked(map, plan[0], 14.0)
+		var p := _xz(map.player)
+		var gap := {"west": p.x, "east": width - p.x, "far": p.y + depth / 2.0, "near": depth / 2.0 - p.y}[edge] as float
+		check(gap <= radius + 0.05 and gap >= radius - 0.001, "pushed toward the %s edge, Fernanda stops %.3f m from it (radius %.2f)" % [edge, gap, radius])
+		check(map.get_viewport().get_visible_rect().has_point(map.camera.unproject_position(map.player.global_position)), "...and she is still on screen")
+	# The lake is on the near edge, and all of it uses that centre.
+	var lake: Dictionary = cfg["lake"]
+	var lc := Vector2(float(lake["center"][0]), float(lake["center"][1]))
+	var water: MeshInstance3D = map.get_node("Water")
+	var wall: CollisionShape3D = map.get_node("Pond").get_child(0).get_child(0)
+	var field = GroundScript._field(cfg, 5)
+	check(is_equal_approx(lc.y, depth / 2.0) and is_equal_approx(lc.x, width / 2.0), "the lake centre is on the near edge, horizontally centred (%s)" % str(lc))
+	check(map.lake_center == lc and map.crossing.lake_center == lc and field.lake_center == lc and is_equal_approx(map.lake_radius, float(lake["radius"])), "the scene, the crossing and the ground use that centre and radius")
+	check(water.position.is_equal_approx(Vector3(lc.x, 0.0, lc.y)) and absf(wall.position.x - lc.x) < 0.0001 and absf(wall.position.z - lc.y) < 0.0001 and is_equal_approx((wall.shape as CylinderShape3D).radius, map.lake_radius), "...so do the water mesh and the wall")
+	var arrays: Array = water.mesh.surface_get_arrays(0)
+	var flat_edge := true
+	for v in arrays[Mesh.ARRAY_VERTEX]:
+		flat_edge = flat_edge and v.z <= 0.0001
+	check(flat_edge and is_equal_approx(water.position.z, depth / 2.0), "the water is the half disc on the map's side of the near edge")
+	var under := Color.html(String(lake["under"]))
+	var pixel_at := func(point: Vector2) -> Color:
+		var rect: Rect2 = map.ground_rect
+		return map.ground_image.get_pixel(int((point.x - rect.position.x) * 4.0), int((point.y - rect.position.y) * 4.0))
+	var in_water: Color = pixel_at.call(lc + Vector2(0.0, -4.0))
+	var on_bank: Color = pixel_at.call(lc + Vector2(0.0, -(map.lake_radius + 0.4)))
+	check(absf(in_water.r - under.r) < 0.01 and absf(in_water.g - under.g) < 0.01 and absf(in_water.b - under.b) < 0.01 and (absf(on_bank.r - under.r) + absf(on_bank.g - under.g) + absf(on_bank.b - under.b)) > 0.005, "the ground texture's under-water colour and its bank are on the same circle")
+	# With the camera at the bottom, the lake's flat edge is the bottom of the screen.
+	await _place_pair(map, Vector2(lc.x - 16.0, depth / 2.0 - radius), Vector2(lc.x - 18.0, depth / 2.0 - radius))
+	map.update_camera(0.0, true)
+	var flat_left: Vector2 = map.camera.unproject_position(Vector3(lc.x - map.lake_radius, map.terrain.height_at(lc.x - map.lake_radius), depth / 2.0))
+	var flat_right: Vector2 = map.camera.unproject_position(Vector3(lc.x + map.lake_radius, map.terrain.height_at(lc.x + map.lake_radius), depth / 2.0))
+	check(absf(flat_left.y - view.y) < 20.0 and absf(flat_right.y - view.y) < 20.0, "the lake's flat edge is on the bottom of the screen (rows %.1f and %.1f of %.0f)" % [flat_left.y, flat_right.y, view.y])
+	map.free()
+	GameState.new_hike()
+	get_window().size = window_before
+	_section_done("test_animals_edges")
+
+
+## Where animals enter and leave: outside the map by offscreen_m at least, and never in view.
+func test_animals_offscreen() -> void:
+	var cfg := _animals_config()
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var offscreen := float(cfg["offscreen_m"])
+	var overshoot := float(cfg["camera"]["far_overshoot_m"])
+	var tan_pitch := tan(deg_to_rad(float(cfg["camera"]["pitch_deg"])))
+	var label_top := float(cfg["label"]["lift"]) + float(cfg["label"]["font_size"]) * float(cfg["label"]["pixel_size"])
+	var lake_c := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	var lake_r := float(cfg["lake"]["radius"])
+	var far_enough := true
+	var hidden := true
+	var near_flyers := 0
+	var count := 0
+	var ground_dry := true
+	var ducks := 0
+	var duck_edges := {}
+	var flyer_edges := {}
+	for seed_value in range(1, 31):
+		var crossing = CrossingScript.new(cfg, seed_value)
+		for n in 200:
+			var w = crossing.spawn()
+			crossing.alive.clear()
+			count += 1
+			for point in [w.from, w.to]:
+				var out := maxf(maxf(-point.x, point.x - width), maxf(-point.y - depth / 2.0, point.y - depth / 2.0))
+				far_enough = far_enough and out >= offscreen - 0.0001
+				# the worst the camera can show: the whole map plus the far overshoot; height moves things up the screen
+				var top: float = w.fly_height + float(w.kind["size"][1]) + label_top
+				var seen_x: bool = point.x + 1.2 >= 0.0 and point.x - 1.2 <= width
+				var seen_z: bool = point.y + 1.2 >= -depth / 2.0 - overshoot and point.y - 1.2 - top / tan_pitch <= depth / 2.0
+				hidden = hidden and not (seen_x and seen_z)
+			if w.kind["flies"]:
+				flyer_edges[w.entry["edge"]] = true
+				if w.entry["edge"] == "near" or w.exit["edge"] == "near":
+					near_flyers += 1
+			if w.habitat == "lake":
+				ducks += 1
+				duck_edges[w.entry["edge"]] = true
+			elif not w.kind["flies"]:
+				var t := 0.0
+				while t <= w.length:
+					w.travelled = t
+					ground_dry = ground_dry and not (w.position().distance_to(lake_c) < lake_r and w.position().y <= lake_c.y)
+					t += 1.0
+	check(far_enough, "%d spawns (seeds 1-30): every spawn and despawn point is at least offscreen_m (%.0f m) outside the map" % [count, offscreen])
+	check(hidden, "...and, with height shifting things up the screen, every one is out of the camera's reach (the near edge adds the animal's height over tan(pitch))")
+	check(ground_dry, "...and no ground animal ever enters the lake")
+	check(near_flyers > 20 and flyer_edges.size() == 4 and ducks > 100 and not duck_edges.has("near") and duck_edges.size() == 3, "flyers use all four edges (%d on the near edge), ducks fly in by the west, east and far (%d ducks)" % [near_flyers, ducks])
+	_section_done("test_animals_offscreen")
+
+
+## The ground texture covers everything the camera can show, with no empty pixel.
+func test_animals_cover() -> void:
+	var cfg := _animals_config()
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var far_limit := -depth / 2.0 - float(cfg["camera"]["far_overshoot_m"])
+	var rect := GroundScript.texture_rect(cfg)
+	var reach := Rect2(Vector2(0.0, far_limit), Vector2(width, depth / 2.0 - far_limit))
+	check(rect.encloses(reach.grow(0.5)), "the ground covers the map and everything the camera may show past its far edge")
+	var image := GroundScript.image(cfg, 3)
+	var ppm := float(cfg["ground"]["px_per_m"])
+	var bytes := image.get_data()
+	var empty := 0
+	var checked := 0
+	var x0 := floori((reach.position.x - rect.position.x) * ppm)
+	var x1 := ceili((reach.end.x - rect.position.x) * ppm)
+	var y0 := floori((reach.position.y - rect.position.y) * ppm)
+	var y1 := ceili((reach.end.y - rect.position.y) * ppm)
+	for y in range(y0, y1):
+		for x in range(x0, x1):
+			var at := (y * image.get_width() + x) * 3
+			checked += 1
+			if bytes[at] == 0 and bytes[at + 1] == 0 and bytes[at + 2] == 0:
+				empty += 1
+	check(empty == 0 and checked > 100000, "no ground pixel over the area the camera can show is empty (%d pixels, %d empty)" % [checked, empty])
+	var margin_ok := true
+	for corner in [rect.position, Vector2(rect.end.x, rect.position.y), rect.end, Vector2(rect.position.x, rect.end.y)]:
+		var c := GroundScript.color_at(corner.x - signf(corner.x - rect.get_center().x) * 0.01, corner.y - signf(corner.y - rect.get_center().y) * 0.01, cfg, 3)
+		margin_ok = margin_ok and c.get_luminance() > 0.01
+	check(margin_ok, "the corners of the drawn ground are coloured too")
+	_section_done("test_animals_cover")

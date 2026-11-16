@@ -3,9 +3,11 @@ extends RefCounted
 ## which kind (by weight), which habitat of that kind it uses, where it enters and leaves,
 ## and walks it along its route at its own speed. Ground animals walk entry -> a target
 ## inside their habitat -> linger -> a different edge, steering round the lake (they never
-## enter it). Ducks start at the lake rim, swim to a few waypoints inside it, linger and
-## swim back to the rim. Flyers cross a straight line over everything. It knows nothing of
-## travelers or props. The scene owns the nodes and asks this where each animal is.
+## enter it). Ducks fly in from off screen, land on the lake, swim to a few waypoints
+## inside it, linger, take off and fly out. Flyers cross a straight line over everything.
+## Everybody spawns and despawns `offscreen_m` (or more, see outside_m) outside the map
+## rectangle, where the camera never looks. It knows nothing of travelers or props. The
+## scene owns the nodes and asks this where each animal is.
 ##
 ## Every random draw comes from one seeded RandomNumberGenerator, in a fixed order per
 ## spawn, so one seed gives one sequence. `seed_from_args` reads the --seed=N argument.
@@ -43,6 +45,14 @@ class Walker extends RefCounted:
 	var wavelength := 1.0
 	var lake_center := Vector2.ZERO
 	var keep_out_radius := 0.0  ## > 0: never closer than this to lake_center
+	## Ducks only (land_at >= 0): they fly in, touch down `land_at` metres along the route
+	## (coming down over `descent_len`), swim, and take off at `takeoff_at` (climbing over
+	## `climb_len`). Everyone else keeps `altitude` for the whole route.
+	var fly_height := 0.0
+	var land_at := -1.0
+	var descent_len := 1.0
+	var takeoff_at := -1.0
+	var climb_len := 1.0
 
 	## Call once `route` is filled in.
 	func finalize() -> void:
@@ -52,6 +62,15 @@ class Walker extends RefCounted:
 		length = cumulative[cumulative.size() - 1]
 		from = route[0]
 		to = route[route.size() - 1]
+		altitude = altitude_at(travelled)
+
+	## The height above the floor after `distance` metres along the route.
+	func altitude_at(distance: float) -> float:
+		if land_at < 0.0:
+			return altitude
+		if distance >= takeoff_at:
+			return fly_height * clampf((distance - takeoff_at) / climb_len, 0.0, 1.0)
+		return fly_height * clampf((land_at - distance) / descent_len, 0.0, 1.0)
 
 	## Moves it for `delta` seconds: lingers first if it stands at its stop.
 	func advance(delta: float) -> void:
@@ -64,6 +83,7 @@ class Walker extends RefCounted:
 		if left > 0.0:
 			var limit := stop_dist if (stop_dist >= 0.0 and lingered < linger) else length
 			travelled = minf(travelled + float(kind["speed"]) * left, limit)
+		altitude = altitude_at(travelled)
 
 	func _segment() -> int:
 		var last := route.size() - 2
@@ -105,6 +125,10 @@ var depth := 0.0
 var lake_center := Vector2.ZERO
 var lake_radius := 0.0
 var lake_clearance := 0.3
+var offscreen := 3.0  ## metres outside the map rectangle where animals spawn and despawn
+var pitch_tan := 0.5  ## tan of the camera's pitch: a point `h` up looks like ground h / pitch_tan farther
+var label_top := 1.0  ## the name label's height over the animal's box
+var duck_glide := 8.0
 var shore_band := 0.0
 var shore_inset := 0.5
 var forest_end := 0.0  ## z where the forest (the top of the map) ends
@@ -138,6 +162,11 @@ func _init(animals_config: Dictionary, seed_value: int) -> void:
 	lake_center = Vector2(float(lake["center"][0]), float(lake["center"][1]))
 	lake_radius = float(lake["radius"])
 	lake_clearance = float(lake["clearance_m"])
+	duck_glide = float(lake["duck_glide_m"])
+	offscreen = float(config.get("offscreen_m", 3.0))
+	pitch_tan = tan(deg_to_rad(float(config["camera"]["pitch_deg"])))
+	var label: Dictionary = config["label"]
+	label_top = float(label["lift"]) + float(label["font_size"]) * float(label["pixel_size"])
 	var habitats: Dictionary = config["habitats"]
 	shore_band = float(habitats["shore"]["band_frac"]) * depth
 	shore_inset = float(habitats["shore"]["inset_m"])
@@ -221,17 +250,29 @@ func _side_range(habitat: String) -> Vector2:
 	return Vector2(-depth / 2.0, depth / 2.0)
 
 
-func _edge_point(habitat: String, edge: String) -> Vector2:
+## How far outside the stage edge `edge` an animal of `walker` enters and leaves: offscreen_m,
+## plus on the near edge the height of its top (flyer height, box, label) over tan(pitch),
+## because the camera sees something that high as if it stood that much farther up the map.
+func outside_m(walker: Walker, edge: String) -> float:
+	if edge != "near":
+		return offscreen
+	var top := walker.fly_height + float(walker.kind["size"][1]) + label_top
+	return offscreen + top / pitch_tan
+
+
+## A random point on the stage edge, then moved out of the map by outside_m().
+func _edge_point(habitat: String, edge: String, walker: Walker) -> Vector2:
+	var out := outside_m(walker, edge)
 	match edge:
 		"west":
 			var r := _side_range(habitat)
-			return Vector2(0.0, rng.randf_range(r.x, r.y))
+			return Vector2(-out, rng.randf_range(r.x, r.y))
 		"east":
 			var r2 := _side_range(habitat)
-			return Vector2(width, rng.randf_range(r2.x, r2.y))
+			return Vector2(width + out, rng.randf_range(r2.x, r2.y))
 		"far":
-			return Vector2(rng.randf_range(0.0, width), -depth / 2.0)
-	return Vector2(rng.randf_range(0.0, width), depth / 2.0)  # near
+			return Vector2(rng.randf_range(0.0, width), -depth / 2.0 - out)
+	return Vector2(rng.randf_range(0.0, width), depth / 2.0 + out)  # near
 
 
 ## A random place inside the habitat's zone, away from its edges (ground animals only).
@@ -258,11 +299,6 @@ func _lake_point(inset: float) -> Vector2:
 	var r := sqrt(rng.randf()) * (lake_radius - inset)
 	var a := rng.randf_range(0.0, PI)
 	return lake_center + Vector2(cos(a), -sin(a)) * r
-
-
-func _rim_point(inset: float) -> Vector2:
-	var a := rng.randf_range(0.0, PI)
-	return lake_center + Vector2(cos(a), -sin(a)) * (lake_radius - inset)
 
 
 # ---- Steering ----
@@ -322,6 +358,7 @@ func spawn() -> Walker:
 	walker.kind = kinds[rng.rand_weighted(_weights)]
 	var habitats: Array = walker.kind["habitat"]
 	walker.habitat = String(habitats[rng.randi_range(0, habitats.size() - 1)])
+	walker.fly_height = fly_height if (bool(walker.kind["flies"]) or walker.habitat == "lake") else 0.0
 	walker.altitude = fly_height if bool(walker.kind["flies"]) else 0.0
 	walker.amplitude = wobble_amplitude
 	walker.wavelength = wobble_wavelength
@@ -343,10 +380,10 @@ func spawn() -> Walker:
 func _plan_walk(walker: Walker) -> void:
 	var edges: Array = config["habitats"][walker.habitat]["edges"]
 	var entry_edge := String(edges[rng.randi_range(0, edges.size() - 1)])
-	var entry_point := _edge_point(walker.habitat, entry_edge)
+	var entry_point := _edge_point(walker.habitat, entry_edge, walker)
 	var others: Array = edges.filter(func(e): return e != entry_edge)
 	var exit_edge := String(others[rng.randi_range(0, others.size() - 1)])
-	var exit_point := _edge_point(walker.habitat, exit_edge)
+	var exit_point := _edge_point(walker.habitat, exit_edge, walker)
 	walker.entry = {"id": entry_edge, "edge": entry_edge, "x": entry_point.x, "z": entry_point.y}
 	walker.exit = {"id": exit_edge, "edge": exit_edge, "x": exit_point.x, "z": exit_point.y}
 	walker.route.append(entry_point)
@@ -367,27 +404,38 @@ func _plan_walk(walker: Walker) -> void:
 	walker.stop_dist = travelled
 
 
-## A duck: rim -> 2-3 waypoints in the water -> linger at the last -> back to the rim.
+## A duck: flies in at fly_height from outside the map, comes down onto the lake at its
+## first waypoint, swims to 1-2 more, lingers at the last, takes off and flies out.
 func _plan_duck(walker: Walker) -> void:
 	var lake: Dictionary = config["lake"]
-	var rim_inset := float(lake["duck_rim_inset_m"])
 	var wp_inset := float(lake["duck_waypoint_inset_m"])
-	var start := _rim_point(rim_inset)
-	walker.route.append(start)
+	var edges: Array = config["habitats"]["lake"]["edges"]
+	var entry_edge := String(edges[rng.randi_range(0, edges.size() - 1)])
+	var entry_point := _edge_point("air", entry_edge, walker)
+	var others: Array = edges.filter(func(e): return e != entry_edge)
+	var exit_edge := String(others[rng.randi_range(0, others.size() - 1)])
+	var exit_point := _edge_point("air", exit_edge, walker)
+	walker.route.append(entry_point)
 	var count := rng.randi_range(int(config["linger"]["duck_waypoints_min"]), int(config["linger"]["duck_waypoints_max"]))
-	var last := start
+	var last := entry_point
 	for i in count:
 		last = _lake_point(wp_inset)
 		walker.route.append(last)
 	var stop_index := walker.route.size() - 1
-	var leave := _rim_point(rim_inset)
-	walker.route.append(leave)
+	walker.route.append(exit_point)
 	walker.target = last
 	walker.amplitude = 0.0  # a straight swim stays inside the (convex) half disc
-	walker.entry = {"id": "lake", "edge": "lake", "x": start.x, "z": start.y}
-	walker.exit = {"id": "lake", "edge": "lake", "x": leave.x, "z": leave.y}
+	walker.entry = {"id": entry_edge, "edge": entry_edge, "x": entry_point.x, "z": entry_point.y}
+	walker.exit = {"id": exit_edge, "edge": exit_edge, "x": exit_point.x, "z": exit_point.y}
 	walker.linger = rng.randf_range(linger_min, linger_max)
+	var legs: Array[float] = []  # route length up to each point
 	var travelled := 0.0
-	for i in range(1, stop_index + 1):
+	legs.append(0.0)
+	for i in range(1, walker.route.size()):
 		travelled += walker.route[i - 1].distance_to(walker.route[i])
-	walker.stop_dist = travelled
+		legs.append(travelled)
+	walker.stop_dist = legs[stop_index]
+	walker.land_at = legs[1]
+	walker.descent_len = maxf(minf(duck_glide, legs[1]), 0.001)
+	walker.takeoff_at = legs[stop_index]
+	walker.climb_len = maxf(minf(duck_glide, legs[legs.size() - 1] - legs[stop_index]), 0.001)
