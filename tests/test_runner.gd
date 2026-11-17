@@ -153,11 +153,13 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_animals9b_grab_logic",
 	"test_animals9b_scene",
 	"test_animals9b_needs_scene",
+	"test_animals9bii_logic",
+	"test_animals9bii_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3661
+const MIN_CHECKS := 3718
 
 
 func check(condition: bool, label: String) -> void:
@@ -354,6 +356,9 @@ func _ready() -> void:
 	test_animals9b_grab_logic()
 	await test_animals9b_scene()
 	await test_animals9b_needs_scene()
+	print("== Animal playtest fixes and healing sources ==")
+	test_animals9bii_logic()
+	await test_animals9bii_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -9841,9 +9846,9 @@ func test_animals_data() -> void:
 	check(edges_ok and habitats["air"]["edges"].size() == 4 and habitats["forest"]["edges"].has("far"), "habitat edges are map edges; air uses all four, forest includes the top")
 	# Spawn.
 	var spawn: Dictionary = cfg["spawn"]
-	check(is_equal_approx(float(spawn["interval_min_s"]), OLD_SPAWN_GAPS.x * 0.6) and is_equal_approx(float(spawn["interval_max_s"]), OLD_SPAWN_GAPS.y * 0.6) and int(spawn["max_alive"]) == 5, "spawn: gaps 40%% shorter than the old 4-9 s, at most 5 alive")
+	check(is_equal_approx(float(spawn["interval_min_s"]), OLD_SPAWN_GAPS.x * 0.6) and is_equal_approx(float(spawn["interval_max_s"]), OLD_SPAWN_GAPS.y * 0.6) and int(spawn["start_cap"]) == 4 and int(spawn["peak_cap"]) == 10 and is_equal_approx(float(spawn["ramp_seconds"]), 240.0) and int(spawn["min_cap"]) == 3, "spawn: gaps 40%% shorter than the old 4-9 s, a cap rising from 4 to 10 over 240 s, never below 3")
 	check(float(cfg["linger"]["min_s"]) == 4.0 and float(cfg["linger"]["max_s"]) == 8.0 and int(cfg["linger"]["duck_waypoints_min"]) == 2 and int(cfg["linger"]["duck_waypoints_max"]) == 3, "linger 4-8 s; ducks swim to 2-3 waypoints")
-	check(float(spawn["interval_min_s"]) > 0.0 and float(spawn["interval_max_s"]) >= float(spawn["interval_min_s"]) and int(spawn["max_alive"]) >= 1 and float(spawn["first_spawn_s"]) >= 0.0, "spawn numbers are valid")
+	check(float(spawn["interval_min_s"]) > 0.0 and float(spawn["interval_max_s"]) >= float(spawn["interval_min_s"]) and int(spawn["min_cap"]) >= 1 and int(spawn["peak_cap"]) >= int(spawn["start_cap"]) and int(spawn["start_cap"]) >= int(spawn["min_cap"]) and float(spawn["ramp_seconds"]) > 0.0 and float(spawn["first_spawn_s"]) >= 0.0, "spawn numbers are valid")
 	var path: Dictionary = cfg["path"]
 	check(is_equal_approx(float(path["fly_height"]), 4.0) and float(path["wobble_amplitude_m"]) > 0.0 and float(path["wobble_amplitude_m"]) < 2.0 and float(path["wobble_wavelength_m"]) > 0.0, "flyers cross 4 m up; the wobble is gentle")
 	# Kinds.
@@ -9973,8 +9978,8 @@ func test_animals_crossing() -> void:
 				exits += 1
 				exits_ok = exits_ok and walker.is_done() and not crossing.alive.has(walker) and walker.position().distance_to(walker.to) < 0.001
 		peak = maxi(peak, crossing.alive.size())
-		over_cap = over_cap or crossing.alive.size() > 5
-	check(not over_cap and peak == 5, "never more than 5 alive, and the busy map reaches 5 (peak %d)" % peak)
+		over_cap = over_cap or crossing.alive.size() > crossing.cap()
+	check(not over_cap and peak > 4 and peak <= 10, "never more than the cap alive, and the busy map passes the opening cap of 4 (peak %d)" % peak)
 	check(spawn_count > 10 and exits > 5 and crossing.spawned == spawn_count and crossing.exited == exits and crossing.spawned - crossing.exited == crossing.alive.size(), "animals are spawned and leave (%d spawned, %d left, %d alive)" % [spawn_count, exits, crossing.alive.size()])
 	check(exits_ok, "every animal that leaves has reached its exit and is no longer alive")
 	check(entries_ok, "every animal starts exactly at its entry")
@@ -10006,9 +10011,9 @@ func test_animals_crossing() -> void:
 	check(is_equal_approx(lone.travelled, float(lone.kind["speed"]) * 0.5), "an animal moves at its kind's speed (%s: %.1f m/s)" % [lone.kind["name_ko"], float(lone.kind["speed"])])
 	check(c.spawn() != null and c.alive.size() == 2, "(setup) a second animal")
 	var full = CrossingScript.new(cfg, 3)
-	for i in 5:
+	for i in full.cap():
 		full.spawn()
-	check(full.spawn() == null and full.alive.size() == 5, "spawn() on a full map adds nothing")
+	check(full.spawn() == null and full.alive.size() == 4, "spawn() on a full map (the opening cap, 4) adds nothing")
 	# Habitats: 30 seeds x 200 visits, walked in 1 s steps.
 	var lake_c := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
 	var lake_r := float(cfg["lake"]["radius"])
@@ -10258,7 +10263,7 @@ func test_animals_scene() -> void:
 			heights_ok = heights_ok and is_equal_approx(node.global_position.y, ground_y + walker.altitude + (float(cfg["lake"]["water_y"]) if walker.habitat == "lake" else 0.0))
 			labels_ok = labels_ok and node.label.text == walker.kind["name_ko"] and node.label.position.y > node.box.mesh.size.y and node.box.mesh.size == Vector3(float(walker.kind["size"][0]), float(walker.kind["size"][1]), float(walker.kind["size"][2]))
 	check(map.crossing.spawned >= 10 and map.crossing.exited >= 5, "over two minutes animals come and go (%d spawned, %d left)" % [map.crossing.spawned, map.crossing.exited])
-	check(peak <= 5 and peak >= 2 and consistent, "never more than 5 on the map (peak %d), and every live animal has exactly one node; the left ones are gone" % peak)
+	check(peak <= 7 and peak >= 2 and consistent, "never more than the cap on the map (7 after two minutes; peak %d), and every live animal has exactly one node; the left ones are gone" % peak)
 	check(heights_ok and labels_ok, "animals stand on the ground (flyers 4 m up, ducks on the water), each box has its kind's size and a name_ko label above it")
 	check(entry_ids.size() >= 3, "animals entered from several different entries (%d)" % entry_ids.size())
 	check(unseen and changes >= 20, "no animal appeared or vanished inside the camera's view, boxes and labels included (%d appearances and exits)" % changes)
@@ -10799,57 +10804,122 @@ func test_animals_edges() -> void:
 	_section_done("test_animals_edges")
 
 
-## Where animals enter and leave: outside the map by offscreen_m at least, and never in view.
+## Where animals enter and leave: outside the camera's footprint by offscreen_m at least
+## (the whole map until the scene sets a footprint), and never in view.
 func test_animals_offscreen() -> void:
 	var cfg := _animals_config()
 	var width := float(cfg["stage"]["width"])
 	var depth := float(cfg["stage"]["depth"])
 	var offscreen := float(cfg["offscreen_m"])
-	var overshoot := float(cfg["camera"]["far_overshoot_m"])
-	var tan_pitch := tan(deg_to_rad(float(cfg["camera"]["pitch_deg"])))
-	var label_top := float(cfg["label"]["lift"]) + float(cfg["label"]["font_size"]) * float(cfg["label"]["pixel_size"])
 	var lake_c := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
 	var lake_r := float(cfg["lake"]["radius"])
+	var overshoot := float(cfg["camera"]["far_overshoot_m"])
+	var view_size := Vector2(32.0, 19.0)
+	var views: Array[Rect2] = [Rect2(0.0, -depth / 2.0, width, depth)]  # (no footprint yet: the whole map)
+	for centre in [Vector2(16.0, 26.0), Vector2(72.0, 22.0), Vector2(128.0, 26.0), Vector2(16.0, -10.0), Vector2(72.0, -10.0), Vector2(128.0, -30.0), Vector2(72.0, 0.0), Vector2(40.0, 10.0)]:
+		var low := Vector2(clampf(centre.x - view_size.x / 2.0, 0.0, width - view_size.x), clampf(centre.y - view_size.y / 2.0, -depth / 2.0 - overshoot, depth / 2.0 - view_size.y))
+		views.append(Rect2(low, view_size))
 	var far_enough := true
-	var hidden := true
-	var near_flyers := 0
-	var count := 0
 	var ground_dry := true
+	var in_habitat := true
+	var inside_map := true
+	var count := 0
 	var ducks := 0
-	var duck_edges := {}
-	var flyer_edges := {}
-	for seed_value in range(1, 31):
-		var crossing = CrossingScript.new(cfg, seed_value)
-		for n in 200:
-			var w = crossing.spawn()
-			crossing.alive.clear()
-			count += 1
-			for point in [w.from, w.to]:
-				var out := maxf(maxf(-point.x, point.x - width), maxf(-point.y - depth / 2.0, point.y - depth / 2.0))
-				far_enough = far_enough and out >= offscreen - 0.0001
-				# the worst the camera can show: the whole map plus the far overshoot; height moves things up the screen
-				var top: float = w.fly_height + float(w.kind["size"][1]) + label_top
-				var seen_x: bool = point.x + 1.2 >= 0.0 and point.x - 1.2 <= width
-				var seen_z: bool = point.y + 1.2 >= -depth / 2.0 - overshoot and point.y - 1.2 - top / tan_pitch <= depth / 2.0
-				hidden = hidden and not (seen_x and seen_z)
-			if w.kind["flies"]:
-				flyer_edges[w.entry["edge"]] = true
-				if w.entry["edge"] == "near" or w.exit["edge"] == "near":
-					near_flyers += 1
-			if w.habitat == "lake":
-				ducks += 1
-				duck_edges[w.entry["edge"]] = true
-			elif not w.kind["flies"]:
-				var t := 0.0
-				while t <= w.length:
-					w.travelled = t
-					ground_dry = ground_dry and not (w.position().distance_to(lake_c) < lake_r and w.position().y <= lake_c.y)
-					t += 1.0
-	check(far_enough, "%d spawns (seeds 1-30): every spawn and despawn point is at least offscreen_m (%.0f m) outside the map" % [count, offscreen])
-	check(hidden, "...and, with height shifting things up the screen, every one is out of the camera's reach (the near edge adds the animal's height over tan(pitch))")
+	var duck_sides := {}
+	var flyer_sides := {}
+	var ground_by_side := {}
+	for view in views:
+		var mid_map: bool = view.position.x > offscreen and view.end.x < width - offscreen and view.position.y > -depth / 2.0 + offscreen and view.end.y < depth / 2.0 - 8.0
+		for seed_value in range(1, 31):
+			var crossing = CrossingScript.new(cfg, seed_value)
+			crossing.view = view
+			for n in 40:
+				var w = crossing.spawn()
+				crossing.alive.clear()
+				count += 1
+				for point in [w.from, w.to]:
+					far_enough = far_enough and _outside_footprint(cfg, view, point, w)
+					inside_map = inside_map and (not mid_map or (point.x >= 0.0 and point.x <= width and point.y >= -depth / 2.0 and point.y <= depth / 2.0))
+				if w.kind["flies"]:
+					flyer_sides[w.entry["edge"]] = true
+				elif w.habitat == "lake":
+					ducks += 1
+					duck_sides[w.entry["edge"]] = true
+				else:
+					ground_by_side[w.entry["edge"]] = true
+					var entry: Vector2 = w.from
+					if view != views[0]:  # (the whole map has no outside to come in from but the map's own edges)
+						in_habitat = in_habitat and crossing.zone_contains(w.habitat, Vector2(clampf(entry.x, 0.0, width), clampf(entry.y, -depth / 2.0, depth / 2.0)))
+					var t := 0.0
+					while t <= w.length:
+						w.travelled = t
+						ground_dry = ground_dry and not (w.position().distance_to(lake_c) < lake_r and w.position().y <= lake_c.y)
+						t += 1.0
+	check(far_enough, "%d spawns (%d footprints x seeds 1-30): every spawn and despawn point is at least offscreen_m (%.0f m) outside the footprint (the near side adds the animal's height over tan(pitch))" % [count, views.size(), offscreen])
+	check(inside_map, "...and with the footprint well inside the map, every spawn and despawn point is inside the map too")
+	check(in_habitat, "...a ground animal enters on ground of its own habitat")
 	check(ground_dry, "...and no ground animal ever enters the lake")
-	check(near_flyers > 20 and flyer_edges.size() == 4 and ducks > 100 and not duck_edges.has("near") and duck_edges.size() == 3, "flyers use all four edges (%d on the near edge), ducks fly in by the west, east and far (%d ducks)" % [near_flyers, ducks])
+	check(flyer_sides.size() == 4 and ducks > 100 and not duck_sides.has("near") and duck_sides.size() == 3 and ground_by_side.size() >= 3, "flyers come in by all four sides of the footprint, ducks by its west, east and far sides (%d ducks), ground animals by several" % ducks)
+	# Moving camera: nothing appears or vanishes inside the footprint, even when it sweeps over an exit.
+	var sweep_ok := true
+	var spawns_seen := 0
+	var exits_seen := 0
+	var rerouted := 0
+	for seed_value in [3, 4]:
+		var crossing = CrossingScript.new(cfg, seed_value)
+		for i in 5000:  # 250 s
+			var phase := float(i) / 5000.0
+			var centre_x := 24.0 + (width - 48.0) * (0.5 - 0.5 * cos(TAU * 2.0 * phase))
+			var centre_z := lerpf(-20.0, 20.0, 0.5 - 0.5 * cos(TAU * 3.0 * phase))
+			crossing.view = Rect2(centre_x - view_size.x / 2.0, centre_z - view_size.y / 2.0, view_size.x, view_size.y)
+			var done_before := 0
+			for walker in crossing.alive:
+				if walker.is_done():
+					done_before += 1
+			for event in crossing.tick(0.05):
+				var w = event["walker"]
+				if event["event"] == CrossingScript.SPAWN:
+					spawns_seen += 1
+					sweep_ok = sweep_ok and _outside_footprint(cfg, crossing.view, w.position(), w)
+				else:
+					exits_seen += 1
+					sweep_ok = sweep_ok and _outside_footprint(cfg, crossing.view, w.position(), w)
+			for walker in crossing.alive:
+				if walker.route.size() >= 2 and walker.stop_dist < 0.0 and walker.linger == 0.0 and not walker.fled and walker.amplitude == 0.0 and not walker.habitat == "lake" and not walker.kind["flies"]:
+					rerouted += 1
+	check(sweep_ok and spawns_seen > 40 and exits_seen > 30, "a camera sweeping the map for 250 s (seeds 3 and 4): all %d spawns and %d despawns happen outside the footprint plus offscreen_m" % [spawns_seen, exits_seen])
+	# An animal at its exit with the camera over it walks on instead of vanishing.
+	var lone_crossing = CrossingScript.new(cfg, 8)
+	lone_crossing.view = Rect2(0.0, -depth / 2.0, width, depth)
+	var visitor = lone_crossing.spawn()
+	var exit_point: Vector2 = visitor.to
+	lone_crossing.view = Rect2(exit_point - view_size / 2.0, view_size)  # the camera comes over its exit
+	visitor.travelled = visitor.length
+	var events := lone_crossing.tick(0.05)
+	var vanished := false
+	for event in events:
+		vanished = vanished or (event["event"] == CrossingScript.EXIT and event["walker"] == visitor)
+	check(not vanished and lone_crossing.alive.has(visitor) and not visitor.is_done() and visitor.route.size() >= 2, "an animal that reaches its exit while the camera shows it does not vanish: it heads on for the nearest way out")
+	var left := false
+	for i in 4000:
+		for event in lone_crossing.tick(0.05):
+			left = left or (event["event"] == CrossingScript.EXIT and event["walker"] == visitor and _outside_footprint(cfg, lone_crossing.view, visitor.position(), visitor))
+		if left:
+			break
+	check(left, "...and it is gone only once it is outside the footprint plus offscreen_m")
 	_section_done("test_animals_offscreen")
+
+
+## Whether `point` is outside the rectangle `view` by the data's offscreen_m on every
+## side where an animal could be seen (more on the near side: the top of the animal over
+## tan(pitch)). Independent of the Crossing's own outside_view().
+func _outside_footprint(cfg: Dictionary, view: Rect2, point: Vector2, w) -> bool:
+	var offscreen := float(cfg["offscreen_m"])
+	var tan_pitch := tan(deg_to_rad(float(cfg["camera"]["pitch_deg"])))
+	var label_top := float(cfg["label"]["lift"]) + float(cfg["label"]["font_size"]) * float(cfg["label"]["pixel_size"])
+	var top: float = w.fly_height + float(w.kind["size"][1]) + label_top
+	return point.x <= view.position.x - offscreen + 0.001 or point.x >= view.end.x + offscreen - 0.001 \
+			or point.y <= view.position.y - offscreen + 0.001 or point.y >= view.end.y + offscreen + top / tan_pitch - 0.001
 
 
 ## The ground texture covers everything the camera can show, with no empty pixel.
@@ -11205,14 +11275,14 @@ func test_animals9b_needs() -> void:
 	check(a == b and not a.has(""), "the same seed shows the same needs (%s)" % str(a))
 	# Entries: syllable blocks, hint, item entries.
 	var entry: Dictionary = _needs_for_test(2, true).discover("goraeni")
-	check(entry["id"] == "고구마" and entry["name_ko"] == "고구마" and entry["hover_name"] == "sweet potato" and entry["syllables"] == 3 and entry["kind"] == "word" and entry["age"] == 0.0, "a word entry: its word, its English hint, one block per syllable")
+	check(entry["id"] == "고구마" and entry["name_ko"] == "고구마" and entry["hint"] == "sweet potato" and entry["hover_name"] == "" and entry["from_kind"] == "goraeni" and entry["syllables"] == 3 and entry["kind"] == "word" and entry["age"] == 0.0, "a word entry: its word, its English hint (kept off the entry itself), the kind that showed it, one block per syllable")
 	var item_needs = _needs_for_test(2, true)
 	var item_entry := {}
 	for i in 3:
 		var drawn: Dictionary = item_needs.discover("osori")
 		if drawn.get("kind", "") == "item":
 			item_entry = drawn
-	check(item_entry.get("id", "") == "plant_meoru" and item_entry["hover_name"] == "Wild grape" and item_entry["syllables"] == 2 and item_entry["item"] == "plant_meoru" and item_needs.is_item("plant_meoru"), "an item entry: the item's English name as the hint, two blocks for 머루")
+	check(item_entry.get("id", "") == "plant_meoru" and item_entry["hint"] == "Wild grape" and item_entry["hover_name"] == "" and item_entry["syllables"] == 2 and item_entry["item"] == "plant_meoru" and item_needs.is_item("plant_meoru"), "an item entry: the item's English name as the hint, two blocks for 머루")
 	# The hint: solid, then flickering, then gone for good.
 	var probe := {"age": 0.0}
 	var shown := needs.hint_alpha(probe) == 1.0
@@ -11340,7 +11410,7 @@ func _letters_sim(seed_value: int, with_items: bool) -> Dictionary:
 	var spelling = SpellingScript.new(ui["spelling_view"], {"kinds": []}, picking.basket)
 	var needs = NeedsScript.new(cfg, DecoyPlacementScript.derive_seed(seed_value, 3), _all_true if with_items else _none_true)
 	var known := Content.known_letters(Content.game_index("hallasan"))
-	var supply = SupplyScript.new(cfg["letters"], DecoyPlacementScript.derive_seed(seed_value, 1), SupplyScript.review_weights(cfg["kinds"], known, cfg["letters"]["set"]))
+	var supply = SupplyScript.new(cfg["letters"], DecoyPlacementScript.derive_seed(seed_value, 1), SupplyScript.need_weights(cfg["kinds"], cfg["needs"]["table"], cfg["letters"]["set"]))
 	var bot := RandomNumberGenerator.new()
 	bot.seed = seed_value + 1000
 	var state := {"complete": 0}
@@ -11403,14 +11473,14 @@ func _bot_spells(needs, spelling, picking) -> void:
 func test_animals9b_supply() -> void:
 	var cfg := _animals_config()
 	var every := int(cfg["letters"]["guarantee_every"])
-	var review_letters := {}
+	var expected := {}
 	for kind in cfg["kinds"]:
-		if Hangul.is_readable(String(kind["name_ko"]), Content.known_letters(1)):
-			for tile in Hangul.tiles_for(String(kind["name_ko"])):
-				review_letters[tile] = true
-	check(review_letters.keys().size() == 8 and not review_letters.has("ㅓ") and not review_letters.has("ㅁ"), "the review words of the map (노루 고라니 오리) use eight of the ten letters")
-	var weights: Dictionary = SupplyScript.review_weights(cfg["kinds"], Content.known_letters(1), cfg["letters"]["set"])
-	check(weights.keys().size() == 8 and weights["ㄹ"] == 3.0 and weights["ㅗ"] == 3.0 and weights["ㄴ"] == 2.0, "review weights count the letters of those words (ㄹ x3, ㅗ x3, ㄴ x2)")
+		for row in cfg["needs"]["table"].get(kind["id"], []):
+			if row.has("word"):
+				for tile in Hangul.tiles_for(String(row["word"])):
+					expected[tile] = float(expected.get(tile, 0.0)) + 1.0
+	var weights: Dictionary = SupplyScript.need_weights(cfg["kinds"], cfg["needs"]["table"], cfg["letters"]["set"])
+	check(weights == expected and weights.has("ㅓ") and weights.has("ㅁ"), "before any discovery the weights are the jamo of every need word of the kinds on the map (거미's ㅓ counts)")
 	var all_done := true
 	var all_in_set := true
 	var guarantee_ok := true
@@ -11440,7 +11510,7 @@ func test_animals9b_supply() -> void:
 		for spawn in log:
 			all_in_set = all_in_set and NINE_B_LETTERS.has(spawn["letter"])
 			if spawn["needs"] == 0:
-				early_ok = early_ok and review_letters.has(spawn["letter"])
+				early_ok = early_ok and expected.has(spawn["letter"])
 			if spawn["ground"]:
 				if spawn["missing"] and not spawn["carried"]:
 					streak += 1
@@ -11469,7 +11539,10 @@ func test_animals9b_supply() -> void:
 	var first_letters := {}
 	for i in 400:
 		first_letters[s.draw(i % 2 == 0, {})] = true
-	check(not first_letters.has("ㅓ") and not first_letters.has("ㅁ") and first_letters.size() == 8, "with nothing missing only the review letters are drawn (400 draws)")
+	var only_need_letters := true
+	for letter in first_letters:
+		only_need_letters = only_need_letters and weights.has(letter)
+	check(only_need_letters and first_letters.size() == weights.keys().size(), "with nothing missing only the jamo of the need words are drawn, all of them come up (400 draws)")
 	s = SupplyScript.new(cfg["letters"], 6, weights)
 	var hits := 0
 	var forced_ok := true
@@ -11506,8 +11579,8 @@ func test_animals9b_grab_logic() -> void:
 	for kind in cfg["kinds"]:
 		if kind["grab"].has("units"):
 			var got: Dictionary = GrabScript.cost(kind, rng)
-			fixed_ok = fixed_ok and got["units"] == EXPECTED_GRAB[kind["id"]]["units"] and not got["death"]
-	check(fixed_ok and rng.state == before, "a fixed cost is the table's (1 half-heart; 사슴 and 큰부리까마귀 2) and draws no random number")
+			fixed_ok = fixed_ok and (got["units"] == EXPECTED_GRAB[kind["id"]]["units"] if got["bite"] else got["units"] == 0) and not got["death"]
+	check(fixed_ok and rng.state != before, "a fixed cost is the table's (1 half-heart; 사슴 and 큰부리까마귀 2) when it bites, 0 when it does not, and draws one number for the bite roll")
 	for kind_id in ["meotdwaeji", "deulgae", "geomdokseuri"]:
 		var kind := _kind_named({"meotdwaeji": "멧돼지", "deulgae": "들개", "geomdokseuri": "검독수리"}[kind_id])
 		var max_units: int = EXPECTED_GRAB[kind_id]["max_units"]
@@ -11551,7 +11624,8 @@ func test_animals9b_grab_logic() -> void:
 	var here: Vector2 = walker.position()
 	var exit_point := Vector2(float(walker.exit["x"]), float(walker.exit["z"]))
 	crossing.flee(walker, 2.5)
-	check(walker.fled and walker.position().distance_to(here) < 0.001 and walker.route[walker.route.size() - 1].is_equal_approx(exit_point), "fleeing starts where it stands and heads for its exit")
+	exit_point = Vector2(float(walker.exit["x"]), float(walker.exit["z"]))  # the nearest way out of the footprint
+	check(walker.fled and walker.position().distance_to(here) < 0.001 and walker.route[walker.route.size() - 1].is_equal_approx(exit_point) and crossing.outside_view(exit_point, walker), "fleeing starts where it stands and heads for the nearest way out of the footprint")
 	check(walker.stop_dist < 0.0 and walker.linger == 0.0 and walker.speed_scale == 2.5, "it no longer lingers and runs at 2.5x")
 	var probe: Vector2 = walker.position()
 	walker.advance(0.5)
@@ -11657,6 +11731,7 @@ func test_animals9b_scene() -> void:
 		check(map.picking.nearest_target(_xz(map.player))["type"] == "plant", "%s: it is in reach (the ring's target)" % kind_id)
 		map.step(Vector2.ZERO, 0.0)
 		check(map._ring.visible and map._ring.global_position.is_equal_approx(map.animal_nodes[walker].global_position), "%s: the reach ring is on it" % kind_id)
+		map.grab_rng.seed = _roll_seed(float(_kind_data(kind_id)["grab"]["bite_chance"]), true)
 		check(map.pick_nearest(), "%s: Space grabs it" % kind_id)
 		check(map.picking.basket.size() == basket_before + 1 and map.picking.basket[map.picking.basket.size() - 1] == letter and walker.letter == "" and not map.animal_nodes[walker].tile.visible, "%s: its letter %s is in the basket and off the animal" % [kind_id, letter])
 		check(GameState.heart_units["fernanda"] == int(before["fernanda"]) - costs[kind_id] and GameState.heart_units["nestor"] == before["nestor"], "%s: it bites Fernanda for %d half-heart(s) and nobody else" % [kind_id, costs[kind_id]])
@@ -11730,6 +11805,7 @@ func test_animals9b_scene() -> void:
 	check(map.animal_at(center) == slow, "the animal is found under the mouse")
 	check(map.animal_at(Vector2(2.0, 2.0)) != slow, "...and not far from it")
 	var basket_before: int = map.picking.basket.size()
+	map.grab_rng.seed = _roll_seed(0.3, true)
 	check(map.click(center) and map.picking.is_walking(), "a click on it starts a walk after it")
 	var grabbed := false
 	for i in 900:
@@ -11815,17 +11891,21 @@ func test_animals9b_needs_scene() -> void:
 	var row: PanelContainer = hud._rows[id]
 	var blocks: HBoxContainer = row.find_child("Blocks", true, false)
 	var name_label: Label = row.find_child("Name", true, false)
-	check(blocks.get_child_count() == Hangul.syllable_count(id) and name_label.text == entry["hover_name"] and name_label.modulate.a == 1.0, "...with empty syllable blocks and its English hint showing")
+	check(blocks.get_child_count() == Hangul.syllable_count(id) and name_label.text == "" and not name_label.visible, "...with empty syllable blocks and no English in the entry")
 	check(blocks.get_child(0).get_child_count() == 0, "...no Korean shown")
+	var hint_panel: PanelContainer = map.hint_panels[id]
+	check(hint_panel.visible and hint_panel.get_node("Text").text == entry["hint"] and entry["hint"] != "" and hint_panel.position.y < map.camera.unproject_position(node.global_position).y, "the English hint floats above the animal that showed it")
 	map.needs.update(0.3)
+	map._update_hints()
 	hud.refresh()
-	check(name_label.modulate.a == 1.0 and row.modulate.a == 1.0, "after 0.3 s the hint is still solid")
+	check(hint_panel.visible and row.modulate.a == 1.0, "after 0.3 s the hint is still solid")
 	map.needs.update(0.35)
-	hud.refresh()
-	check(name_label.modulate.a == 0.0, "at 0.65 s it is flickering (it starts hidden)")
+	map._update_hints()
+	check(not hint_panel.visible, "at 0.65 s it is flickering (it starts hidden)")
 	map.needs.update(0.6)
+	map._update_hints()
 	hud.refresh()
-	check(name_label.modulate.a == 0.0 and row.modulate.a == 1.0, "after 1.25 s the hint is gone for good and the row stays")
+	check(not map.hint_panels.has(id) and row.modulate.a == 1.0, "after 1.25 s the hint is gone for good and the row stays")
 	# E opens the selection; Enter on a word opens the spelling view and pauses.
 	_tap(viewport, KEY_E)
 	check(hud.word_select.is_open() and hud.word_select.highlighted() == id, "E opens word selection on the need")
@@ -11863,7 +11943,7 @@ func test_animals9b_needs_scene() -> void:
 			item_id = String(e["id"])
 	check(item_id == "plant_meoru" and map.spelling.has_word(item_id) and hud._rows.has(item_id), "with 머루 in the backpack, 오소리 can show it as an item need")
 	var item_row: PanelContainer = hud._rows[item_id]
-	check(item_row.find_child("Blocks", true, false).get_child_count() == 2 and item_row.find_child("Name", true, false).text == "Wild grape", "...two empty blocks and the item's English name as the hint")
+	check(item_row.find_child("Blocks", true, false).get_child_count() == 2 and not item_row.find_child("Name", true, false).visible and map.needs.entry_of(item_id)["hint"] == "Wild grape", "...two empty blocks and no English in the entry (the item's English name is the floating hint)")
 	GameState.inventory.remove("plant_meoru", 2)
 	check(not map.open_spelling(item_id) and not map.spelling.is_done(item_id) and not get_tree().paused and not map.spelling_hud.is_open(), "choosing the item without it in the backpack does nothing")
 	GameState.inventory.add("plant_meoru", 2)
@@ -11906,3 +11986,380 @@ func test_animals9b_needs_scene() -> void:
 	get_window().size = window_before
 	await get_tree().process_frame
 	_section_done("test_animals9b_needs_scene")
+
+
+# ---- Prompt 9b-ii: playtest fixes and healing sources ----
+
+const NeedRewardsScript := preload("res://scenes/animals/need_rewards.gd")
+const HealPickupsScript := preload("res://scenes/animals/heal_pickups.gd")
+const HealPickupScript := preload("res://scenes/animals/heal_pickup.gd")
+
+
+func _kind_data(kind_id: String) -> Dictionary:
+	for kind in _animals_config()["kinds"]:
+		if kind["id"] == kind_id:
+			return kind
+	return {}
+
+
+## A seed whose first randf() is below `chance` (bites true) or not (bites false).
+func _roll_seed(chance: float, bites: bool) -> int:
+	var finder := RandomNumberGenerator.new()
+	for s in range(1, 1000):
+		finder.seed = s
+		if (finder.randf() < chance) == bites:
+			return s
+	return 0
+
+
+func test_animals9bii_logic() -> void:
+	var cfg := _animals_config()
+	# 1. Bites: the data, then 1000 seeded grabs per class.
+	var chances_ok := true
+	for kind in cfg["kinds"]:
+		var grab: Dictionary = kind["grab"]
+		if kind["predator"]:
+			chances_ok = chances_ok and not grab.has("bite_chance") and grab.has("max_units") and is_equal_approx(float(grab["death_chance"]), 0.25)
+		elif int(grab["units"]) <= 1:
+			chances_ok = chances_ok and is_equal_approx(float(grab["bite_chance"]), 0.3)
+		else:
+			chances_ok = chances_ok and is_equal_approx(float(grab["bite_chance"]), 0.5)
+	check(chances_ok and is_equal_approx(float(_kind_data("saseum")["grab"]["bite_chance"]), 0.5) and is_equal_approx(float(_kind_data("keunburikkamagwi")["grab"]["bite_chance"]), 0.5), "bite_chance: 0.3 for animals that cost at most one heart, 0.5 for 사슴 and 큰부리까마귀, none for the three predators")
+	for kind_id in ["noru", "saseum", "keunburikkamagwi", "ori"]:
+		var kind := _kind_data(kind_id)
+		var rng := RandomNumberGenerator.new()
+		var twin := RandomNumberGenerator.new()
+		rng.seed = 2024
+		twin.seed = 2024
+		var bites := 0
+		var consistent := true
+		var same := true
+		for i in 1000:
+			var got: Dictionary = GrabScript.cost(kind, rng)
+			same = same and got == GrabScript.cost(kind, twin)
+			if got["bite"]:
+				bites += 1
+				consistent = consistent and got["units"] == int(kind["grab"]["units"]) and not got["death"]
+			else:
+				consistent = consistent and got["units"] == 0 and not got["death"]
+		var rate := float(bites) / 1000.0
+		check(absf(rate - float(kind["grab"]["bite_chance"])) <= 0.05 and consistent and same, "%s: it bites in %.1f%% of 1000 seeded grabs (data %.0f%%), a bite costs %d, a miss costs nothing" % [kind_id, rate * 100.0, float(kind["grab"]["bite_chance"]) * 100.0, int(kind["grab"]["units"])])
+	for kind_id in ["meotdwaeji", "deulgae", "geomdokseuri"]:
+		var kind := _kind_data(kind_id)
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 77
+		var deaths := 0
+		var always := true
+		for i in 1000:
+			var got: Dictionary = GrabScript.cost(kind, rng)
+			always = always and got["bite"]
+			if got["death"]:
+				deaths += 1
+			else:
+				always = always and got["units"] >= 1 and got["units"] <= int(kind["grab"]["max_units"])
+		check(always and absf(float(deaths) / 1000.0 - 0.25) <= 0.05, "%s (predator, unchanged): always bites, 1/4 death (%d of 1000), else 1..%d" % [kind_id, deaths, int(kind["grab"]["max_units"])])
+	# 2. The cap over the run.
+	var crossing = CrossingScript.new(cfg, 1)
+	check(crossing.cap_at(0.0, 0) == 4 and crossing.cap_at(120.0, 0) == 7 and crossing.cap_at(240.0, 0) == 10 and crossing.cap_at(600.0, 0) == 10, "the cap is 4 at 0 s, 7 at 120 s, 10 at 240 s and stays 10 at 600 s")
+	check(crossing.cap_at(120.0, 1) == 6 and crossing.cap_at(120.0, 2) == 5 and crossing.cap_at(240.0, 6) == 4 and crossing.cap_at(0.0, 1) == 3, "one fewer for each need met")
+	check(crossing.cap_at(0.0, 5) == 3 and crossing.cap_at(600.0, 9) == 3 and crossing.cap_at(30.0, 6) == 3, "never below min_cap (3)")
+	for i in 2400:
+		crossing.tick(0.05)
+	check(crossing.cap() == 7 and absf(crossing.elapsed - 120.0) < 0.001, "ticking 120 s moves the cap to 7")
+	crossing.met = 3
+	check(crossing.cap() == 4, "...and three needs met take it back to 4")
+	var full = CrossingScript.new(cfg, 2)
+	full.elapsed = 600.0
+	for i in 10:
+		full.spawn()
+	check(full.alive.size() == 10 and full.spawn() == null, "(setup) ten animals at the peak cap")
+	full.met = 6  # the cap falls to 4 under ten animals
+	full._until_spawn = 0.0
+	var before_ids: Array = full.alive.duplicate()
+	var events := full.tick(0.001)
+	check(full.cap() == 4 and events.is_empty() and full.alive == before_ids and full.spawned == 10, "when the cap drops below the live count nobody is removed and nothing spawns")
+	full._until_spawn = 0.0
+	full.met = 0
+	events = full.tick(0.001)
+	check(events.is_empty() and full.alive.size() == 10, "at the live count the cap still holds spawns back")
+	full.alive.pop_back()
+	full._until_spawn = 0.0
+	events = full.tick(0.001)
+	var spawned_now := 0
+	for event in events:
+		if event["event"] == CrossingScript.SPAWN:
+			spawned_now += 1
+	check(spawned_now == 1 and full.alive.size() == 10, "...and spawns resume once the count is below the cap")
+	# 6. Letter weighting before any discovery: the jamo of the need words of the map's kinds.
+	var table: Dictionary = cfg["needs"]["table"]
+	var expected := {}
+	for kind in cfg["kinds"]:
+		for row in table.get(kind["id"], []):
+			if row.has("word"):
+				for tile in Hangul.tiles_for(String(row["word"])):
+					expected[tile] = float(expected.get(tile, 0.0)) + 1.0
+	var weights: Dictionary = SupplyScript.need_weights(cfg["kinds"], table, cfg["letters"]["set"])
+	check(weights == expected and weights.has("ㅓ") and weights["ㅗ"] >= 4.0, "the weights count the jamo of every need word (고구마, 나무, 거미, ...) once for each kind that needs it")
+	var noru_only: Dictionary = SupplyScript.need_weights([_kind_data("noru")], table, cfg["letters"]["set"])
+	check(not noru_only.has("ㅓ") and noru_only.has("ㅜ"), "...of the kinds on the map: with only 노루 there is no ㅓ (no 거미)")
+	var every_letter := {}
+	var supply = SupplyScript.new(cfg["letters"], 5, weights)
+	for i in 3000:
+		every_letter[supply.draw(true, {})] = true
+	var only_noru = SupplyScript.new(cfg["letters"], 5, noru_only)
+	var saw_eo := false
+	for i in 3000:
+		saw_eo = saw_eo or only_noru.draw(true, {}) == "ㅓ"
+	check(every_letter.has("ㅓ") and not saw_eo, "before any discovery ㅓ comes up (거미) unless no kind on the map needs it")
+	# 8. Need rewards: the data, then rates per tier.
+	var rewards: Dictionary = cfg["need_rewards"]
+	check(is_equal_approx(float(rewards["common"]["ssanghwatang"]), 0.5) and rewards["common"].size() == 1 and is_equal_approx(float(rewards["endangered"]["ssanghwatang"]), 0.7) and is_equal_approx(float(rewards["endangered"]["gongjindan"]), 0.2) and is_equal_approx(float(rewards["extinct"]["ssanghwatang"]), 0.8) and is_equal_approx(float(rewards["extinct"]["gongjindan"]), 0.35), "need_rewards: common 쌍화탕 0.5; endangered 0.7 and 공진단 0.2; extinct 0.8 and 0.35")
+	for tier in ["common", "endangered", "extinct"]:
+		var rng := RandomNumberGenerator.new()
+		var twin := RandomNumberGenerator.new()
+		rng.seed = 4242
+		twin.seed = 4242
+		var counts := {}
+		var same := true
+		for i in 1000:
+			var won := NeedRewardsScript.roll(rewards, tier, rng)
+			same = same and won == NeedRewardsScript.roll(rewards, tier, twin)
+			for item in won:
+				counts[item] = int(counts.get(item, 0)) + 1
+		var near := true
+		for item in rewards[tier]:
+			near = near and absf(float(counts.get(item, 0)) / 1000.0 - float(rewards[tier][item])) <= 0.05
+		check(near and same, "%s: over 1000 seeded rolls each item comes up at its rate (%s)" % [tier, str(counts)])
+	# 7. Where the bottles lie.
+	var width := float(cfg["stage"]["width"])
+	var depth := float(cfg["stage"]["depth"])
+	var radius: float = TravelerScript.RADIUS
+	var bounds := Rect2(Vector2(radius, -depth / 2.0 + radius), Vector2(width - 2.0 * radius, depth - 2.0 * radius))
+	var lake_c := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	var lake_r := float(cfg["lake"]["radius"])
+	var starts: Array = []
+	for id in cfg["start"]:
+		starts.append(Vector2(float(cfg["start"][id][0]), float(cfg["start"][id][1])))
+	var heal: Dictionary = cfg["heal_pickups"]
+	check(int(heal["count_min"]) == 2 and int(heal["count_max"]) == 4 and is_equal_approx(float(heal["weights"]["ssanghwatang"]), 4.0) and is_equal_approx(float(heal["weights"]["gongjindan"]), 1.0) and float(heal["min_spacing_m"]) >= 2.0 and Content.has_item("ssanghwatang") and Content.has_item("gongjindan"), "heal_pickups: 2..4 bottles, 쌍화탕 4 : 공진단 1, at least 2 m apart, both items exist")
+	var counts_seen := {}
+	var spaced := true
+	var dry := true
+	var inside := true
+	var known_items := true
+	var tonic := 0
+	var total := 0
+	var first_spots: Array = []
+	var seeded := true
+	for seed_value in range(1, 31):
+		var placed := HealPickupsScript.place(heal, seed_value, bounds, lake_c, lake_r, float(cfg["lake"]["clearance_m"]), starts)
+		var again := HealPickupsScript.place(heal, seed_value, bounds, lake_c, lake_r, float(cfg["lake"]["clearance_m"]), starts)
+		seeded = seeded and placed == again
+		counts_seen[placed.size()] = true
+		first_spots.append(placed[0]["spot"])
+		for i in placed.size():
+			var spot: Vector2 = placed[i]["spot"]
+			inside = inside and bounds.has_point(spot)
+			dry = dry and not (spot.distance_to(lake_c) < lake_r and spot.y <= lake_c.y)
+			known_items = known_items and heal["weights"].has(placed[i]["item"])
+			total += 1
+			if placed[i]["item"] == "ssanghwatang":
+				tonic += 1
+			for start in starts:
+				spaced = spaced and spot.distance_to(start) >= float(heal["min_spacing_m"])
+			for j in range(i + 1, placed.size()):
+				spaced = spaced and spot.distance_to(placed[j]["spot"]) >= float(heal["min_spacing_m"])
+	check(counts_seen.keys().size() == 3 and counts_seen.has(2) and counts_seen.has(3) and counts_seen.has(4), "seeds 1-30 lay 2, 3 or 4 bottles, and all three counts come up")
+	check(spaced and dry and inside and known_items, "every bottle is on walkable ground in the map, not in the lake, 2 m from the travelers' starts and from every other bottle")
+	check(seeded and first_spots[0] != first_spots[1] and first_spots[1] != first_spots[2], "the places are seeded: the same seed lays the same bottles, other seeds other ones")
+	check(float(tonic) / float(total) > 0.6 and float(tonic) / float(total) < 0.95, "about four in five bottles are 쌍화탕 (%d of %d)" % [tonic, total])
+	_section_done("test_animals9bii_logic")
+
+
+func test_animals9bii_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var cfg := _animals_config()
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(31)
+	# 7. The bottles.
+	var count: int = map.pickup_nodes.size()
+	check(count >= 2 and count <= 4 and map.picking.pile_count() == count and map.get_node("Pickups").get_child_count() == count, "the scene lays 2-4 bottles (%d), each a pile of the basket's picking" % count)
+	var looks_ok := true
+	for index in map.pickup_nodes:
+		var node = map.pickup_nodes[index]
+		var item: Dictionary = Content.item(map.pickup_items[index])
+		looks_ok = looks_ok and node.body.mesh is CylinderMesh and node.label.text == item["name_ko"] and node.label.position.y > node.body.position.y and not map.in_lake(Vector2(node.global_position.x, node.global_position.z))
+	check(looks_ok, "each is an upright cylinder with its item's Korean name above it, on the land")
+	var first_index: int = map.pickup_nodes.keys()[0]
+	var first_node = map.pickup_nodes[first_index]
+	var rest_y: float = first_node.body.position.y
+	map.step(Vector2.ZERO, 0.4)
+	var bobbed: float = first_node.body.position.y
+	map.step(Vector2.ZERO, 0.4)
+	check(not is_equal_approx(rest_y, bobbed) or not is_equal_approx(bobbed, first_node.body.position.y), "the bottle bobs")
+	var item_id: String = map.pickup_items[first_index]
+	var spot: Vector2 = map.picking.pile_spot(first_index)
+	_put(map, map.player, spot.x + 0.5, spot.y)
+	map.step(Vector2.ZERO, 0.0)
+	check(map.picking.nearest_target(_xz(map.player))["type"] == "pile" and map._ring.visible and map._ring.global_position.is_equal_approx(first_node.global_position), "within the pick radius the reach ring sits on the bottle")
+	var held: int = GameState.inventory.count(item_id)
+	check(map.pick_nearest(), "Space picks the bottle up")
+	check(GameState.inventory.count(item_id) == held + 1 and not first_node.visible and not map.picking.is_pile_pickable(first_index), "...it is in the backpack (%s %d -> %d) and gone from the map" % [item_id, held, held + 1])
+	var floating := false
+	for child in map.get_children():
+		if child is Label3D and child.text == "+1 %s" % Content.item(item_id)["name_ko"]:
+			floating = true
+	check(floating, "a floating \"+1 %s\" rises from it" % Content.item(item_id)["name_ko"])
+	check(not map.pick_nearest() and GameState.inventory.count(item_id) == held + 1, "a second Space finds nothing")
+	# Click to walk to another one.
+	var other_index := -1
+	for index in map.pickup_nodes:
+		if index != first_index:
+			other_index = index
+			break
+	var other_item: String = map.pickup_items[other_index]
+	var goal: Vector2 = map.picking.pile_spot(other_index)
+	var approach := Vector2(6.0, 0.0)
+	for offset in [Vector2(6.0, 0.0), Vector2(-6.0, 0.0), Vector2(0.0, -6.0), Vector2(0.0, 6.0)]:
+		var from: Vector2 = goal + offset
+		if bounds_has(map, from) and from.distance_to(map.lake_center) > map.lake_radius + 3.0:
+			approach = offset
+			break
+	_put(map, map.player, goal.x + approach.x, goal.y + approach.y)
+	var shown: Vector2 = map.camera.unproject_position(map.pickup_nodes[other_index].global_position + Vector3(0.0, 0.3, 0.0))
+	var held_other: int = GameState.inventory.count(other_item)
+	check(map.pickup_at(shown) == other_index and map.click(shown) and map.picking.walk_pile == other_index, "a click on a bottle starts a walk to it")
+	var arrived := false
+	for i in 900:
+		map.step(Vector2.ZERO, DT)
+		if GameState.inventory.count(other_item) > held_other:
+			arrived = true
+			break
+	check(arrived and not map.picking.is_walking(), "she walks there and picks it up")
+	map.free()
+	# 8 (the heal). A backpack 쌍화탕 or 공진단 heals in the animal scene as in foraging.
+	GameState.new_hike()
+	map = await _animals_map(34)
+	check(map.backpack_hud._inventory == GameState.inventory, "the animal scene's backpack is the shared one")
+	GameState.heart_units["fernanda"] = 6
+	GameState.inventory.add("ssanghwatang", 2)
+	GameState.inventory.add("gongjindan", 1)
+	map.backpack.select("ssanghwatang", GameState.inventory.items())
+	var drunk: Dictionary = map.backpack.drink(GameState.inventory, "fernanda")
+	check(drunk["ok"] and drunk["healed"] == 1 and GameState.heart_units["fernanda"] == 7 and GameState.heart_units["nestor"] == 10 and GameState.inventory.count("ssanghwatang") == 1, "a 쌍화탕 from the backpack heals Fernanda half a heart here, as in foraging (6 -> 7 half-hearts)")
+	map.backpack.select("gongjindan", GameState.inventory.items())
+	drunk = map.backpack.drink(GameState.inventory, "fernanda")
+	check(drunk["ok"] and GameState.heart_units["fernanda"] == 9 and GameState.inventory.count("gongjindan") == 0, "a 공진단 heals a whole heart (7 -> 9)")
+	check(map.open_backpack() and map.backpack.is_open and get_tree().paused, "the backpack opens over the animal scene (it pauses the map)")
+	map.close_backpack()
+	# 5. The counter.
+	GameState.new_hike()
+	map.free()
+	map = await _animals_map(35)
+	var header: Label = map.discovery_hud._box.get_node("Header")
+	check(header.text == "0/6" and header.visible and map.needs.counter_text() == "0/6", "\"0/6\" is on the screen from the start, beside the discovery list")
+	var order: Array = []
+	for kind_id in ["goraeni", "meotdwaeji", "noru", "geomdokseuri", "geomdokseuri", "geomdokseuri"]:
+		var e: Dictionary = map.needs.discover(kind_id)
+		if not e.is_empty():
+			map._on_need_discovered(e)
+			order.append(e["id"])
+	check(order.size() == 6 and header.text == "0/6", "(setup) six needs shown: still 0/6 (shown is not met)")
+	var counter_ok := true
+	var signals := [0]
+	map.needs_complete.connect(func() -> void: signals[0] += 1)
+	for i in 6:
+		map.spelling.complete_word(order[i])
+		map.step(Vector2.ZERO, 0.0)
+		counter_ok = counter_ok and header.text == "%d/6" % (i + 1) and map.needs.counter_text() == "%d/6" % (i + 1)
+	check(counter_ok and map.complete_hud.visible and signals[0] == 1, "the counter reads 1/6 ... 6/6 as the needs are met, and the 6/6 line and needs_complete are still there")
+	map.free()
+	# 8. Rewards by tier, into the backpack, with the floating label.
+	GameState.new_hike()
+	map = await _animals_map(36)
+	var tier_of := {"goraeni": "extinct", "meotdwaeji": "common", "noru": "endangered"}
+	var rewards_ok := true
+	var given_total := 0
+	var labels_ok := true
+	for kind_id in ["goraeni", "meotdwaeji", "noru"]:
+		var e: Dictionary = map.needs.discover(kind_id)
+		map._on_need_discovered(e)
+		map.reward_rng.seed = 77
+		var replay := RandomNumberGenerator.new()
+		replay.seed = 77
+		var expected_items: Array[String] = NeedRewardsScript.roll(cfg["need_rewards"], tier_of[kind_id], replay)
+		var held_before := {"ssanghwatang": GameState.inventory.count("ssanghwatang"), "gongjindan": GameState.inventory.count("gongjindan")}
+		var labels_before := 0
+		for child in map.get_children():
+			labels_before += 1 if child is Label3D and child.text.begins_with("+1 ") else 0
+		map.spelling.complete_word(e["id"])
+		var gained := {"ssanghwatang": GameState.inventory.count("ssanghwatang") - held_before["ssanghwatang"], "gongjindan": GameState.inventory.count("gongjindan") - held_before["gongjindan"]}
+		var expected_counts := {"ssanghwatang": expected_items.count("ssanghwatang"), "gongjindan": expected_items.count("gongjindan")}
+		rewards_ok = rewards_ok and gained == expected_counts
+		given_total += expected_items.size()
+		var labels_after := 0
+		for child in map.get_children():
+			labels_after += 1 if child is Label3D and child.text.begins_with("+1 ") else 0
+		labels_ok = labels_ok and labels_after - labels_before == expected_items.size()
+	check(rewards_ok and given_total > 0, "meeting a need rolls the tier of the kind that showed it (extinct 고라니, common 멧돼지, endangered 노루) and the items reach the inventory (%d in all)" % given_total)
+	check(labels_ok, "...each with a floating \"+1 ...\" label")
+	map.free()
+	# 3. In the scene nothing appears or vanishes on screen, and animals come in near the view.
+	GameState.new_hike()
+	map = await _animals_map(37)
+	var seen: Dictionary = {}
+	var spawn_ok := true
+	var exit_ok := true
+	var spawned_count := 0
+	var removed_count := 0
+	var near_total := 0.0
+	var ground_count := 0
+	for stop in [Vector2(20.0, 20.0), Vector2(72.0, -10.0), Vector2(120.0, 10.0), Vector2(30.0, -25.0)]:
+		await _place_pair(map, stop, stop + Vector2(1.0, 0.0))
+		for i in 400:
+			var before: Array = map.crossing.alive.duplicate()
+			map.step(Vector2.ZERO, 0.1)
+			map.partner.global_position = map.player.global_position + Vector3(1.0, 0.0, 0.0)
+			for walker in map.crossing.alive:
+				if not seen.has(walker):
+					seen[walker] = true
+					spawned_count += 1
+					spawn_ok = spawn_ok and _outside_footprint(cfg, map.crossing.view, walker.from, walker)
+					if not walker.kind["flies"] and walker.habitat != "lake":
+						ground_count += 1
+						near_total += walker.from.distance_to(_xz(map.player))
+			for walker in before:
+				if not map.crossing.alive.has(walker):
+					removed_count += 1
+					exit_ok = exit_ok and _outside_footprint(cfg, map.crossing.view, walker.position(), walker)
+	check(spawned_count > 15 and removed_count > 10 and spawn_ok and exit_ok, "in the scene (%d spawns, %d despawns, the camera following the travelers) every one is outside the footprint plus offscreen_m" % [spawned_count, removed_count])
+	map._tick_animals(0.0)
+	check(map.animal_nodes.size() == map.crossing.alive.size() and map.crossing.view == map.view_rect() and map.crossing.view.size.x > 10.0 and map.crossing.view.size.x < 80.0, "the scene hands the crossing the camera's footprint each tick")
+	var mean := near_total / maxf(float(ground_count), 1.0)
+	check(ground_count > 8 and mean < 60.0, "ground animals come in near the view: %.1f m from the player on average (%d of them)" % [mean, ground_count])
+	map.free()
+	# 4. Nothing English inside the entry or the spelling view.
+	GameState.new_hike()
+	map = await _animals_map(38)
+	var e2: Dictionary = map.needs.discover("noru")
+	map._on_need_discovered(e2)
+	check(map.spelling.hover_name(e2["id"]) == "" and e2["hover_name"] == "", "the need has no English name in the spelling or the entry")
+	map.open_spelling(e2["id"])
+	var english_found := false
+	for label in map.spelling_hud.find_children("*", "Label", true, false) + map.discovery_hud.find_children("*", "Label", true, false):
+		if label.visible and (String(label.text).findn(String(e2["hint"])) >= 0 and String(e2["hint"]) != ""):
+			english_found = true
+	check(not english_found and map.spelling_hud.is_open(), "the spelling view and the discovery list show no English hint")
+	map.spelling_hud.close()
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_animals9bii_scene")
+
+
+func bounds_has(map: Node3D, spot: Vector2) -> bool:
+	return map.walk_bounds().has_point(spot)

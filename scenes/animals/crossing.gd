@@ -5,9 +5,13 @@ extends RefCounted
 ## inside their habitat -> linger -> a different edge, steering round the lake (they never
 ## enter it). Ducks fly in from off screen, land on the lake, swim to a few waypoints
 ## inside it, linger, take off and fly out. Flyers cross a straight line over everything.
-## Everybody spawns and despawns `offscreen_m` (or more, see outside_m) outside the map
-## rectangle, where the camera never looks. It knows nothing of travelers or props. The
-## scene owns the nodes and asks this where each animal is.
+## Everybody spawns just outside the camera's footprint (`view`, set by the scene each tick;
+## the whole map until it is): `offscreen_m` (or more, see outside_m) beyond it, on a side
+## whose ground is the kind's habitat, inside the map where that is possible. Nobody
+## despawns inside the footprint: an animal that has reached its exit while the camera
+## has come to show it walks on to the nearest way out. How many may be on the map at once
+## is a curve over the run (cap()). It knows nothing of travelers or props. The scene owns
+## the nodes and asks this where each animal is.
 ##
 ## Every random draw comes from one seeded RandomNumberGenerator, in a fixed order per
 ## spawn, so one seed gives one sequence. `seed_from_args` reads the --seed=N argument.
@@ -15,6 +19,9 @@ extends RefCounted
 const SEED_ARG := "--seed="
 const EDGE_EPSILON := 0.001
 const ZONE_EPSILON := 0.001
+## The sides of the camera's footprint an animal may come in or go out by.
+const SIDES := ["west", "east", "far", "near"]
+const VIEW_EPSILON := 0.0001
 
 ## What happened in a tick: {"event": "spawn" or "exit", "walker": Walker}.
 const SPAWN := "spawn"
@@ -139,7 +146,17 @@ var shore_inset := 0.5
 var forest_end := 0.0  ## z where the forest (the top of the map) ends
 var interval_min := 4.0
 var interval_max := 9.0
-var max_alive := 5
+var start_cap := 4
+var peak_cap := 10
+var ramp_seconds := 240.0
+var min_cap := 3
+var target_samples := 24
+## The ground the camera shows (x, z): animals enter and leave outside it. Until the scene
+## sets it, it is the map rectangle.
+var view := Rect2()
+## Seconds of the run, and needs met so far: they set the cap.
+var elapsed := 0.0
+var met := 0
 var wobble_amplitude := 0.8
 var wobble_wavelength := 10.0
 var fly_height := 4.0
@@ -179,7 +196,12 @@ func _init(animals_config: Dictionary, seed_value: int) -> void:
 	var spawn_config: Dictionary = config["spawn"]
 	interval_min = float(spawn_config["interval_min_s"])
 	interval_max = float(spawn_config["interval_max_s"])
-	max_alive = int(spawn_config["max_alive"])
+	start_cap = int(spawn_config["start_cap"])
+	peak_cap = int(spawn_config["peak_cap"])
+	ramp_seconds = float(spawn_config["ramp_seconds"])
+	min_cap = int(spawn_config["min_cap"])
+	target_samples = int(spawn_config.get("target_samples", 24))
+	view = Rect2(0.0, -depth / 2.0, width, depth)
 	var path: Dictionary = config["path"]
 	wobble_amplitude = float(path["wobble_amplitude_m"])
 	wobble_wavelength = float(path["wobble_wavelength_m"])
@@ -243,21 +265,10 @@ func in_lake(point: Vector2) -> bool:
 	return point.distance_to(lake_center) < lake_radius and point.y <= lake_center.y
 
 
-## z range of a habitat along the west and east edges.
-func _side_range(habitat: String) -> Vector2:
-	match habitat:
-		"forest":
-			return Vector2(-depth / 2.0, forest_end)
-		"grass":
-			return Vector2(forest_end, depth / 2.0)
-		"shore":
-			return Vector2(lake_center.y - (lake_radius + shore_band), lake_center.y)
-	return Vector2(-depth / 2.0, depth / 2.0)
-
-
-## How far outside the stage edge `edge` an animal of `walker` enters and leaves: offscreen_m,
-## plus on the near edge the height of its top (flyer height, box, label) over tan(pitch),
-## because the camera sees something that high as if it stood that much farther up the map.
+## How far outside the footprint's side `edge` an animal of `walker` enters and leaves:
+## offscreen_m, plus on the near side the height of its top (flyer height, box, label) over
+## tan(pitch), because the camera sees something that high as if it stood that much
+## farther up the map.
 func outside_m(walker: Walker, edge: String) -> float:
 	if edge != "near":
 		return offscreen
@@ -265,19 +276,139 @@ func outside_m(walker: Walker, edge: String) -> float:
 	return offscreen + top / pitch_tan
 
 
-## A random point on the stage edge, then moved out of the map by outside_m().
-func _edge_point(habitat: String, edge: String, walker: Walker) -> Vector2:
-	var out := outside_m(walker, edge)
-	match edge:
+## True if `point` is outside the footprint by offscreen_m (more on the near side): where an
+## animal may appear and vanish.
+func outside_view(point: Vector2, walker: Walker) -> bool:
+	return point.x <= view.position.x - offscreen + VIEW_EPSILON \
+			or point.x >= view.end.x + offscreen - VIEW_EPSILON \
+			or point.y <= view.position.y - offscreen + VIEW_EPSILON \
+			or point.y >= view.end.y + outside_m(walker, "near") - VIEW_EPSILON
+
+
+## How many animals may be on the map after `seconds` of the run with `met_needs` needs
+## met: start_cap rising linearly to peak_cap over ramp_seconds, less one per need met,
+## never below min_cap.
+func cap_at(seconds: float, met_needs: int) -> int:
+	var ramp := clampf(seconds / maxf(ramp_seconds, 0.001), 0.0, 1.0)
+	var base := floori(float(start_cap) + float(peak_cap - start_cap) * ramp + 0.000001)
+	return maxi(min_cap, base - met_needs)
+
+
+func cap() -> int:
+	return cap_at(elapsed, met)
+
+
+func _in_map(point: Vector2) -> bool:
+	return point.x >= 0.0 and point.x <= width and point.y >= -depth / 2.0 and point.y <= depth / 2.0
+
+
+func _clamped(point: Vector2) -> Vector2:
+	return Vector2(clampf(point.x, 0.0, width), clampf(point.y, -depth / 2.0, depth / 2.0))
+
+
+## A point on a side of the footprint, `t` (0..1) of the way along it, `offscreen` out.
+func _side_point(side: String, walker: Walker, t: float) -> Vector2:
+	match side:
 		"west":
-			var r := _side_range(habitat)
-			return Vector2(-out, rng.randf_range(r.x, r.y))
+			return Vector2(view.position.x - offscreen, lerpf(view.position.y, view.end.y, t))
 		"east":
-			var r2 := _side_range(habitat)
-			return Vector2(width + out, rng.randf_range(r2.x, r2.y))
+			return Vector2(view.end.x + offscreen, lerpf(view.position.y, view.end.y, t))
 		"far":
-			return Vector2(rng.randf_range(0.0, width), -depth / 2.0 - out)
-	return Vector2(rng.randf_range(0.0, width), depth / 2.0 + out)  # near
+			return Vector2(lerpf(view.position.x, view.end.x, t), view.position.y - offscreen)
+	return Vector2(lerpf(view.position.x, view.end.x, t), view.end.y + outside_m(walker, "near"))
+
+
+## The point on a side nearest `here`.
+func _side_nearest(side: String, walker: Walker, here: Vector2) -> Vector2:
+	var far_z := view.position.y - offscreen
+	var near_z := view.end.y + outside_m(walker, "near")
+	var west_x := view.position.x - offscreen
+	var east_x := view.end.x + offscreen
+	match side:
+		"west":
+			return Vector2(west_x, clampf(here.y, far_z, near_z))
+		"east":
+			return Vector2(east_x, clampf(here.y, far_z, near_z))
+		"far":
+			return Vector2(clampf(here.x, west_x, east_x), far_z)
+	return Vector2(clampf(here.x, west_x, east_x), near_z)
+
+
+## A place a ground animal may come in or go out by: outside the lake's steering ring, and
+## not on the far side of the lake's flat edge (below the half disc, where a route round it
+## has no good way).
+func _usable_ground(point: Vector2) -> bool:
+	if point.y > lake_center.y and absf(point.x - lake_center.x) < _steer_radius() + 6.0:
+		return false
+	return point.distance_to(lake_center) >= _steer_radius()
+
+
+## Where an animal comes in: a random point on a random one of `sides` of the footprint whose
+## ground lies in `habitat` ("air": anywhere), inside the map if that can be found (the
+## second half of the tries lets it be outside), and for a ground animal outside the lake's
+## steering ring. {"side", "point"}. When no side has such ground, the point of the habitat
+## nearest the footprint (still outside it by offscreen_m).
+func _pick_entry(walker: Walker, habitat: String, sides: Array) -> Dictionary:
+	var ground := habitat != "air"
+	var tries := 40
+	for attempt in tries:
+		var side := String(sides[rng.randi_range(0, sides.size() - 1)])
+		var point := _side_point(side, walker, rng.randf())
+		if attempt < tries / 2 and not _in_map(point):
+			continue
+		if ground and (not _usable_ground(point) or not zone_contains(habitat, _clamped(point))):
+			continue
+		return {"side": side, "point": point}
+	if ground:
+		var best := {}
+		var best_gap := INF
+		for i in target_samples:
+			var point := _target_in(habitat)
+			var gap := _gap_to_view(point)
+			if outside_view(point, walker) and gap < best_gap and _usable_ground(point):
+				best_gap = gap
+				best = {"side": _nearest_side_name(point), "point": point}
+		if not best.is_empty():
+			return best
+	return {"side": "west", "point": _side_point("west", walker, 0.5)}
+
+
+## Where an animal goes out: a random point on a random side other than `avoid` (when there
+## is another), inside the map if it can be found, outside the lake's steering ring for a
+## ground animal.
+func _pick_exit(walker: Walker, avoid: String, sides: Array, ground: bool) -> Dictionary:
+	var choices: Array = sides.filter(func(e): return e != avoid)
+	if choices.is_empty():
+		choices = sides
+	var tries := 40
+	for attempt in tries:
+		var side := String(choices[rng.randi_range(0, choices.size() - 1)])
+		var point := _side_point(side, walker, rng.randf())
+		if attempt < tries / 2 and not _in_map(point):
+			continue
+		if ground and not _usable_ground(point):
+			continue
+		return {"side": side, "point": point}
+	return {"side": "west", "point": _side_point("west", walker, 0.5)}
+
+
+## The side of the footprint a point is nearest to.
+func _nearest_side_name(point: Vector2) -> String:
+	var distances := {
+		"west": absf(point.x - view.position.x), "east": absf(point.x - view.end.x),
+		"far": absf(point.y - view.position.y), "near": absf(point.y - view.end.y)}
+	var best := "west"
+	for side in SIDES:
+		if distances[side] < distances[best]:
+			best = side
+	return best
+
+
+## How far a point is from the footprint (0 inside it).
+func _gap_to_view(point: Vector2) -> float:
+	var dx := maxf(maxf(view.position.x - point.x, point.x - view.end.x), 0.0)
+	var dy := maxf(maxf(view.position.y - point.y, point.y - view.end.y), 0.0)
+	return Vector2(dx, dy).length()
 
 
 ## A random place inside the habitat's zone, away from its edges (ground animals only).
@@ -297,6 +428,22 @@ func _target_in(habitat: String) -> Vector2:
 		if zone_contains("grass", p) and p.distance_to(lake_center) >= lake_radius + shore_band:
 			return p
 	return Vector2(margin, depth / 2.0 - margin)
+
+
+## The place a ground animal lingers at: of `target_samples` random places in its habitat,
+## the one nearest the middle of the footprint (so it ends up where the travelers can see it,
+## or as near as its habitat comes).
+func _target_near_view(habitat: String) -> Vector2:
+	var centre := view.get_center()
+	var best := Vector2.ZERO
+	var best_d := INF
+	for i in target_samples:
+		var point := _target_in(habitat)
+		var d := point.distance_to(centre)
+		if d < best_d:
+			best_d = d
+			best = point
+	return best
 
 
 ## A random point in the lake's half disc, `inset` metres from the water's edge.
@@ -339,23 +486,27 @@ func _detour(a: Vector2, b: Vector2, level: int = 0) -> Array[Vector2]:
 ## in order: the exits first, then at most one spawn.
 func tick(delta: float) -> Array[Dictionary]:
 	var events: Array[Dictionary] = []
+	elapsed += delta
 	for walker in alive.duplicate():
 		walker.advance(delta)
 		if walker.is_done():
-			alive.erase(walker)
-			exited += 1
-			events.append({"event": EXIT, "walker": walker})
+			if outside_view(walker.position(), walker):
+				alive.erase(walker)
+				exited += 1
+				events.append({"event": EXIT, "walker": walker})
+			else:  # the camera has come to show its exit: on to the nearest way out
+				_head_out(walker)
 	_until_spawn -= delta
-	if _until_spawn <= 0.0 and alive.size() < max_alive:
+	if _until_spawn <= 0.0 and alive.size() < cap():
 		var walker := spawn()
 		_until_spawn = rng.randf_range(interval_min, interval_max)
 		events.append({"event": SPAWN, "walker": walker})
 	return events
 
 
-## Puts a new animal on the map. Null if the map is full.
+## Puts a new animal on the map. Null if the map is full (cap()).
 func spawn() -> Walker:
-	if alive.size() >= max_alive:
+	if alive.size() >= cap():
 		return null
 	var walker := Walker.new()
 	walker.id = _next_id
@@ -381,20 +532,41 @@ func spawn() -> Walker:
 	return walker
 
 
-## The animal runs for its exit: a new route from where it is now (bending round the lake),
-## no linger, no wobble, `speed_scale` times its speed. Does nothing twice. It draws no
-## random numbers.
+## The animal runs for the nearest way out of the footprint: a new route from where it is
+## now (bending round the lake), no linger, no wobble, `speed_scale` times its speed. Does
+## nothing twice. It draws no random numbers.
 func flee(walker: Walker, speed_scale: float) -> void:
-	if walker.fled or walker.exit.is_empty():
+	if walker.fled:
 		return
 	walker.fled = true
+	walker.speed_scale = speed_scale
+	_head_out(walker)
+
+
+## Replans the animal's way out from where it is: to the nearest point outside the footprint
+## (outside by offscreen_m), straight for a flyer or a duck, round the lake for the rest.
+func _head_out(walker: Walker) -> void:
 	var here := walker.position()
+	var out_point := Vector2.ZERO
+	var out_side := "west"
+	var best := INF
+	for side in SIDES:
+		var point := _side_nearest(side, walker, here)
+		if walker.keep_out_radius > 0.0 and not _usable_ground(point):
+			continue
+		var d := here.distance_to(point)
+		if d < best:
+			best = d
+			out_point = point
+			out_side = side
+	if best == INF:  # (nothing usable: a west point, as a last resort)
+		out_point = _side_point("west", walker, 0.5)
 	var route: Array[Vector2] = [here]
-	var out := Vector2(float(walker.exit["x"]), float(walker.exit["z"]))
-	if walker.keep_out_radius > 0.0:  # a ground animal steers round the lake
-		route.append_array(_detour(here, out))
-	else:  # a flyer or a duck: straight out
-		route.append(out)
+	if walker.keep_out_radius > 0.0:
+		route.append_array(_detour(here, out_point))
+	else:
+		route.append(out_point)
+	walker.exit = {"id": out_side, "edge": out_side, "x": out_point.x, "z": out_point.y}
 	walker.route = route
 	walker.travelled = 0.0
 	walker.stop_dist = -1.0
@@ -403,25 +575,24 @@ func flee(walker: Walker, speed_scale: float) -> void:
 	walker.amplitude = 0.0
 	walker.land_at = -1.0
 	walker.takeoff_at = -1.0
-	walker.speed_scale = speed_scale
 	walker.finalize()
 
 
-## Edge to edge: a flyer in a straight line, a ground animal by way of a target.
+## Footprint side to footprint side: a flyer in a straight line, a ground animal by way of a
+## target near the camera.
 func _plan_walk(walker: Walker) -> void:
-	var edges: Array = config["habitats"][walker.habitat]["edges"]
-	var entry_edge := String(edges[rng.randi_range(0, edges.size() - 1)])
-	var entry_point := _edge_point(walker.habitat, entry_edge, walker)
-	var others: Array = edges.filter(func(e): return e != entry_edge)
-	var exit_edge := String(others[rng.randi_range(0, others.size() - 1)])
-	var exit_point := _edge_point(walker.habitat, exit_edge, walker)
-	walker.entry = {"id": entry_edge, "edge": entry_edge, "x": entry_point.x, "z": entry_point.y}
-	walker.exit = {"id": exit_edge, "edge": exit_edge, "x": exit_point.x, "z": exit_point.y}
+	var flies := bool(walker.kind["flies"])
+	var entry := _pick_entry(walker, "air" if flies else walker.habitat, SIDES)
+	var entry_point: Vector2 = entry["point"]
+	var exit := _pick_exit(walker, String(entry["side"]), SIDES, not flies)
+	var exit_point: Vector2 = exit["point"]
+	walker.entry = {"id": entry["side"], "edge": entry["side"], "x": entry_point.x, "z": entry_point.y}
+	walker.exit = {"id": exit["side"], "edge": exit["side"], "x": exit_point.x, "z": exit_point.y}
 	walker.route.append(entry_point)
-	if bool(walker.kind["flies"]):
+	if flies:
 		walker.route.append(exit_point)
 		return
-	var target := _target_in(walker.habitat)
+	var target := _target_near_view(walker.habitat)
 	walker.target = target
 	walker.keep_out_radius = _steer_radius()
 	walker.route.append_array(_detour(entry_point, target))
@@ -441,11 +612,12 @@ func _plan_duck(walker: Walker) -> void:
 	var lake: Dictionary = config["lake"]
 	var wp_inset := float(lake["duck_waypoint_inset_m"])
 	var edges: Array = config["habitats"]["lake"]["edges"]
-	var entry_edge := String(edges[rng.randi_range(0, edges.size() - 1)])
-	var entry_point := _edge_point("air", entry_edge, walker)
-	var others: Array = edges.filter(func(e): return e != entry_edge)
-	var exit_edge := String(others[rng.randi_range(0, others.size() - 1)])
-	var exit_point := _edge_point("air", exit_edge, walker)
+	var entry := _pick_entry(walker, "air", edges)
+	var entry_edge := String(entry["side"])
+	var entry_point: Vector2 = entry["point"]
+	var exit := _pick_exit(walker, entry_edge, edges, false)
+	var exit_edge := String(exit["side"])
+	var exit_point: Vector2 = exit["point"]
 	walker.route.append(entry_point)
 	var count := rng.randi_range(int(config["linger"]["duck_waypoints_min"]), int(config["linger"]["duck_waypoints_max"]))
 	var last := entry_point

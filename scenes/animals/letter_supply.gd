@@ -20,7 +20,7 @@ var review: Dictionary = {}
 var streak := 0
 
 
-## `config` is animals.letters; `review_weights` is review_weights() of the map's kinds.
+## `config` is animals.letters; `review_weights` is need_weights() of the map's kinds.
 func _init(config: Dictionary, seed_value: int, review_weights: Dictionary) -> void:
 	for letter in config["set"]:
 		letters.append(String(letter))
@@ -31,17 +31,17 @@ func _init(config: Dictionary, seed_value: int, review_weights: Dictionary) -> v
 	rng.seed = seed_value
 
 
-## How often each jamo of `letter_set` appears in the review words among the kinds' names
-## (a review word uses only letters in `known`).
-static func review_weights(kinds: Array, known: Array, letter_set: Array) -> Dictionary:
+## How often each jamo of `letter_set` is in the need words of the kinds on the map (`table`
+## is animals.needs.table; a word needed by two kinds counts twice; items are not words).
+static func need_weights(kinds: Array, table: Dictionary, letter_set: Array) -> Dictionary:
 	var weights := {}
 	for kind in kinds:
-		var name_ko := String(kind["name_ko"])
-		if not Hangul.is_readable(name_ko, known):
-			continue
-		for tile in Hangul.tiles_for(name_ko):
-			if letter_set.has(tile):
-				weights[tile] = float(weights.get(tile, 0.0)) + 1.0
+		for row in table.get(String(kind["id"]), []):
+			if not row.has("word"):
+				continue
+			for tile in Hangul.tiles_for(String(row["word"])):
+				if letter_set.has(tile):
+					weights[tile] = float(weights.get(tile, 0.0)) + 1.0
 	return weights
 
 

@@ -36,6 +36,7 @@ const DecoyGore := preload("res://scenes/foraging/decoy_gore.gd")
 const DecoyGoreFx := preload("res://scenes/foraging/decoy_gore_fx.gd")
 const HitFx := preload("res://scenes/foraging/hit_fx.gd")
 const ReachRing := preload("res://scenes/foraging/reach_ring.gd")
+const FloatLabel := preload("res://scenes/foraging/float_label.gd")
 const Ending := preload("res://scenes/foraging/ending.gd")
 const ExitNote := preload("res://scenes/foraging/exit_note.gd")
 const DeadTree := preload("res://scenes/foraging/dead_tree.gd")
@@ -706,29 +707,7 @@ func _add_debug_notes() -> void:
 
 ## A short label that rises from a world position and fades (Label3D, like the letters).
 func _float_label(text: String, at: Vector3) -> Label3D:
-	var cfg := reward_label_config
-	var label := Label3D.new()
-	label.name = "FloatingLabel"  # a second one at once is renamed by Godot; find them by type
-	label.text = text
-	label.font = PLANT_FONT
-	label.font_size = int(cfg["font_size"])
-	label.pixel_size = float(cfg["pixel_size"])
-	label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	label.shaded = false
-	label.no_depth_test = true  # never hidden by the plant it rose from
-	label.render_priority = int(cfg["render_priority"])  # sorted in front of the steam puff
-	label.outline_render_priority = int(cfg["render_priority"]) - 1  # the outline stays behind its own text
-	label.outline_size = 16
-	label.outline_modulate = Color(0.08, 0.06, 0.1)
-	var c: Array = cfg["color"]
-	label.modulate = Color(c[0], c[1], c[2])
-	add_child(label)
-	label.global_position = at
-	var tween := create_tween().set_parallel(true)
-	tween.tween_property(label, "global_position:y", at.y + float(cfg["rise"]), float(cfg["seconds"]))
-	tween.tween_property(label, "modulate:a", 0.0, float(cfg["seconds"]))
-	tween.chain().tween_callback(label.queue_free)
-	return label
+	return FloatLabel.make(self, text, at, reward_label_config)
 
 
 ## A harm decoy was picked: the picker (and only the picker) loses `harm_units`

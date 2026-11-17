@@ -22,7 +22,9 @@ var hint_flicker := 0.4
 var hint_rate := 10.0
 ## Kind id -> [{"word", "en"} or {"item"}], in data order.
 var table: Dictionary = {}
-## The discovered needs in order: {"id", "hover_name", "name_ko", "syllables", "age", "kind", "item"}.
+## The discovered needs in order: {"id", "hover_name" (always ""), "hint" (the English), "name_ko",
+## "syllables", "age", "kind", "item", "from_kind" (the animal kind it was shown by), "walker"
+## (the animal's id, once watch() has shown it)}.
 var entries: Array[Dictionary] = []
 ## The ids of the needs that are finished.
 var done: Dictionary = {}
@@ -78,13 +80,13 @@ func discover(kind_id: String) -> Dictionary:
 		return {}
 	var row: Dictionary = rows[rng.randi_range(0, rows.size() - 1)]
 	var id := need_id(row)
-	var entry := {"id": id, "age": 0.0, "kind": WORD, "item": ""}
+	var entry := {"id": id, "age": 0.0, "kind": WORD, "item": "", "hover_name": "", "from_kind": kind_id, "walker": 0}
 	if row.has("word"):
-		entry["hover_name"] = String(row["en"])
+		entry["hint"] = String(row["en"])
 		entry["name_ko"] = String(row["word"])
 	else:
 		var item: Dictionary = Content.item(id)
-		entry["hover_name"] = String(item["name_en"])
+		entry["hint"] = String(item["name_en"])
 		entry["name_ko"] = String(item["name_ko"])
 		entry["kind"] = ITEM
 		entry["item"] = id
@@ -135,6 +137,7 @@ func watch(travelers: Array, animals: Array, delta: float) -> Array[Dictionary]:
 			_progress.erase(id)
 			var entry := discover(String(a["kind"]))
 			if not entry.is_empty():
+				entry["walker"] = id
 				found.append(entry)
 	for id in _progress.keys():
 		if not live.has(id):
@@ -171,6 +174,11 @@ func hint_alpha(entry: Dictionary) -> float:
 	if flicker < hint_flicker:
 		return 1.0 if int(flicker * hint_rate) % 2 == 1 else 0.0
 	return 0.0
+
+
+## "met/total", the counter the scene always shows.
+func counter_text() -> String:
+	return "%d/%d" % [done.size(), total]
 
 
 ## The need is finished. True exactly once: when this finishes the `total`-th need.

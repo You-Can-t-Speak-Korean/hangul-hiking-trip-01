@@ -41,6 +41,23 @@ func setup(discovery, spelling = null) -> void:
 	add_child(_box)
 
 
+## A line above the list that is always there (the animal scene's "0/6"); "" takes it away.
+func set_header(text: String) -> void:
+	var header: Label = _box.get_node_or_null("Header")
+	if text == "":
+		if header != null:
+			header.queue_free()
+		return
+	if header == null:
+		header = Label.new()
+		header.name = "Header"
+		header.add_theme_font_size_override("font_size", NAME_FONT_SIZE)
+		header.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_box.add_child(header)
+		_box.move_child(header, 0)
+	header.text = text
+
+
 ## The discovered words that are not finished, in list order.
 func spellable_ids() -> Array[String]:
 	var ids: Array[String] = []
@@ -114,8 +131,6 @@ func refresh() -> void:
 			_rows[entry["id"]] = row
 			_box.add_child(row)
 		_rows[entry["id"]].modulate.a = _discovery.opacity(entry)
-		if _discovery.has_method("hint_alpha"):  # the animal scene's English hint fades for good
-			_rows[entry["id"]].find_child("Name", true, false).modulate.a = _discovery.hint_alpha(entry)
 		if _spelling != null:
 			_show_progress(_rows[entry["id"]], entry["id"])
 		_show_highlight(_rows[entry["id"]], word_select.highlighted() == entry["id"])
@@ -143,6 +158,7 @@ func _make_row(entry: Dictionary) -> PanelContainer:
 	var label := Label.new()
 	label.name = "Name"
 	label.text = entry["hover_name"]
+	label.visible = label.text != ""  # (the animal scene shows its English hint over the animal instead)
 	label.add_theme_font_size_override("font_size", NAME_FONT_SIZE)
 	column.add_child(label)
 	var blocks := HBoxContainer.new()

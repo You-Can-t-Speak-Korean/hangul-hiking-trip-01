@@ -29,6 +29,10 @@ const DecoyPlacement := preload("res://scenes/foraging/decoy_placement.gd")
 const Needs := preload("res://scenes/animals/needs.gd")
 const LetterSupply := preload("res://scenes/animals/letter_supply.gd")
 const Grab := preload("res://scenes/animals/grab.gd")
+const NeedRewards := preload("res://scenes/animals/need_rewards.gd")
+const HealPickups := preload("res://scenes/animals/heal_pickups.gd")
+const HealPickup := preload("res://scenes/animals/heal_pickup.gd")
+const FloatLabel := preload("res://scenes/foraging/float_label.gd")
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 ## The traveler a bare-hand grab hurts (and whose hands they are).
@@ -37,6 +41,8 @@ const GRABBER := "fernanda"
 const SALT_LETTERS := 1
 const SALT_GRAB := 2
 const SALT_NEEDS := 3
+const SALT_PICKUPS := 4
+const SALT_REWARDS := 5
 
 const GROUND_STEP := 1.0   # metres between ground mesh vertices along x
 
@@ -86,6 +92,17 @@ var complete_hud: CanvasLayer
 ## Picking slot -> Walker, and the reverse.
 var slot_walker: Dictionary = {}
 var walker_slot: Dictionary = {}
+## Prompt 9b-ii. The healing bottles: Picking pile index -> the item id and the node; the
+## roll of what meeting a need drops; the English hints floating over the animals (need id ->
+## panel); the style of the floating "+1 ..." label and how high it starts over the traveler.
+var pickup_items: Dictionary = {}
+var pickup_nodes: Dictionary = {}
+var reward_rng := RandomNumberGenerator.new()
+var hint_panels: Dictionary = {}
+var float_label_config: Dictionary = {}
+var float_label_height := 2.3
+var _hint_layer: CanvasLayer
+var _pickup_time := 0.0
 ## From the moment both travelers die until the scene restarts: no grabs, walks or menus.
 var restarting := false
 
@@ -202,6 +219,9 @@ func step(input: Vector2, delta: float) -> void:
 	props.set_travelers(player.global_position, partner.global_position, float(config["camera"]["pitch_deg"]))
 	_update_reach(delta)
 	needs.update(delta)
+	_update_hints()
+	_update_pickups(delta)
+	discovery_hud.set_header(needs.counter_text())
 	discovery_hud.refresh()
 	basket_hud.refresh(delta)
 
@@ -230,6 +250,8 @@ func _choose_seed() -> void:
 
 
 func _tick_animals(delta: float) -> void:
+	crossing.view = view_rect()
+	crossing.met = needs.done.size()
 	for event in crossing.tick(delta):
 		if event["event"] == Crossing.SPAWN:
 			_add_animal(event["walker"])
@@ -287,14 +309,17 @@ func _build_needs(ui: Dictionary) -> void:
 	picking = Picking.new(ui["picking"], {"kinds": [], "placed": []}, ui["reach_ring"])
 	picking.pick_radius = float(config["grab_radius"])
 	needs = Needs.new(config, DecoyPlacement.derive_seed(crossing_seed, SALT_NEEDS), func(id: String) -> bool: return GameState.inventory.count(id) > 0)
-	var known := Content.known_letters(Content.game_index(GameState.game_id))
-	var review := LetterSupply.review_weights(config["kinds"], known, config["letters"]["set"])
+	var review := LetterSupply.need_weights(config["kinds"], config["needs"]["table"], config["letters"]["set"])
 	supply = LetterSupply.new(config["letters"], DecoyPlacement.derive_seed(crossing_seed, SALT_LETTERS), review)
+	reward_rng.seed = DecoyPlacement.derive_seed(crossing_seed, SALT_REWARDS)
+	float_label_config = ui["decoy_rewards"]["floating_label"]
+	float_label_height = float(ui["word_rewards"]["label_height"])
 	grab_rng.seed = DecoyPlacement.derive_seed(crossing_seed, SALT_GRAB)
 	spelling = Spelling.new(ui["spelling_view"], {"kinds": []}, picking.basket)
 	discovery_hud = DiscoveryHud.new()
 	add_child(discovery_hud)
 	discovery_hud.setup(needs, spelling)
+	discovery_hud.set_header(needs.counter_text())
 	discovery_hud.entry_pressed.connect(open_spelling)
 	discovery_hud.open_gate = _word_select_allowed
 	basket_hud = BasketHud.new()
@@ -326,6 +351,11 @@ func _build_needs(ui: Dictionary) -> void:
 	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	complete_hud.add_child(line)
 	add_child(complete_hud)
+	_hint_layer = CanvasLayer.new()
+	_hint_layer.name = "HintLayer"
+	_hint_layer.layer = 10
+	add_child(_hint_layer)
+	_build_pickups()
 
 
 ## False while restarting, while a menu or the backpack is open, or once a traveler is dead.
@@ -362,8 +392,60 @@ func _watch_animals(delta: float) -> void:
 ## the list's, and it goes away).
 func _on_need_discovered(entry: Dictionary) -> void:
 	spelling.add_word(String(entry["id"]), String(entry["name_ko"]), "")
+	_start_hint(entry)
 	discovery_hud.refresh()
 	need_discovered.emit(String(entry["id"]))
+
+
+## The English hint of a new need floats over the animal that showed it (the foraging
+## tooltip's look): solid, then flickering, then gone for good (Needs.hint_alpha).
+func _start_hint(entry: Dictionary) -> void:
+	var panel := PanelContainer.new()
+	panel.name = "Hint_%s" % entry["id"]
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var label := Label.new()
+	label.name = "Text"
+	label.text = String(entry["hint"])
+	label.add_theme_font_size_override("font_size", int(config["needs"]["hint"]["font_size"]))
+	panel.add_child(label)
+	_hint_layer.add_child(panel)
+	hint_panels[String(entry["id"])] = panel
+	_place_hint(entry, panel)
+
+
+func _walker_by_id(walker_id: int):
+	for walker in animal_nodes:
+		if walker.id == walker_id:
+			return walker
+	return null
+
+
+func _update_hints() -> void:
+	for id in hint_panels.keys():
+		var entry: Dictionary = needs.entry_of(id)
+		var panel: PanelContainer = hint_panels[id]
+		var walker = _walker_by_id(int(entry["walker"]))
+		if float(entry["age"]) >= needs.hint_show + needs.hint_flicker or walker == null:
+			panel.queue_free()
+			hint_panels.erase(id)
+			continue
+		var alpha: float = needs.hint_alpha(entry)
+		panel.visible = alpha > 0.0
+		panel.modulate.a = alpha
+		if panel.visible:
+			_place_hint(entry, panel)
+
+
+## Centres a hint over its animal, above the name label.
+func _place_hint(entry: Dictionary, panel: PanelContainer) -> void:
+	var walker = _walker_by_id(int(entry["walker"]))
+	if walker == null:
+		return
+	var node: Node3D = animal_nodes[walker]
+	var up := float(walker.kind["size"][1]) + float(config["label"]["lift"]) + float(config["needs"]["hint"]["lift_m"])
+	var screen := camera.unproject_position(node.global_position + Vector3(0.0, up, 0.0))
+	panel.reset_size()
+	panel.position = screen - Vector2(panel.size.x / 2.0, panel.size.y)
 
 
 ## A discovery-list entry was chosen (click or E): a word opens the spelling view and pauses
@@ -416,9 +498,32 @@ func _on_syllable_failed(_word_id: String, _block_index: int, _letters: Array) -
 ## A word need was finished (spelled, or an item handed over).
 func _on_word_completed(id: String) -> void:
 	discovery_hud.refresh()
-	if needs.mark_done(id):
+	var met_before: int = needs.done.size()
+	var last: bool = needs.mark_done(id)
+	if needs.done.size() > met_before:
+		_reward_need(id)
+	discovery_hud.set_header(needs.counter_text())
+	if last:
 		complete_hud.visible = true
 		needs_complete.emit()
+
+
+## Meeting a need rolls the reward of the tier of the kind it was shown by; what is won goes
+## into the backpack, each with a floating "+1 쌍화탕" over the traveler. Returns the items.
+func _reward_need(id: String) -> Array[String]:
+	var entry: Dictionary = needs.entry_of(id)
+	var tier := ""
+	for kind in config["kinds"]:
+		if kind["id"] == entry["from_kind"]:
+			tier = String(kind["tier"])
+	var won := NeedRewards.roll(config["need_rewards"], tier, reward_rng)
+	var given: Array[String] = []
+	for item_id in won:
+		if GameState.inventory.add(item_id):
+			var at: Vector3 = player.global_position + Vector3(0.0, float_label_height + 0.5 * given.size(), 0.0)
+			FloatLabel.make(self, "+1 %s" % String(Content.item(item_id)["name_ko"]), at, float_label_config)
+			given.append(item_id)
+	return given
 
 
 ## A red flash and blood on both travelers (the second a moment later).
@@ -461,7 +566,10 @@ func click(screen_pos: Vector2) -> bool:
 	if not picks_allowed():
 		return false
 	var walker = animal_at(screen_pos)
-	return walker != null and picking.start_walk(walker_slot[walker])
+	if walker != null:
+		return picking.start_walk(walker_slot[walker])
+	var pile := pickup_at(screen_pos)
+	return pile >= 0 and picking.start_walk_pile(pile)
 
 
 ## The grabbable animal (that still has its letter) under a screen point, or null: the ray
@@ -487,29 +595,107 @@ func animal_at(screen_pos: Vector2):
 	return best
 
 
-## Space: grabs the nearest animal's letter within the grab radius, at once, and drops any
-## click-walk. True if something was grabbed.
+## The healing bottle (a Picking pile index) under a screen point, or -1: the ray against
+## a box round the bottle, grown by grab.click_pad_m.
+func pickup_at(screen_pos: Vector2) -> int:
+	var origin := camera.project_ray_origin(screen_pos)
+	var direction := camera.project_ray_normal(screen_pos)
+	var pad := float(config["grab"]["click_pad_m"])
+	var look: Dictionary = config["heal_pickups"]["look"]
+	var best := -1
+	var best_distance := INF
+	for index in pickup_nodes:
+		if not picking.is_pile_pickable(index):
+			continue
+		var half := float(look["radius"]) + pad
+		var height := float(look["lift"]) + float(look["height"]) + pad
+		var base: Vector3 = pickup_nodes[index].global_position
+		var hit = AABB(base + Vector3(-half, -pad, -half), Vector3(2.0 * half, height + pad, 2.0 * half)).intersects_ray(origin, direction)
+		if hit != null and origin.distance_to(hit) < best_distance:
+			best_distance = origin.distance_to(hit)
+			best = int(index)
+	return best
+
+
+## Space: takes what is nearest within reach at once (an animal's letter, or a healing
+## bottle), and drops any click-walk. True if something was taken.
 func pick_nearest() -> bool:
 	picking.cancel_walk()
 	if not picks_allowed():
 		return false
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
+	if target["type"] == "pile":
+		return not collect_pickup(int(target["index"])).is_empty()
 	if target["type"] != "plant":
 		return false
 	var walker = slot_walker.get(int(target["index"]))
 	return walker != null and not grab_animal(walker).is_empty()
 
 
+## The scene's healing bottles (Prompt 9b-ii): seeded places, a node each, a Picking pile each.
+func _build_pickups() -> void:
+	var cfg: Dictionary = config["heal_pickups"]
+	var holder := Node3D.new()
+	holder.name = "Pickups"
+	add_child(holder)
+	var starts: Array = []
+	for id in config["start"]:
+		starts.append(Vector2(float(config["start"][id][0]), float(config["start"][id][1])))
+	var placed := HealPickups.place(cfg, DecoyPlacement.derive_seed(crossing_seed, SALT_PICKUPS), walk_bounds(), lake_center, lake_radius, float(config["lake"]["clearance_m"]), starts)
+	for entry in placed:
+		var spot: Vector2 = entry["spot"]
+		var node := HealPickup.new()
+		node.setup(Content.item(String(entry["item"])), cfg["look"], float(pickup_nodes.size()) * 1.7)
+		holder.add_child(node)
+		node.global_position = Vector3(spot.x, terrain.height_at(spot.x), spot.y)
+		var index: int = picking.add_pile(spot, 1)
+		pickup_items[index] = String(entry["item"])
+		pickup_nodes[index] = node
+
+
+## A healing bottle goes into the backpack with a floating "+1 쌍화탕". {} if it is gone or
+## picks are not allowed now; otherwise {"item"}.
+func collect_pickup(index: int) -> Dictionary:
+	if not picks_allowed() or not pickup_items.has(index):
+		return {}
+	if picking.pick_pile(index, true)["result"] != "pile":
+		return {}
+	var item_id: String = pickup_items[index]
+	var node: Node3D = pickup_nodes[index]
+	node.visible = false
+	GameState.inventory.add(item_id)
+	FloatLabel.make(self, "+1 %s" % String(Content.item(item_id)["name_ko"]), node.global_position + Vector3(0.0, float_label_height - 1.0, 0.0), float_label_config)
+	return {"item": item_id}
+
+
+func _update_pickups(delta: float) -> void:
+	_pickup_time += delta
+	for index in pickup_nodes:
+		pickup_nodes[index].bob(_pickup_time)
+
+
 ## One tick of a click-walk: the direction to walk (after the animal), the grab on arrival.
 func _walk_step(delta: float) -> Vector2:
+	var pile: int = picking.walk_pile
 	var walker = slot_walker.get(picking.walk_target)
-	if walker == null:
+	var goal := Vector2.ZERO
+	if pile >= 0:
+		if not picking.is_pile_pickable(pile):
+			picking.cancel_walk()
+			return Vector2.ZERO
+		goal = picking.pile_spot(pile)
+	elif walker != null:
+		goal = walker.position()
+	else:
 		picking.cancel_walk()
 		return Vector2.ZERO
-	var to: Vector2 = walker.position() - Vector2(player.global_position.x, player.global_position.z)
+	var to: Vector2 = goal - Vector2(player.global_position.x, player.global_position.z)
 	match picking.walk_update(to.length(), delta):
 		"arrived":
-			grab_animal(walker)
+			if pile >= 0:
+				collect_pickup(pile)
+			else:
+				grab_animal(walker)
 		"walking":
 			return to.normalized()
 	return Vector2.ZERO
@@ -533,12 +719,14 @@ func grab_animal(walker) -> Dictionary:
 	_fly_letter(letter, node.global_position + Vector3(0.0, node.tile.position.y, 0.0))
 	var cost := Grab.cost(walker.kind, grab_rng)
 	crossing.flee(walker, float(config["grab"]["flee_speed_scale"]))
+	if not cost["bite"]:  # it only ran: the grab cost nothing
+		return {"letter": letter, "units": 0, "death": false, "bite": false}
 	var units: int = int(GameState.heart_units[GRABBER]) if cost["death"] else int(cost["units"])
 	var lethal := GameState.damage_units(GRABBER, units, "animal_bite")
 	HitFx.hit(self, travelers[GRABBER], gore)
 	if lethal:
 		begin_death_beat()
-	return {"letter": letter, "units": units, "death": cost["death"]}
+	return {"letter": letter, "units": units, "death": cost["death"], "bite": true}
 
 
 ## The letter flies from the animal to the basket: a label on its own layer that is gone
@@ -568,10 +756,11 @@ func _update_reach(delta: float) -> void:
 	_ring_time += delta
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
 	var walker = slot_walker.get(int(target["index"])) if target["type"] == "plant" else null
-	_ring.visible = walker != null and animal_nodes.has(walker)
+	var bottle = pickup_nodes.get(int(target["index"])) if target["type"] == "pile" else null
+	_ring.visible = (walker != null and animal_nodes.has(walker)) or bottle != null
 	if not _ring.visible:
 		return
-	var at: Vector3 = animal_nodes[walker].global_position
+	var at: Vector3 = bottle.global_position if bottle != null else animal_nodes[walker].global_position
 	_ring.global_position = at
 	var outer: float = picking.ring_radius()
 	_ring.mesh = ReachRing.mesh(outer, maxf(outer - picking.ring_width, 0.0), at, terrain.height_at)
@@ -678,6 +867,17 @@ func ground_hit(screen: Vector2) -> Vector2:
 func camera_footprint() -> Array[Vector2]:
 	var size := get_viewport().get_visible_rect().size
 	return [ground_hit(Vector2(0.0, 0.0)), ground_hit(Vector2(size.x, 0.0)), ground_hit(size), ground_hit(Vector2(0.0, size.y))]
+
+
+## The ground the camera shows as a rectangle over (x, z): the box round the footprint's
+## corners (animals enter and leave outside it).
+func view_rect() -> Rect2:
+	var low := Vector2(INF, INF)
+	var high := Vector2(-INF, -INF)
+	for corner in camera_footprint():
+		low = Vector2(minf(low.x, corner.x), minf(low.y, corner.y))
+		high = Vector2(maxf(high.x, corner.x), maxf(high.y, corner.y))
+	return Rect2(low, high - low)
 
 
 ## Follows the player in x, z and height; then fit_camera() keeps the view over the map.
