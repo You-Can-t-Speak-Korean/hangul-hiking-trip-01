@@ -34,6 +34,8 @@ const ChaosPiles := preload("res://scenes/foraging/chaos_piles.gd")
 const Pile := preload("res://scenes/foraging/pile.gd")
 const DecoyGore := preload("res://scenes/foraging/decoy_gore.gd")
 const DecoyGoreFx := preload("res://scenes/foraging/decoy_gore_fx.gd")
+const HitFx := preload("res://scenes/foraging/hit_fx.gd")
+const ReachRing := preload("res://scenes/foraging/reach_ring.gd")
 const Ending := preload("res://scenes/foraging/ending.gd")
 const ExitNote := preload("res://scenes/foraging/exit_note.gd")
 const DeadTree := preload("res://scenes/foraging/dead_tree.gd")
@@ -57,8 +59,6 @@ const SLOT_KEEP_OUT := 2.6      # ...and this far from every spot a decoy or a c
 const NUDGE_PASSES := 12         # a pushed prop can land near another point, so repeat
 const TOOLTIP_OFFSET := Vector2(16.0, 18.0)
 const WALK_UP_TIP_LIFT := 1.2   # metres above a plant where its walk-up name is anchored
-const RING_SEGMENTS := 48
-const RING_LIFT := 0.04         # metres above the ground, so the ring never z-fights
 const GROW_MIN_SCALE := 0.001   # a spare starts here, not at 0, which a transform cannot hold
 
 const NESTOR_COLOR := Color(0.36, 0.45, 0.65)    # slate blue
@@ -490,58 +490,21 @@ func _on_syllable_failed(_word_id: String, _block_index: int, _letters: Array) -
 ## Placeholder gore on both travelers: a blood burst and a red flash, the
 ## second traveler's about gore.stagger seconds after the first.
 func _play_hits() -> void:
-	var delay := 0.0
-	for id in GameState.TRAVELERS:
-		if delay <= 0.0:
-			_hit(id)
-		else:
-			get_tree().create_timer(delay).timeout.connect(_hit.bind(id))
-		delay += float(gore["stagger"])
+	HitFx.play_hits(self, GameState.TRAVELERS, gore, _hit)
 
 
 func _hit(id: String, strength: float = 1.0, tint_time: float = -1.0) -> void:
-	var traveler: Node3D = travelers[id]
-	traveler.flash(_gore_color("tint_color"), float(gore["tint_duration"]) if tint_time < 0.0 else tint_time)
-	_blood(traveler.global_position + Vector3(0.0, Traveler.HEIGHT * 0.65, 0.0), strength)
+	HitFx.hit(self, travelers[id], gore, strength, tint_time)
 
 
 func _gore_color(key: String) -> Color:
-	var c: Array = gore[key]
-	return Color(c[0], c[1], c[2])
+	return HitFx.color(gore, key)
 
 
 ## A short spray of dark red droplets at a world position; `strength` scales
 ## how many there are and how hard they fly (1 is the placeholder gore of 6b).
 func _blood(at: Vector3, strength: float = 1.0) -> CPUParticles3D:
-	var spray := CPUParticles3D.new()
-	spray.name = "Blood"
-	spray.one_shot = true
-	spray.emitting = true
-	spray.amount = roundi(40.0 * strength)
-	spray.lifetime = float(gore["burst_duration"])
-	spray.explosiveness = 0.9
-	spray.direction = Vector3.UP
-	spray.spread = 75.0
-	spray.initial_velocity_min = 2.0 * sqrt(strength)
-	spray.initial_velocity_max = 4.5 * sqrt(strength)
-	spray.gravity = Vector3(0.0, -9.0, 0.0)
-	var drop := SphereMesh.new()
-	drop.radius = 0.07
-	drop.height = 0.14
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.albedo_color = _gore_color("blood_color")
-	drop.material = material
-	spray.mesh = drop
-	var cleanup := Timer.new()
-	cleanup.wait_time = float(gore["burst_duration"]) * 2.0
-	cleanup.one_shot = true
-	cleanup.autostart = true
-	cleanup.timeout.connect(spray.queue_free)
-	spray.add_child(cleanup)
-	add_child(spray)
-	spray.global_position = at
-	return spray
+	return HitFx.blood(self, gore, at, strength)
 
 
 ## Both travelers are dead: from now on nothing can be picked, walked to or
@@ -555,14 +518,7 @@ func begin_death_beat() -> void:
 	_abandon_stuck()
 	_beat_left = float(gore["death_beat"])
 	picking.cancel_walk()
-	var layer := CanvasLayer.new()
-	layer.layer = 20
-	_dim = ColorRect.new()
-	_dim.color = Color(0.0, 0.0, 0.0, 0.0)
-	_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	layer.add_child(_dim)
-	add_child(layer)
+	_dim = HitFx.make_dim(self)
 	death_beat_started.emit()
 
 
@@ -576,8 +532,7 @@ func tick_beat(delta: float) -> void:
 	if _beat_left < 0.0:
 		return
 	_beat_left -= delta
-	var total := maxf(float(gore["death_beat"]), 0.001)
-	_dim.color.a = float(gore["death_dim_alpha"]) * clampf(1.0 - _beat_left / total, 0.0, 1.0)
+	_dim.color.a = HitFx.dim_alpha(gore, _beat_left)
 	if _beat_left <= 0.0:
 		_beat_left = -1.0
 		_restart()
@@ -663,30 +618,13 @@ func _update_reach(delta: float) -> void:
 func _ring_mesh(centre: Vector3) -> ArrayMesh:
 	var outer: float = picking.ring_radius()
 	var inner := maxf(outer - picking.ring_width, 0.0)
-	var surface := SurfaceTool.new()
-	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for i in RING_SEGMENTS:
-		var dir0 := Vector2.from_angle(TAU * i / RING_SEGMENTS)
-		var dir1 := Vector2.from_angle(TAU * (i + 1) / RING_SEGMENTS)
-		var quad: Array[Vector3] = []
-		for c: Vector2 in [dir0 * inner, dir0 * outer, dir1 * outer, dir1 * inner]:
-			quad.append(Vector3(c.x, terrain.height_at(centre.x + c.x) - centre.y + RING_LIFT, c.y))
-		for index in [0, 1, 2, 0, 2, 3]:
-			surface.add_vertex(quad[index])
-	return surface.commit()
+	return ReachRing.mesh(outer, inner, centre, terrain.height_at)
 
 
 func _build_ring() -> void:
-	_ring = MeshInstance3D.new()
-	_ring.name = "ReachRing"
-	_ring_material = StandardMaterial3D.new()
-	_ring_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_ring_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_ring_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_ring_material.albedo_color = Color(picking.ring_color, picking.ring_alpha)
-	_ring.material_override = _ring_material
-	_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_ring.visible = false
+	var made: Array = ReachRing.make(picking)
+	_ring = made[0]
+	_ring_material = made[1]
 	add_child(_ring)
 
 

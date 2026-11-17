@@ -17,6 +17,26 @@ const Animal := preload("res://scenes/animals/animal.gd")
 const Ground := preload("res://scenes/animals/ground.gd")
 const Props := preload("res://scenes/animals/props.gd")
 const Water := preload("res://scenes/animals/water.gd")
+const Picking := preload("res://scenes/foraging/picking.gd")
+const DiscoveryHud := preload("res://scenes/foraging/discovery_hud.gd")
+const BasketHud := preload("res://scenes/foraging/basket_hud.gd")
+const Spelling := preload("res://scenes/foraging/spelling.gd")
+const SpellingHud := preload("res://scenes/foraging/spelling_hud.gd")
+const Damage := preload("res://scenes/foraging/damage.gd")
+const HitFx := preload("res://scenes/foraging/hit_fx.gd")
+const ReachRing := preload("res://scenes/foraging/reach_ring.gd")
+const DecoyPlacement := preload("res://scenes/foraging/decoy_placement.gd")
+const Needs := preload("res://scenes/animals/needs.gd")
+const LetterSupply := preload("res://scenes/animals/letter_supply.gd")
+const Grab := preload("res://scenes/animals/grab.gd")
+const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
+
+## The traveler a bare-hand grab hurts (and whose hands they are).
+const GRABBER := "fernanda"
+## Salts of the seeds derived from the crossing seed (the crossing's own draws are untouched).
+const SALT_LETTERS := 1
+const SALT_GRAB := 2
+const SALT_NEEDS := 3
 
 const GROUND_STEP := 1.0   # metres between ground mesh vertices along x
 
@@ -49,11 +69,39 @@ var pause_hud: CanvasLayer
 var backpack
 var backpack_hud: CanvasLayer
 var hearts_hud: CanvasLayer
+## Prompt 9b. The basket (a foraging Picking: one slot per hand-grabbable animal, its spot
+## following the animal), the needs and their discovery list, the spelling view, the
+## damage of a failed syllable, the seeded letter supply and grab roll.
+var picking
+var basket_hud: CanvasLayer
+var needs
+var discovery_hud: CanvasLayer
+var spelling
+var spelling_hud: CanvasLayer
+var damage
+var supply
+var grab_rng := RandomNumberGenerator.new()
+var gore: Dictionary = {}
+var complete_hud: CanvasLayer
+## Picking slot -> Walker, and the reverse.
+var slot_walker: Dictionary = {}
+var walker_slot: Dictionary = {}
+## From the moment both travelers die until the scene restarts: no grabs, walks or menus.
+var restarting := false
 
 ## Restart scene was chosen: the scene-start snapshot is back (the scene then reloads).
 signal restarted
+## The last of the needs is finished (emitted once).
+signal needs_complete
+## A need joined the discovery list (its id).
+signal need_discovered(id: String)
 
 var _aim_height := 0.0
+var _beat_left := -1.0
+var _dim: ColorRect
+var _ring: MeshInstance3D
+var _ring_material: StandardMaterial3D
+var _ring_time := 0.0
 
 @onready var camera: Camera3D = $Camera3D
 
@@ -99,12 +147,17 @@ func _ready() -> void:
 	backpack_hud.notebook_open_handler = open_notebook
 	backpack_hud.close_requested.connect(close_backpack)
 	crossing = Crossing.new(config, crossing_seed)
+	_build_needs(ui)
 	update_camera(0.0, true)
 
 
 func _exit_tree() -> void:
-	if (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open):  # never leave the tree paused behind
+	if (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open) or (spelling_hud != null and spelling_hud.is_open()):  # never leave the tree paused behind
 		get_tree().paused = false
+
+
+func _process(delta: float) -> void:
+	tick_beat(delta)
 
 
 func _physics_process(delta: float) -> void:
@@ -115,19 +168,42 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
 		open_pause_menu()
 		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		click(event.position)
+	elif event.is_action_pressed("p1_pick"):  # no echo: holding Space grabs once
+		pick_nearest()
+		get_viewport().set_input_as_handled()
 
 
 ## One tick of the map. Public so tests can drive it without a keyboard. While the pause
 ## menu or the backpack is open nobody walks and no animal moves.
 func step(input: Vector2, delta: float) -> void:
-	if not pause_menu.is_open and not backpack.is_open:
-		player.drive(input, delta)
-		partner.follow(player.global_position, float(config["partner_stop_distance"]), delta)
+	var walk := input
+	if discovery_hud.word_select.is_open():
+		if picks_allowed():
+			walk = Vector2.ZERO  # the movement keys only move the highlight
+			picking.cancel_walk()
+		else:
+			discovery_hud.close_word_select()  # a death or a menu took over
+	if not input.is_zero_approx() or not picks_allowed():
+		picking.cancel_walk()  # the keys take over
+	elif picking.is_walking():
+		walk = _walk_step(delta)
+	var running: bool = not restarting and not pause_menu.is_open and not backpack.is_open
+	if running:
+		if not discovery_hud.word_select.is_open():
+			player.drive(walk, delta)
+			partner.follow(player.global_position, float(config["partner_stop_distance"]), delta)
 		for t in travelers.values():
 			_push_out_of_lake(t)
 		_tick_animals(delta)
+		_watch_animals(delta)
 	update_camera(delta)
 	props.set_travelers(player.global_position, partner.global_position, float(config["camera"]["pitch_deg"]))
+	_update_reach(delta)
+	needs.update(delta)
+	discovery_hud.refresh()
+	basket_hud.refresh(delta)
 
 
 # ---- Animals ----
@@ -161,17 +237,33 @@ func _tick_animals(delta: float) -> void:
 			_remove_animal(event["walker"])
 	for walker in animal_nodes:
 		_pose(walker)
+		if walker_slot.has(walker):
+			picking.set_spot(walker_slot[walker], walker.position())
 
 
 func _add_animal(walker) -> void:
 	var node := Animal.new()
-	node.setup(walker.kind, config["label"])
+	node.setup(walker.kind, config["label"], config["letters"]["tile"], config["watch"]["ring"])
 	$Animals.add_child(node)
 	animal_nodes[walker] = node
+	var by_hand: bool = Grab.by_hand(walker.kind)
+	walker.letter = supply.draw(by_hand, needs.missing_letters(spelling, picking.basket))
+	node.set_letter(walker.letter)
+	if by_hand:  # its letter is a slot of the basket's Picking, following the animal
+		var slot: int = picking.add_plant(walker.letter, false, walker.position())
+		walker_slot[walker] = slot
+		slot_walker[slot] = walker
 	_pose(walker)
 
 
 func _remove_animal(walker) -> void:
+	if walker_slot.has(walker):  # the letter leaves with it: it is back in the pool
+		var slot: int = walker_slot[walker]
+		picking.discard_letter(slot)
+		if picking.walk_target == slot:
+			picking.cancel_walk()
+		slot_walker.erase(slot)
+		walker_slot.erase(walker)
 	var node: Node3D = animal_nodes[walker]
 	animal_nodes.erase(walker)
 	node.get_parent().remove_child(node)
@@ -186,12 +278,312 @@ func _pose(walker) -> void:
 	animal_nodes[walker].pose(spot, floor_y, walker.altitude, walker.heading())
 
 
+# ---- Letters, grabs, needs (Prompt 9b) ----
+
+## The basket, the discovery list, the spelling view and the rest, all the foraging scene's
+## own scripts, configured from the section `ui_from` names; plus the animals' own logic.
+func _build_needs(ui: Dictionary) -> void:
+	gore = ui["gore_placeholder"]
+	picking = Picking.new(ui["picking"], {"kinds": [], "placed": []}, ui["reach_ring"])
+	picking.pick_radius = float(config["grab_radius"])
+	needs = Needs.new(config, DecoyPlacement.derive_seed(crossing_seed, SALT_NEEDS), func(id: String) -> bool: return GameState.inventory.count(id) > 0)
+	var known := Content.known_letters(Content.game_index(GameState.game_id))
+	var review := LetterSupply.review_weights(config["kinds"], known, config["letters"]["set"])
+	supply = LetterSupply.new(config["letters"], DecoyPlacement.derive_seed(crossing_seed, SALT_LETTERS), review)
+	grab_rng.seed = DecoyPlacement.derive_seed(crossing_seed, SALT_GRAB)
+	spelling = Spelling.new(ui["spelling_view"], {"kinds": []}, picking.basket)
+	discovery_hud = DiscoveryHud.new()
+	add_child(discovery_hud)
+	discovery_hud.setup(needs, spelling)
+	discovery_hud.entry_pressed.connect(open_spelling)
+	discovery_hud.open_gate = _word_select_allowed
+	basket_hud = BasketHud.new()
+	add_child(basket_hud)
+	basket_hud.setup(picking, ui["basket_hud"])
+	spelling_hud = SpellingHud.new()
+	add_child(spelling_hud)
+	spelling_hud.setup(spelling, basket_hud, ui["keyboard_select"])
+	spelling_hud.changed.connect(_on_spelling_changed)
+	spelling_hud.closed.connect(_on_spelling_closed)
+	damage = Damage.new(ui["damage"])
+	spelling.syllable_failed.connect(_on_syllable_failed)
+	spelling.word_completed.connect(_on_word_completed)
+	var made: Array = ReachRing.make(picking)
+	_ring = made[0]
+	_ring_material = made[1]
+	add_child(_ring)
+	complete_hud = CanvasLayer.new()
+	complete_hud.name = "NeedsCompleteHud"
+	complete_hud.layer = 7
+	complete_hud.visible = false
+	var line := Label.new()
+	line.name = "Line"
+	line.text = String(config["needs"]["complete_text"])
+	line.add_theme_font_override("font", FONT)
+	line.add_theme_font_size_override("font_size", 44)
+	line.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	line.offset_top = 12.0
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	complete_hud.add_child(line)
+	add_child(complete_hud)
+
+
+## False while restarting, while a menu or the backpack is open, or once a traveler is dead.
+func picks_allowed() -> bool:
+	if restarting or pause_menu.is_open or backpack.is_open:
+		return false
+	for id in GameState.TRAVELERS:
+		if not GameState.is_alive(id):
+			return false
+	return true
+
+
+## True if E may open word selection now (nothing is paused or open over the map).
+func _word_select_allowed() -> bool:
+	return not get_tree().paused and not spelling_hud.is_open() and not pause_menu.is_open \
+			and not backpack.is_open and picks_allowed() and _dim == null
+
+
+## A traveler within the watch radius of an animal long enough shows one of its needs.
+func _watch_animals(delta: float) -> void:
+	var spots: Array = []
+	for t in travelers.values():
+		spots.append(Vector2(t.global_position.x, t.global_position.z))
+	var seen: Array = []
+	for walker in crossing.alive:
+		seen.append({"id": walker.id, "kind": String(walker.kind["id"]), "spot": walker.position()})
+	for entry in needs.watch(spots, seen, delta):
+		_on_need_discovered(entry)
+	for walker in animal_nodes:
+		animal_nodes[walker].set_watch(needs.progress_of(walker.id))
+
+
+## A need joined the list: its word goes into the spelling (with no English: the hint is
+## the list's, and it goes away).
+func _on_need_discovered(entry: Dictionary) -> void:
+	spelling.add_word(String(entry["id"]), String(entry["name_ko"]), "")
+	discovery_hud.refresh()
+	need_discovered.emit(String(entry["id"]))
+
+
+## A discovery-list entry was chosen (click or E): a word opens the spelling view and pauses
+## the map; an item is handed over if the backpack holds it. False if nothing happened.
+func open_spelling(id: String) -> bool:
+	discovery_hud.close_word_select()  # a click or a confirm both end keyboard selection
+	if needs.is_item(id):
+		return give_item(id)
+	if spelling_hud.is_open() or not spelling.open(id, picks_allowed()):
+		return false
+	picking.cancel_walk()
+	basket_hud.refresh(basket_hud.POP_TIME)  # tiles still popping in finish, as the map stops
+	spelling_hud.show_word(id)
+	get_tree().paused = true
+	return true
+
+
+## Hands over the item of an item need: one is removed from the backpack and the need is
+## finished, through the spelling's own completion. Nothing happens without the item.
+func give_item(id: String) -> bool:
+	if not picks_allowed() or spelling_hud.is_open() or not needs.is_item(id) or spelling.is_done(id):
+		return false
+	var item := String(needs.entry_of(id)["item"])
+	if GameState.inventory.count(item) < 1 or not GameState.inventory.remove(item):
+		return false
+	spelling.complete_word(id)
+	return true
+
+
+func _on_spelling_changed() -> void:
+	basket_hud.refresh(0.0)
+	discovery_hud.refresh()
+
+
+## The view went away (closed, finished, or the failure flash ended): play on, and settle
+## what the failed syllables cost, as the foraging scene does.
+func _on_spelling_closed() -> void:
+	get_tree().paused = false
+	var result: Dictionary = damage.settle()
+	if result["failures"] > 0:
+		_play_hits()
+		if result["died"]:
+			begin_death_beat()
+
+
+func _on_syllable_failed(_word_id: String, _block_index: int, _letters: Array) -> void:
+	damage.queue_failure()
+
+
+## A word need was finished (spelled, or an item handed over).
+func _on_word_completed(id: String) -> void:
+	discovery_hud.refresh()
+	if needs.mark_done(id):
+		complete_hud.visible = true
+		needs_complete.emit()
+
+
+## A red flash and blood on both travelers (the second a moment later).
+func _play_hits() -> void:
+	HitFx.play_hits(self, GameState.TRAVELERS, gore, _hit_traveler)
+
+
+func _hit_traveler(id: String) -> void:
+	HitFx.hit(self, travelers[id], gore)
+
+
+## Both travelers are dead: the screen dims and the scene restarts when the beat ends.
+func begin_death_beat() -> void:
+	if _dim != null:
+		return
+	restarting = true
+	picking.cancel_walk()
+	_beat_left = float(gore["death_beat"])
+	_dim = HitFx.make_dim(self)
+
+
+func is_death_beat_playing() -> bool:
+	return _beat_left >= 0.0
+
+
+## Advances the death beat (a no-op otherwise); public so tests can drive it.
+func tick_beat(delta: float) -> void:
+	if _beat_left < 0.0:
+		return
+	_beat_left -= delta
+	_dim.color.a = HitFx.dim_alpha(gore, _beat_left)
+	if _beat_left <= 0.0:
+		_beat_left = -1.0
+		_restart()
+
+
+## A left click at a screen point: if it is on an animal a hand can grab, the player walks
+## after it and grabs it on arrival. True if a walk started.
+func click(screen_pos: Vector2) -> bool:
+	if not picks_allowed():
+		return false
+	var walker = animal_at(screen_pos)
+	return walker != null and picking.start_walk(walker_slot[walker])
+
+
+## The grabbable animal (that still has its letter) under a screen point, or null: the ray
+## against the animal's box, grown by grab.click_pad_m and up over its letter tile.
+func animal_at(screen_pos: Vector2):
+	var origin := camera.project_ray_origin(screen_pos)
+	var direction := camera.project_ray_normal(screen_pos)
+	var pad := float(config["grab"]["click_pad_m"])
+	var tile: Dictionary = config["letters"]["tile"]
+	var best = null
+	var best_distance := INF
+	for walker in animal_nodes:
+		if not walker_slot.has(walker) or not picking.is_pickable(walker_slot[walker]):
+			continue
+		var size: Array = walker.kind["size"]
+		var half := maxf(float(size[0]), float(size[2])) / 2.0 + pad
+		var height := float(size[1]) + float(tile["lift"]) + float(tile["size"]) / 2.0 + pad
+		var base: Vector3 = animal_nodes[walker].global_position
+		var hit = AABB(base + Vector3(-half, -pad, -half), Vector3(2.0 * half, height + pad, 2.0 * half)).intersects_ray(origin, direction)
+		if hit != null and origin.distance_to(hit) < best_distance:
+			best_distance = origin.distance_to(hit)
+			best = walker
+	return best
+
+
+## Space: grabs the nearest animal's letter within the grab radius, at once, and drops any
+## click-walk. True if something was grabbed.
+func pick_nearest() -> bool:
+	picking.cancel_walk()
+	if not picks_allowed():
+		return false
+	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
+	if target["type"] != "plant":
+		return false
+	var walker = slot_walker.get(int(target["index"]))
+	return walker != null and not grab_animal(walker).is_empty()
+
+
+## One tick of a click-walk: the direction to walk (after the animal), the grab on arrival.
+func _walk_step(delta: float) -> Vector2:
+	var walker = slot_walker.get(picking.walk_target)
+	if walker == null:
+		picking.cancel_walk()
+		return Vector2.ZERO
+	var to: Vector2 = walker.position() - Vector2(player.global_position.x, player.global_position.z)
+	match picking.walk_update(to.length(), delta):
+		"arrived":
+			grab_animal(walker)
+		"walking":
+			return to.normalized()
+	return Vector2.ZERO
+
+
+## Takes the letter off an animal with a bare hand: it goes into the basket, the animal runs
+## for its exit and bites Fernanda (the kind's cost; a predator may kill them both). {} if
+## nothing was taken: the kind cannot be grabbed by hand, its letter is gone, or grabs are
+## not allowed now. Otherwise {"letter", "units", "death"}.
+func grab_animal(walker) -> Dictionary:
+	if not picks_allowed() or not Grab.by_hand(walker.kind) or not walker_slot.has(walker) or not animal_nodes.has(walker):
+		return {}
+	var result: Dictionary = picking.pick(walker_slot[walker], true)
+	if result["result"] == "none":
+		return {}
+	var letter := String(result["letter"])
+	var node: Node3D = animal_nodes[walker]
+	walker.letter = ""
+	node.set_letter("")
+	basket_hud.refresh(0.0)
+	_fly_letter(letter, node.global_position + Vector3(0.0, node.tile.position.y, 0.0))
+	var cost := Grab.cost(walker.kind, grab_rng)
+	crossing.flee(walker, float(config["grab"]["flee_speed_scale"]))
+	var units: int = int(GameState.heart_units[GRABBER]) if cost["death"] else int(cost["units"])
+	var lethal := GameState.damage_units(GRABBER, units, "animal_bite")
+	HitFx.hit(self, travelers[GRABBER], gore)
+	if lethal:
+		begin_death_beat()
+	return {"letter": letter, "units": units, "death": cost["death"]}
+
+
+## The letter flies from the animal to the basket: a label on its own layer that is gone
+## after grab.fly_s seconds (the basket's tile pops in at once).
+func _fly_letter(letter: String, from_world: Vector3) -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 8
+	var label := Label.new()
+	label.text = letter
+	label.add_theme_font_override("font", FONT)
+	label.add_theme_font_size_override("font_size", int(config["grab"]["fly_font_size"]))
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(label)
+	add_child(layer)
+	var from := camera.unproject_position(from_world)
+	var view := get_viewport().get_visible_rect().size
+	var to := view - Vector2(basket_hud.margin + 70.0, basket_hud.margin + 70.0)
+	label.position = from
+	var tween := create_tween().set_parallel(true)
+	tween.tween_property(label, "position", to, float(config["grab"]["fly_s"]))
+	tween.tween_property(label, "modulate:a", 0.4, float(config["grab"]["fly_s"]))
+	tween.chain().tween_callback(layer.queue_free)
+
+
+## The reach ring sits on the nearest animal in grab range.
+func _update_reach(delta: float) -> void:
+	_ring_time += delta
+	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
+	var walker = slot_walker.get(int(target["index"])) if target["type"] == "plant" else null
+	_ring.visible = walker != null and animal_nodes.has(walker)
+	if not _ring.visible:
+		return
+	var at: Vector3 = animal_nodes[walker].global_position
+	_ring.global_position = at
+	var outer: float = picking.ring_radius()
+	_ring.mesh = ReachRing.mesh(outer, maxf(outer - picking.ring_width, 0.0), at, terrain.height_at)
+	_ring_material.albedo_color.a = picking.ring_alpha_at(_ring_time)
+
+
 # ---- Menus (the foraging scene's, with the same keys) ----
 
 ## Esc: opens the pause menu and pauses the map. False while the backpack is open or the
 ## menu is open already.
 func open_pause_menu() -> bool:
-	if backpack.is_open or not pause_menu.open(true):
+	if backpack.is_open or restarting or spelling_hud.is_open() or discovery_hud.word_select.is_open() or not pause_menu.open(true):
 		return false
 	pause_hud.refresh()
 	get_tree().paused = true
@@ -217,7 +609,7 @@ func open_notebook(action: String) -> bool:
 
 
 func _panel_allowed() -> bool:
-	return not pause_menu.is_open and pause_menu.restart_requests == 0
+	return not pause_menu.is_open and pause_menu.restart_requests == 0 and not restarting and not spelling_hud.is_open() and not discovery_hud.word_select.is_open()
 
 
 func _pause_for_panel() -> void:

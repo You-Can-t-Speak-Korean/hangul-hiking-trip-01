@@ -53,6 +53,11 @@ class Walker extends RefCounted:
 	var descent_len := 1.0
 	var takeoff_at := -1.0
 	var climb_len := 1.0
+	## The jamo it carries ("" once taken). The scene sets it when the animal spawns.
+	var letter := ""
+	## 1 normally; more once it flees (a grab).
+	var speed_scale := 1.0
+	var fled := false
 
 	## Call once `route` is filled in.
 	func finalize() -> void:
@@ -82,7 +87,7 @@ class Walker extends RefCounted:
 			left -= used
 		if left > 0.0:
 			var limit := stop_dist if (stop_dist >= 0.0 and lingered < linger) else length
-			travelled = minf(travelled + float(kind["speed"]) * left, limit)
+			travelled = minf(travelled + float(kind["speed"]) * speed_scale * left, limit)
 		altitude = altitude_at(travelled)
 
 	func _segment() -> int:
@@ -374,6 +379,32 @@ func spawn() -> Walker:
 	alive.append(walker)
 	spawned += 1
 	return walker
+
+
+## The animal runs for its exit: a new route from where it is now (bending round the lake),
+## no linger, no wobble, `speed_scale` times its speed. Does nothing twice. It draws no
+## random numbers.
+func flee(walker: Walker, speed_scale: float) -> void:
+	if walker.fled or walker.exit.is_empty():
+		return
+	walker.fled = true
+	var here := walker.position()
+	var route: Array[Vector2] = [here]
+	var out := Vector2(float(walker.exit["x"]), float(walker.exit["z"]))
+	if walker.keep_out_radius > 0.0:  # a ground animal steers round the lake
+		route.append_array(_detour(here, out))
+	else:  # a flyer or a duck: straight out
+		route.append(out)
+	walker.route = route
+	walker.travelled = 0.0
+	walker.stop_dist = -1.0
+	walker.linger = 0.0
+	walker.lingered = 0.0
+	walker.amplitude = 0.0
+	walker.land_at = -1.0
+	walker.takeoff_at = -1.0
+	walker.speed_scale = speed_scale
+	walker.finalize()
 
 
 ## Edge to edge: a flyer in a straight line, a ground animal by way of a target.

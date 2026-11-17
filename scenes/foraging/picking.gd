@@ -70,6 +70,22 @@ func add_plant(letter: String, decoy: bool, spot: Vector2, locked: bool = false)
 	return _slots.size() - 1
 
 
+## Moves a plant's spot (the animal scene's letters ride animals that walk).
+func set_spot(index: int, spot: Vector2) -> void:
+	if index >= 0 and index < _slots.size():
+		_slots[index]["spot"] = spot
+
+
+## The letter is gone without going to the basket (its carrier left the map).
+func discard_letter(index: int) -> void:
+	if index >= 0 and index < _slots.size():
+		_slots[index]["letter"] = ""
+
+
+func spot_of(index: int) -> Vector2:
+	return _slots[index]["spot"]
+
+
 func unlock(index: int) -> void:
 	if index >= 0 and index < _slots.size():
 		_slots[index]["locked"] = false

@@ -41,6 +41,31 @@ func _init(spelling_config: Dictionary, plants_data: Dictionary, basket: Array[S
 			_words[kind["id"]] = {"name": String(kind["name"]), "hover_name": String(kind["hover_name"]), "solved": solved}
 
 
+## Registers a word after construction (the animal scene's needs are discovered while it
+## plays). `hover_name` may be "" (no English shown). False if the id is taken or the name
+## is not Hangul syllables only.
+func add_word(id: String, name_ko: String, hover_name: String = "") -> bool:
+	if _words.has(id) or Hangul.syllable_count(name_ko) == 0 or Hangul.syllable_count(name_ko) != name_ko.length():
+		return false
+	var solved: Array[String] = []
+	_words[id] = {"name": name_ko, "hover_name": hover_name, "solved": solved}
+	return true
+
+
+## Finishes a word without spelling it (an item handed over): every block counts as judged
+## correct and word_completed is emitted, as for a spelled word. False if the id is unknown,
+## the word is done already, or a word is open.
+func complete_word(id: String) -> bool:
+	if is_open() or not _words.has(id) or is_done(id):
+		return false
+	var done: Array[String] = []
+	for i in block_count(id):
+		done.append(target_syllable(id, i))
+	_words[id]["solved"] = done
+	word_completed.emit(id)
+	return true
+
+
 ## The slots of a syllable block, in order. Hallasan has no 받침, so a block is
 ## an initial and a medial; a syllable with a final gets a third slot, which
 ## the view does not draw yet.

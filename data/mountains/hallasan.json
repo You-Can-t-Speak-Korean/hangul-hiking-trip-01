@@ -418,22 +418,64 @@
       "grass": {"margin_m": 2.0, "edges": ["west", "east"]},
       "air": {"edges": ["west", "east", "far", "near"]}
     },
+    "grab_radius": 1.2,
+    "letters": {
+      "_note": "Prompt 9b: every animal spawns carrying one jamo (scenes/animals/letter_supply.gd), shown on a floating tile ('tile': size and lift in metres, font in Label3D pixels). 'set' is the ten jamo of Hallasan. A draw is weighted base_weight + missing_boost x (how many more of that letter the shown needs still lack, less the basket); before any need is shown it is weighted by the letters of the review words among the kinds' names. While any letter is missing, at least one in every guarantee_every ground spawns (those a hand can grab) carries a missing letter. Flyers and the ducks carry letters but cannot be grabbed by hand. Placeholders.",
+      "set": ["ㅏ", "ㅓ", "ㅗ", "ㅜ", "ㅣ", "ㄱ", "ㄴ", "ㄹ", "ㅁ", "ㅇ"],
+      "guarantee_every": 3,
+      "missing_boost": 6.0,
+      "base_weight": 1.0,
+      "tile": {"size": 0.6, "lift": 0.45, "font_size": 64, "pixel_size": 0.0075, "outline_size": 10}
+    },
+    "grab": {
+      "_note": "Bare-hand grab (Fernanda). Space takes the nearest ground animal's letter within animals.grab_radius (1.2 m); a click on an animal walks her after it (she gives up after foraging.picking.walk_stuck_timeout). The letter flies to the basket over 'fly_s' seconds, the animal bites her (the cost is the kind's 'grab' block: units are half-hearts; a predator rolls death_chance for both travelers, else 1..max_units) and runs for its exit at 'flee_speed_scale' times its speed. 'click_pad_m' widens an animal's box for clicking.",
+      "fly_s": 0.45,
+      "flee_speed_scale": 2.5,
+      "click_pad_m": 0.3,
+      "fly_font_size": 40
+    },
+    "watch": {
+      "_note": "A traveler within 'radius' m of one animal for 'seconds' (the clock restarts if it steps out) shows one of that animal's needs (one need per animal, never more than needs.needs_total in all). 'ring' is the progress ring on the animal: pad_m outside its box, width_m thick, colour r, g, b, alpha.",
+      "radius": 8.0,
+      "seconds": 3.0,
+      "ring": {"pad_m": 0.4, "width_m": 0.12, "color": [1.0, 0.9, 0.35], "alpha": 0.85}
+    },
+    "needs": {
+      "_note": "What the animals need (Prompt 9b), by kind id: a word to spell ('word' Korean, 'en' its English hint) or an item to hand over ('item', an id of items.json; only drawn if Fernanda's backpack holds it). Needs are distinct across the run; needs_total of them end the scene's needs. A new need's English hint shows 'hint.show_s' seconds, flickers 'hint.flicker_s' seconds (flicker_rate changes per second) and is then gone for good; its row fades in over fade_time. 'complete_text' is the placeholder line shown at needs_total of needs_total.",
+      "needs_total": 6,
+      "fade_time": 0.1,
+      "hint": {"show_s": 0.6, "flicker_s": 0.4, "flicker_rate": 10},
+      "complete_text": "6/6",
+      "table": {
+        "noru": [{"word": "고구마", "en": "sweet potato"}, {"word": "나무", "en": "tree"}, {"word": "우리", "en": "pen"}],
+        "goraeni": [{"word": "고구마", "en": "sweet potato"}],
+        "saseum": [{"word": "나무", "en": "tree"}],
+        "meotdwaeji": [{"word": "고구마", "en": "sweet potato"}, {"word": "나무", "en": "tree"}],
+        "deulgae": [{"word": "고기", "en": "meat"}, {"word": "노루", "en": "roe deer"}],
+        "geomdokseuri": [{"word": "고기", "en": "meat"}, {"word": "오리", "en": "duck"}, {"word": "고라니", "en": "water deer"}],
+        "keunburikkamagwi": [{"word": "나무", "en": "tree"}, {"word": "고기", "en": "meat"}, {"word": "거미", "en": "spider"}],
+        "osori": [{"word": "거미", "en": "spider"}, {"item": "plant_meoru"}],
+        "jejujokjebi": [{"word": "고기", "en": "meat"}, {"word": "오리", "en": "duck"}],
+        "bibaribaem": [{"word": "나무", "en": "tree"}],
+        "ori": [{"word": "오이", "en": "cucumber"}, {"item": "plant_minari"}]
+      }
+    },
     "spawn": {"interval_min_s": 2.4, "interval_max_s": 5.4, "max_alive": 5, "first_spawn_s": 1.0},
     "linger": {"min_s": 4.0, "max_s": 8.0, "duck_waypoints_min": 2, "duck_waypoints_max": 3},
     "path": {"wobble_amplitude_m": 0.8, "wobble_wavelength_m": 10.0, "fly_height": 4.0},
-    "label": {"lift": 0.5, "font_size": 48, "pixel_size": 0.008, "color": [1.0, 1.0, 1.0], "outline_size": 12},
+    "label": {"lift": 1.0, "font_size": 48, "pixel_size": 0.008, "color": [1.0, 1.0, 1.0], "outline_size": 12},
     "kinds": [
-      {"id": "noru", "name_ko": "노루", "tier": "endangered", "predator": false, "flies": false, "size": [0.5, 0.9, 1.1], "speed": 3.5, "color": [0.72, 0.52, 0.32], "habitat": ["forest", "grass"], "weight": 10},
-      {"id": "goraeni", "name_ko": "고라니", "tier": "extinct", "predator": false, "flies": false, "size": [0.5, 0.8, 1.0], "speed": 3.5, "color": [0.62, 0.48, 0.3], "habitat": ["shore"], "weight": 8},
-      {"id": "saseum", "name_ko": "사슴", "tier": "extinct", "predator": false, "flies": false, "size": [0.6, 1.2, 1.4], "speed": 3.0, "color": [0.55, 0.38, 0.22], "habitat": ["forest", "grass"], "weight": 3},
-      {"id": "meotdwaeji", "name_ko": "멧돼지", "tier": "common", "predator": true, "flies": false, "size": [0.7, 0.8, 1.3], "speed": 3.0, "color": [0.25, 0.2, 0.18], "habitat": ["forest"], "weight": 5},
-      {"id": "deulgae", "name_ko": "들개", "tier": "common", "predator": true, "flies": false, "size": [0.4, 0.7, 0.9], "speed": 4.0, "color": [0.55, 0.5, 0.42], "habitat": ["grass"], "weight": 4},
-      {"id": "geomdokseuri", "name_ko": "검독수리", "tier": "endangered", "predator": true, "flies": true, "size": [1.4, 0.4, 0.8], "speed": 7.0, "color": [0.2, 0.15, 0.1], "habitat": ["air"], "weight": 2},
-      {"id": "keunburikkamagwi", "name_ko": "큰부리까마귀", "tier": "common", "predator": false, "flies": true, "size": [0.6, 0.3, 0.5], "speed": 5.0, "color": [0.08, 0.08, 0.1], "habitat": ["air"], "weight": 6},
-      {"id": "osori", "name_ko": "오소리", "tier": "common", "predator": false, "flies": false, "size": [0.5, 0.45, 0.8], "speed": 1.5, "color": [0.4, 0.4, 0.42], "habitat": ["forest"], "weight": 5},
-      {"id": "jejujokjebi", "name_ko": "제주족제비", "tier": "common", "predator": false, "flies": false, "size": [0.2, 0.2, 0.6], "speed": 3.0, "color": [0.7, 0.45, 0.2], "habitat": ["shore"], "weight": 3},
-      {"id": "bibaribaem", "name_ko": "비바리뱀", "tier": "endangered", "predator": false, "flies": false, "size": [0.12, 0.12, 1.0], "speed": 1.0, "color": [0.3, 0.55, 0.25], "habitat": ["shore"], "weight": 2},
-      {"id": "ori", "name_ko": "오리", "tier": "common", "predator": false, "flies": false, "size": [0.3, 0.35, 0.5], "speed": 1.5, "color": [0.45, 0.55, 0.35], "habitat": ["lake"], "weight": 6}
+      {"id": "noru", "name_ko": "노루", "tier": "endangered", "predator": false, "flies": false, "size": [0.5, 0.9, 1.1], "speed": 3.5, "color": [0.72, 0.52, 0.32], "habitat": ["forest", "grass"], "weight": 10, "grab": {"hand": true, "units": 1}},
+      {"id": "goraeni", "name_ko": "고라니", "tier": "extinct", "predator": false, "flies": false, "size": [0.5, 0.8, 1.0], "speed": 3.5, "color": [0.62, 0.48, 0.3], "habitat": ["shore"], "weight": 8, "grab": {"hand": true, "units": 1}},
+      {"id": "saseum", "name_ko": "사슴", "tier": "extinct", "predator": false, "flies": false, "size": [0.6, 1.2, 1.4], "speed": 3.0, "color": [0.55, 0.38, 0.22], "habitat": ["forest", "grass"], "weight": 3, "grab": {"hand": true, "units": 2}},
+      {"id": "meotdwaeji", "name_ko": "멧돼지", "tier": "common", "predator": true, "flies": false, "size": [0.7, 0.8, 1.3], "speed": 3.0, "color": [0.25, 0.2, 0.18], "habitat": ["forest"], "weight": 5, "grab": {"hand": true, "max_units": 5, "death_chance": 0.25}},
+      {"id": "deulgae", "name_ko": "들개", "tier": "common", "predator": true, "flies": false, "size": [0.4, 0.7, 0.9], "speed": 4.0, "color": [0.55, 0.5, 0.42], "habitat": ["grass"], "weight": 4, "grab": {"hand": true, "max_units": 4, "death_chance": 0.25}},
+      {"id": "geomdokseuri", "name_ko": "검독수리", "tier": "endangered", "predator": true, "flies": true, "size": [1.4, 0.4, 0.8], "speed": 7.0, "color": [0.2, 0.15, 0.1], "habitat": ["air"], "weight": 2, "grab": {"hand": false, "max_units": 4, "death_chance": 0.25}},
+      {"id": "keunburikkamagwi", "name_ko": "큰부리까마귀", "tier": "common", "predator": false, "flies": true, "size": [0.6, 0.3, 0.5], "speed": 5.0, "color": [0.08, 0.08, 0.1], "habitat": ["air"], "weight": 6, "grab": {"hand": false, "units": 2}},
+      {"id": "osori", "name_ko": "오소리", "tier": "common", "predator": false, "flies": false, "size": [0.5, 0.45, 0.8], "speed": 1.5, "color": [0.4, 0.4, 0.42], "habitat": ["forest"], "weight": 5, "grab": {"hand": true, "units": 1}},
+      {"id": "jejujokjebi", "name_ko": "제주족제비", "tier": "common", "predator": false, "flies": false, "size": [0.2, 0.2, 0.6], "speed": 3.0, "color": [0.7, 0.45, 0.2], "habitat": ["shore"], "weight": 3, "grab": {"hand": true, "units": 1}},
+      {"id": "bibaribaem", "name_ko": "비바리뱀", "tier": "endangered", "predator": false, "flies": false, "size": [0.12, 0.12, 1.0], "speed": 1.0, "color": [0.3, 0.55, 0.25], "habitat": ["shore"], "weight": 2, "grab": {"hand": true, "units": 1}},
+      {"id": "ori", "name_ko": "오리", "tier": "common", "predator": false, "flies": false, "size": [0.3, 0.35, 0.5], "speed": 1.5, "color": [0.45, 0.55, 0.35], "habitat": ["lake"], "weight": 6, "grab": {"hand": false, "units": 1}}
     ]
   }
 }

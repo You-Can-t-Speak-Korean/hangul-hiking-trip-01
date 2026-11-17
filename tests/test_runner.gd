@@ -147,11 +147,17 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_animals_edges",
 	"test_animals_offscreen",
 	"test_animals_cover",
+	"test_animals9b_data",
+	"test_animals9b_needs",
+	"test_animals9b_supply",
+	"test_animals9b_grab_logic",
+	"test_animals9b_scene",
+	"test_animals9b_needs_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3393
+const MIN_CHECKS := 3661
 
 
 func check(condition: bool, label: String) -> void:
@@ -341,6 +347,13 @@ func _ready() -> void:
 	await test_animals_edges()
 	test_animals_offscreen()
 	await test_animals_cover()
+	print("== Animal letters, grabs and needs ==")
+	test_animals9b_data()
+	test_animals9b_needs()
+	test_animals9b_supply()
+	test_animals9b_grab_logic()
+	await test_animals9b_scene()
+	await test_animals9b_needs_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -11034,3 +11047,862 @@ func _full_solved(map: Node3D, id: String) -> Array[String]:
 	for i in map.spelling.block_count(id):
 		done.append(map.spelling.target_syllable(id, i))
 	return done
+
+
+# ---- Prompt 9b: letters on animals, bare-hand grabs, needs ----
+
+const NeedsScript := preload("res://scenes/animals/needs.gd")
+const SupplyScript := preload("res://scenes/animals/letter_supply.gd")
+const GrabScript := preload("res://scenes/animals/grab.gd")
+const HitFxScript := preload("res://scenes/foraging/hit_fx.gd")
+const ReachRingScript := preload("res://scenes/foraging/reach_ring.gd")
+const AnimalScript := preload("res://scenes/animals/animal.gd")
+
+const NINE_B_LETTERS: Array[String] = ["ㅏ", "ㅓ", "ㅗ", "ㅜ", "ㅣ", "ㄱ", "ㄴ", "ㄹ", "ㅁ", "ㅇ"]
+## The need table of the task: "w:word:English" or "i:item id", per kind id.
+const EXPECTED_NEEDS := {
+	"noru": ["w:고구마:sweet potato", "w:나무:tree", "w:우리:pen"],
+	"goraeni": ["w:고구마:sweet potato"],
+	"saseum": ["w:나무:tree"],
+	"meotdwaeji": ["w:고구마:sweet potato", "w:나무:tree"],
+	"deulgae": ["w:고기:meat", "w:노루:roe deer"],
+	"geomdokseuri": ["w:고기:meat", "w:오리:duck", "w:고라니:water deer"],
+	"keunburikkamagwi": ["w:나무:tree", "w:고기:meat", "w:거미:spider"],
+	"osori": ["w:거미:spider", "i:plant_meoru"],
+	"jejujokjebi": ["w:고기:meat", "w:오리:duck"],
+	"bibaribaem": ["w:나무:tree"],
+	"ori": ["w:오이:cucumber", "i:plant_minari"],
+}
+## The grab costs of the task (half-hearts), per kind id.
+const EXPECTED_GRAB := {
+	"noru": {"hand": true, "units": 1}, "goraeni": {"hand": true, "units": 1}, "saseum": {"hand": true, "units": 2},
+	"meotdwaeji": {"hand": true, "max_units": 5}, "deulgae": {"hand": true, "max_units": 4},
+	"geomdokseuri": {"hand": false, "max_units": 4}, "keunburikkamagwi": {"hand": false, "units": 2},
+	"osori": {"hand": true, "units": 1}, "jejujokjebi": {"hand": true, "units": 1}, "bibaribaem": {"hand": true, "units": 1},
+	"ori": {"hand": false, "units": 1},
+}
+
+
+func _ui_config() -> Dictionary:
+	return Content.mountain("hallasan")[String(_animals_config()["ui_from"])]
+
+
+func _need_rows(kind_id: String) -> Array:
+	var rows: Array = []
+	for row in _animals_config()["needs"]["table"].get(kind_id, []):
+		rows.append(("w:%s:%s" % [row["word"], row["en"]]) if row.has("word") else ("i:%s" % row["item"]))
+	return rows
+
+
+func test_animals9b_data() -> void:
+	var cfg := _animals_config()
+	var table: Dictionary = cfg["needs"]["table"]
+	check(table.size() == EXPECTED_NEEDS.size(), "the need table has one entry per kind that has needs (%d)" % table.size())
+	for kind_id in EXPECTED_NEEDS:
+		check(_need_rows(kind_id) == EXPECTED_NEEDS[kind_id], "the needs of %s match the task" % kind_id)
+	var kind_ids: Array[String] = []
+	for kind in cfg["kinds"]:
+		kind_ids.append(String(kind["id"]))
+	var known_kinds := true
+	for kind_id in table:
+		known_kinds = known_kinds and kind_ids.has(kind_id)
+	check(known_kinds, "every kind in the need table is a kind of the map")
+	var only_set := true
+	var items_exist := true
+	for kind_id in table:
+		for row in table[kind_id]:
+			if row.has("word"):
+				for token in Hangul.tokens_of(String(row["word"])):
+					only_set = only_set and NINE_B_LETTERS.has(token)
+				only_set = only_set and Hangul.syllable_count(String(row["word"])) == String(row["word"]).length() and String(row["en"]) != ""
+			else:
+				items_exist = items_exist and Content.has_item(String(row["item"]))
+	check(only_set, "every need word uses only the ten letters of Hallasan (and has an English hint)")
+	check(items_exist, "every item need names an item that exists")
+	check(Array(cfg["letters"]["set"]) == NINE_B_LETTERS, "the letter set is the ten jamo")
+	var known := Content.known_letters(Content.game_index("hallasan"))
+	var set_is_curriculum := true
+	for letter in NINE_B_LETTERS:
+		set_is_curriculum = set_is_curriculum and known.has(letter)
+	check(set_is_curriculum and known.size() == 10, "...and they are exactly the letters taught in game 1")
+	check(int(cfg["needs"]["needs_total"]) == 6 and int(cfg["letters"]["guarantee_every"]) == 3, "needs_total is 6 and guarantee_every is 3")
+	check(is_equal_approx(float(cfg["watch"]["radius"]), 8.0) and is_equal_approx(float(cfg["watch"]["seconds"]), 3.0), "the watch is 8 m for 3 s")
+	check(is_equal_approx(float(cfg["grab_radius"]), 1.2), "the grab radius is 1.2 m")
+	var hint: Dictionary = cfg["needs"]["hint"]
+	check(is_equal_approx(float(hint["show_s"]), 0.6) and is_equal_approx(float(hint["flicker_s"]), 0.4) and float(hint["flicker_rate"]) > 0.0, "the English hint shows 0.6 s and flickers 0.4 s")
+	check(is_equal_approx(float(cfg["grab"]["flee_speed_scale"]), 2.5) and float(cfg["grab"]["fly_s"]) > 0.0, "the grab data has a flee speed and a fly time")
+	var grab_ok := true
+	for kind in cfg["kinds"]:
+		var want: Dictionary = EXPECTED_GRAB[kind["id"]]
+		var grab: Dictionary = kind["grab"]
+		grab_ok = grab_ok and bool(grab["hand"]) == bool(want["hand"])
+		for key in ["units", "max_units"]:
+			grab_ok = grab_ok and grab.has(key) == want.has(key) and (not want.has(key) or int(grab[key]) == int(want[key]))
+		grab_ok = grab_ok and (not grab.has("max_units") or is_equal_approx(float(grab["death_chance"]), 0.25))
+		grab_ok = grab_ok and (grab["hand"] == (not bool(kind["flies"]) and kind["id"] != "ori"))
+	check(grab_ok, "every kind's grab block is the task's: costs, predators' 1/4 death chance, no hand grab for flyers and 오리")
+	# The foraging settings the animal scene takes: it needs them all.
+	var ui := _ui_config()
+	var has_ui := true
+	for key in ["picking", "reach_ring", "basket_hud", "spelling_view", "keyboard_select", "damage", "gore_placeholder", "hearts_hud", "discovery"]:
+		has_ui = has_ui and ui.has(key)
+	check(has_ui, "the section ui_from names has every block the 9b HUDs read")
+	_section_done("test_animals9b_data")
+
+
+func _all_true(_id: String) -> bool:
+	return true
+
+
+func _none_true(_id: String) -> bool:
+	return false
+
+
+func _needs_for_test(seed_value := 1, with_items := true):
+	return NeedsScript.new(_animals_config(), seed_value, _all_true if with_items else _none_true)
+
+
+func test_animals9b_needs() -> void:
+	var cfg := _animals_config()
+	# Eligibility and the item rule.
+	var needs = _needs_for_test(3, false)
+	check(needs.eligible("osori").size() == 1 and needs.eligible("osori")[0].has("word"), "without the item, 오소리 can only show 거미")
+	check(needs.eligible("ori").size() == 1 and needs.eligible("ori")[0]["word"] == "오이", "...and 오리 only 오이")
+	needs = _needs_for_test(3, true)
+	check(needs.eligible("osori").size() == 2 and needs.eligible("ori").size() == 2, "with the items, both rows are eligible")
+	check(needs.eligible("nobody").is_empty(), "an unknown kind has nothing")
+	# Everything that can be drawn: never more than 6, no duplicates, no item without the item.
+	for seed_value in range(1, 11):
+		var all_kinds: Array = cfg["needs"]["table"].keys()
+		var with_items: bool = seed_value % 2 == 0
+		var n = _needs_for_test(seed_value, with_items)
+		var rolls := 0
+		var spare_draws := 0
+		for pass_index in 6:
+			for kind_id in all_kinds:
+				var entry: Dictionary = n.discover(kind_id)
+				rolls += 1
+				spare_draws += 0 if entry.is_empty() else 1
+		var ids: Array = []
+		var item_without := false
+		for entry in n.entries:
+			ids.append(entry["id"])
+			item_without = item_without or (entry["kind"] == "item" and not with_items)
+		var unique := {}
+		for id in ids:
+			unique[id] = true
+		check(n.entries.size() == 6 and unique.size() == 6, "seed %d: drawing from every kind shows exactly 6 distinct needs (%d)" % [seed_value, n.entries.size()])
+		check(not item_without, "seed %d: no item need without the item" % seed_value)
+		check(n.discover("noru").is_empty() and n.eligible("noru").is_empty(), "seed %d: nothing more is drawn at 6" % seed_value)
+	# One seed gives one sequence.
+	var first = _needs_for_test(5, true)
+	var second = _needs_for_test(5, true)
+	var a: Array = []
+	var b: Array = []
+	for kind_id in ["noru", "osori", "ori", "keunburikkamagwi"]:
+		a.append(first.discover(kind_id).get("id", ""))
+		b.append(second.discover(kind_id).get("id", ""))
+	check(a == b and not a.has(""), "the same seed shows the same needs (%s)" % str(a))
+	# Entries: syllable blocks, hint, item entries.
+	var entry: Dictionary = _needs_for_test(2, true).discover("goraeni")
+	check(entry["id"] == "고구마" and entry["name_ko"] == "고구마" and entry["hover_name"] == "sweet potato" and entry["syllables"] == 3 and entry["kind"] == "word" and entry["age"] == 0.0, "a word entry: its word, its English hint, one block per syllable")
+	var item_needs = _needs_for_test(2, true)
+	var item_entry := {}
+	for i in 3:
+		var drawn: Dictionary = item_needs.discover("osori")
+		if drawn.get("kind", "") == "item":
+			item_entry = drawn
+	check(item_entry.get("id", "") == "plant_meoru" and item_entry["hover_name"] == "Wild grape" and item_entry["syllables"] == 2 and item_entry["item"] == "plant_meoru" and item_needs.is_item("plant_meoru"), "an item entry: the item's English name as the hint, two blocks for 머루")
+	# The hint: solid, then flickering, then gone for good.
+	var probe := {"age": 0.0}
+	var shown := needs.hint_alpha(probe) == 1.0
+	probe["age"] = 0.6
+	shown = shown and needs.hint_alpha(probe) == 1.0
+	check(shown, "the hint is solid until 0.6 s")
+	var alphas := {}
+	for step in 40:
+		probe["age"] = 0.6 + step * 0.01
+		alphas[needs.hint_alpha(probe)] = true
+	check(alphas.has(0.0) and alphas.has(1.0) and alphas.size() == 2, "from 0.6 s to 1.0 s it flickers between shown and hidden")
+	var gone := true
+	for age in [1.0, 1.01, 2.0, 60.0]:
+		probe["age"] = age
+		gone = gone and needs.hint_alpha(probe) == 0.0
+	check(gone, "after 1.0 s it is gone for good")
+	probe["age"] = 0.05
+	check(is_equal_approx(needs.opacity(probe), 0.5) and needs.opacity({"age": 9.0}) == 1.0, "the row fades in over fade_time")
+	# Watching.
+	var spot := Vector2(40.0, 10.0)
+	var animal := {"id": 7, "kind": "noru", "spot": spot}
+	var w = _needs_for_test(1, true)
+	var found: Array = []
+	var near: Array = [spot + Vector2(5.0, 0.0)]
+	for i in 29:
+		found.append_array(w.watch(near, [animal], 0.1))
+	check(found.is_empty() and w.entries.is_empty(), "after 2.9 s in range, nothing is shown")
+	check(w.progress_of(7) > 0.95 and w.progress_of(7) < 1.0, "the watch ring is nearly full (%.3f)" % w.progress_of(7))
+	found.append_array(w.watch(near, [animal], 0.1))
+	check(found.size() == 1 and w.entries.size() == 1, "after exactly watch.seconds (3 s) one need is shown")
+	check(EXPECTED_NEEDS["noru"].any(func(r: String) -> bool: return r.begins_with("w:" + String(found[0]["id"]) + ":")), "...a need of that animal's kind")
+	for i in 100:
+		w.watch(near, [animal], 0.1)
+	check(w.entries.size() == 1 and w.progress_of(7) == 0.0, "the same animal shows no second need and its ring is gone")
+	w = _needs_for_test(1, true)
+	var left: Array = [spot + Vector2(20.0, 0.0)]
+	for i in 29:
+		w.watch(near, [animal], 0.1)
+	w.watch(left, [animal], 0.1)
+	check(w.progress_of(7) == 0.0, "stepping out of range resets the clock")
+	for i in 29:
+		w.watch(near, [animal], 0.1)
+	check(w.entries.is_empty(), "...so 2.9 s more is still not enough")
+	w.watch(near, [animal], 0.1)
+	check(w.entries.size() == 1, "...and 3 s unbroken is")
+	w = _needs_for_test(1, true)
+	for i in 100:
+		w.watch(left, [animal], 0.1)
+	check(w.entries.is_empty(), "an animal out of range never shows a need")
+	w = _needs_for_test(1, true)
+	var two_travelers: Array = [spot + Vector2(30.0, 0.0), spot + Vector2(2.0, 0.0)]
+	for i in 30:
+		w.watch(two_travelers, [animal], 0.1)
+	check(w.entries.size() == 1, "either traveler can watch")
+	# Never more than 6 over a long watch of many animals; no duplicates.
+	w = _needs_for_test(9, true)
+	var crowd: Array = []
+	var next_id := 1
+	for kind in cfg["kinds"]:
+		for copy in 4:
+			crowd.append({"id": next_id, "kind": kind["id"], "spot": spot})
+			next_id += 1
+	for i in 600:
+		w.watch(near, crowd, 0.1)
+	var unique_ids := {}
+	for e in w.entries:
+		unique_ids[e["id"]] = true
+	check(w.entries.size() == 6 and unique_ids.size() == 6, "watching 44 animals for a minute shows 6 distinct needs and no more")
+	# An animal whose kind has nothing left shows nothing and has no ring.
+	w = _needs_for_test(4, false)
+	w.discover("ori")
+	var duck := {"id": 1, "kind": "ori", "spot": spot}
+	for i in 31:
+		w.watch(near, [duck], 0.1)
+	check(w.entries.size() == 1 and w.progress_of(1) == 0.0, "오리 has only 오이 without the item: once shown, watching it shows nothing")
+	# Done: once, at 6.
+	w = _needs_for_test(6, true)
+	for kind_id in cfg["needs"]["table"]:
+		w.discover(kind_id)
+	var fired := 0
+	for i in w.entries.size():
+		if w.mark_done(w.entries[i]["id"]):
+			fired += 1
+			check(i == 5, "the last need completes the set")
+	check(fired == 1 and not w.mark_done(w.entries[0]["id"]) and not w.mark_done("not a need"), "mark_done is true exactly once, at the sixth, and only for a shown need")
+	# Spelling: words added at run time, items handed over.
+	var spelling = SpellingScript.new(_ui_config()["spelling_view"], {"kinds": []}, [] as Array[String])
+	check(spelling.add_word("고기", "고기", "") and not spelling.add_word("고기", "고기", "") and not spelling.add_word("x", "ab", "") and not spelling.add_word("y", "", ""), "Spelling.add_word takes a new Hangul word once")
+	check(spelling.has_word("고기") and spelling.hover_name("고기") == "" and spelling.block_count("고기") == 2 and not spelling.is_done("고기"), "the added word is spellable and shows no English")
+	var completions: Array[String] = []
+	spelling.word_completed.connect(func(id: String) -> void: completions.append(id))
+	check(spelling.complete_word("고기") and completions == ["고기"] and spelling.is_done("고기") and spelling.solved("고기") == ["고", "기"], "complete_word finishes it and announces it as a spelled word does")
+	check(not spelling.complete_word("고기") and not spelling.complete_word("nope") and completions.size() == 1, "...once, and not for an unknown word")
+	# Missing letters: the unfinished words' letters less the basket.
+	var picking = PickingScript.new(_ui_config()["picking"], {"kinds": [], "placed": []})
+	spelling = SpellingScript.new(_ui_config()["spelling_view"], {"kinds": []}, picking.basket)
+	w = _needs_for_test(1, true)
+	check(w.missing_letters(spelling, picking.basket).is_empty(), "nothing shown, nothing missing")
+	for word in ["고기", "우리"]:
+		spelling.add_word(word, word, "")
+	w.entries.append({"id": "고기", "kind": "word", "item": "", "age": 0.0})
+	w.entries.append({"id": "우리", "kind": "word", "item": "", "age": 0.0})
+	w.entries.append({"id": "plant_meoru", "kind": "item", "item": "plant_meoru", "age": 0.0})
+	var missing: Dictionary = w.missing_letters(spelling, picking.basket)
+	check(missing == {"ㄱ": 2, "ㅗ": 1, "ㅣ": 2, "ㅇ": 1, "ㅜ": 1, "ㄹ": 1}, "missing: 고기 and 우리 together lack ㄱ x2 ㅗ ㅣ x2 ㅇ ㅜ ㄹ (items add none)")
+	picking.basket.append_array(["ㄱ", "ㅣ", "ㅏ"])
+	missing = w.missing_letters(spelling, picking.basket)
+	check(missing == {"ㄱ": 1, "ㅗ": 1, "ㅣ": 1, "ㅇ": 1, "ㅜ": 1, "ㄹ": 1}, "...less what the basket holds (a letter no word needs is ignored)")
+	spelling.solved("고기").append("고")
+	missing = w.missing_letters(spelling, picking.basket)
+	check(missing == {"ㅣ": 1, "ㅇ": 1, "ㅜ": 1, "ㄹ": 1} or missing == {"ㄱ": 1, "ㅣ": 1, "ㅇ": 1, "ㅜ": 1, "ㄹ": 1}, "...and a judged block no longer counts (%s)" % str(missing))
+	spelling.complete_word("우리")
+	check(not w.missing_letters(spelling, picking.basket).has("ㅇ"), "a finished word needs nothing")
+	_section_done("test_animals9b_needs")
+
+
+## One whole run with no nodes: the crossing spawns, each animal gets its letter from the
+## supply, the watch shows needs, a bot grabs missing letters off hand-grabbable animals
+## (with chance 1/2 per animal, so some are missed) and spells whatever it can.
+func _letters_sim(seed_value: int, with_items: bool) -> Dictionary:
+	var cfg := _animals_config()
+	var ui := _ui_config()
+	var crossing = CrossingScript.new(cfg, seed_value)
+	var picking = PickingScript.new(ui["picking"], {"kinds": [], "placed": []})
+	var spelling = SpellingScript.new(ui["spelling_view"], {"kinds": []}, picking.basket)
+	var needs = NeedsScript.new(cfg, DecoyPlacementScript.derive_seed(seed_value, 3), _all_true if with_items else _none_true)
+	var known := Content.known_letters(Content.game_index("hallasan"))
+	var supply = SupplyScript.new(cfg["letters"], DecoyPlacementScript.derive_seed(seed_value, 1), SupplyScript.review_weights(cfg["kinds"], known, cfg["letters"]["set"]))
+	var bot := RandomNumberGenerator.new()
+	bot.seed = seed_value + 1000
+	var state := {"complete": 0}
+	spelling.word_completed.connect(func(id: String) -> void:
+		if needs.mark_done(id):
+			state["complete"] += 1)
+	var log: Array[Dictionary] = []
+	var carriers := {}  # walker -> {"slot", "grabs"}
+	var time := 0.0
+	var grabbed := 0
+	while time < 3000.0 and needs.done.size() < needs.total:
+		time += 0.5
+		for event in crossing.tick(0.5):
+			var walker = event["walker"]
+			if event["event"] == CrossingScript.SPAWN:
+				var missing: Dictionary = needs.missing_letters(spelling, picking.basket)
+				var ground: bool = GrabScript.by_hand(walker.kind)
+				walker.letter = supply.draw(ground, missing)
+				log.append({"ground": ground, "missing": not missing.is_empty(), "carried": missing.has(walker.letter), "letter": walker.letter, "needs": needs.entries.size()})
+				if ground:
+					carriers[walker] = {"slot": picking.add_plant(walker.letter, false, Vector2.ZERO), "grabs": bot.randf() < 0.5}
+			elif carriers.has(walker):  # it leaves with its letter: back in the pool
+				picking.discard_letter(carriers[walker]["slot"])
+				carriers.erase(walker)
+		var seen: Array = []
+		for walker in crossing.alive:
+			seen.append({"id": walker.id, "kind": String(walker.kind["id"]), "spot": Vector2.ZERO})
+		for entry in needs.watch([Vector2.ZERO], seen, 0.5):
+			spelling.add_word(entry["id"], entry["name_ko"], "")
+			if entry["kind"] == "item":
+				spelling.complete_word(entry["id"])  # the item is handed over at once
+		for walker in carriers:
+			var carrier: Dictionary = carriers[walker]
+			if carrier["grabs"] and picking.is_pickable(carrier["slot"]) and needs.missing_letters(spelling, picking.basket).has(walker.letter):
+				picking.pick(carrier["slot"])
+				grabbed += 1
+		_bot_spells(needs, spelling, picking)
+	return {"log": log, "state": state, "needs": needs, "time": time, "grabbed": grabbed, "spawns": log.size()}
+
+
+## Puts into the spelling every block whose two letters the basket holds.
+func _bot_spells(needs, spelling, picking) -> void:
+	for entry in needs.entries:
+		var id: String = entry["id"]
+		if entry["kind"] != "word" or not spelling.has_word(id) or spelling.is_done(id):
+			continue
+		while not spelling.is_done(id):
+			var block: int = spelling.solved(id).size()
+			var parts: Array[String] = Hangul.decompose(spelling.target_syllable(id, block))
+			if not picking.basket.has(parts[0]) or not picking.basket.has(parts[1]):
+				break
+			if not spelling.is_open():
+				spelling.open(id)
+			spelling.place(parts[0], block, 0)
+			spelling.place(parts[1], block, 1)
+		if spelling.is_open():
+			spelling.close()
+
+
+func test_animals9b_supply() -> void:
+	var cfg := _animals_config()
+	var every := int(cfg["letters"]["guarantee_every"])
+	var review_letters := {}
+	for kind in cfg["kinds"]:
+		if Hangul.is_readable(String(kind["name_ko"]), Content.known_letters(1)):
+			for tile in Hangul.tiles_for(String(kind["name_ko"])):
+				review_letters[tile] = true
+	check(review_letters.keys().size() == 8 and not review_letters.has("ㅓ") and not review_letters.has("ㅁ"), "the review words of the map (노루 고라니 오리) use eight of the ten letters")
+	var weights: Dictionary = SupplyScript.review_weights(cfg["kinds"], Content.known_letters(1), cfg["letters"]["set"])
+	check(weights.keys().size() == 8 and weights["ㄹ"] == 3.0 and weights["ㅗ"] == 3.0 and weights["ㄴ"] == 2.0, "review weights count the letters of those words (ㄹ x3, ㅗ x3, ㄴ x2)")
+	var all_done := true
+	var all_in_set := true
+	var guarantee_ok := true
+	var longest_run := 0
+	var spellable := true
+	var early_ok := true
+	var no_item_ok := true
+	var dupes_ok := true
+	var once := true
+	var biggest_time := 0.0
+	var hash_a := 0
+	var misses_seen := 0
+	for seed_value in range(1, 31):
+		var run := _letters_sim(seed_value, seed_value % 2 == 0)
+		var needs = run["needs"]
+		var log: Array = run["log"]
+		all_done = all_done and needs.done.size() == 6 and needs.entries.size() == 6
+		spellable = spellable and run["state"]["complete"] == 1
+		once = once and run["state"]["complete"] == 1
+		biggest_time = maxf(biggest_time, run["time"])
+		var ids := {}
+		for entry in needs.entries:
+			ids[entry["id"]] = true
+			no_item_ok = no_item_ok and (entry["kind"] != "item" or seed_value % 2 == 0)
+		dupes_ok = dupes_ok and ids.size() == needs.entries.size()
+		var streak := 0
+		for spawn in log:
+			all_in_set = all_in_set and NINE_B_LETTERS.has(spawn["letter"])
+			if spawn["needs"] == 0:
+				early_ok = early_ok and review_letters.has(spawn["letter"])
+			if spawn["ground"]:
+				if spawn["missing"] and not spawn["carried"]:
+					streak += 1
+					longest_run = maxi(longest_run, streak)
+				else:
+					streak = 0
+		guarantee_ok = guarantee_ok and longest_run < every
+		misses_seen += run["spawns"] - run["grabbed"]
+		if seed_value <= 3:
+			hash_a += str(log).hash()
+		check(needs.done.size() == 6, "seed %d: all six needs were discovered and finished by %.0f s" % [seed_value, run["time"]])
+	check(all_done, "seeds 1..30: every run ended with 6 needs shown and 6 done")
+	check(spellable and once, "seeds 1..30: every shown need became spellable, and needs completed exactly once")
+	check(all_in_set, "seeds 1..30: no animal ever carried a letter outside the ten")
+	check(guarantee_ok, "seeds 1..30: never %d ground spawns in a row without a missing letter while one was missing (longest run %d)" % [every, longest_run])
+	check(early_ok, "seeds 1..30: before any need was shown, letters came from the review words only")
+	check(no_item_ok and dupes_ok, "seeds 1..30: no item need without the item, no duplicate need")
+	check(misses_seen > 100, "the bots missed plenty of letters (%d spawns not grabbed) and still finished" % misses_seen)
+	check(biggest_time < 3000.0, "...the slowest run took %.0f s of simulated time" % biggest_time)
+	var again := 0
+	for seed_value in range(1, 4):
+		again += str(_letters_sim(seed_value, seed_value % 2 == 0)["log"]).hash()
+	check(again == hash_a, "the same seed gives the same letters, spawn by spawn")
+	# The supply on its own: weighting and the guarantee.
+	var s = SupplyScript.new(cfg["letters"], 5, weights)
+	var first_letters := {}
+	for i in 400:
+		first_letters[s.draw(i % 2 == 0, {})] = true
+	check(not first_letters.has("ㅓ") and not first_letters.has("ㅁ") and first_letters.size() == 8, "with nothing missing only the review letters are drawn (400 draws)")
+	s = SupplyScript.new(cfg["letters"], 6, weights)
+	var hits := 0
+	var forced_ok := true
+	var run := 0
+	for i in 600:
+		var letter: String = s.draw(true, {"ㅁ": 1})
+		if letter == "ㅁ":
+			hits += 1
+			run = 0
+		else:
+			run += 1
+			forced_ok = forced_ok and run < every
+	check(forced_ok and hits >= 200, "with one letter missing, ground spawns carry it at least 1 in %d (and far more often: %d of 600)" % [every, hits])
+	s = SupplyScript.new(cfg["letters"], 7, weights)
+	var fliers_miss := 0
+	for i in 600:
+		if s.draw(false, {"ㅁ": 1}) != "ㅁ":
+			fliers_miss += 1
+	check(fliers_miss > 0 and s.streak == 0, "flyers are only weighted, never forced (and do not count toward the guarantee)")
+	_section_done("test_animals9b_supply")
+
+
+func test_animals9b_grab_logic() -> void:
+	var cfg := _animals_config()
+	var by_hand: Array[String] = []
+	for kind in cfg["kinds"]:
+		if GrabScript.by_hand(kind):
+			by_hand.append(String(kind["id"]))
+	check(by_hand.size() == 8 and not by_hand.has("geomdokseuri") and not by_hand.has("keunburikkamagwi") and not by_hand.has("ori"), "eight kinds can be grabbed by hand: not the two flyers and not 오리")
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 3
+	var before := rng.state
+	var fixed_ok := true
+	for kind in cfg["kinds"]:
+		if kind["grab"].has("units"):
+			var got: Dictionary = GrabScript.cost(kind, rng)
+			fixed_ok = fixed_ok and got["units"] == EXPECTED_GRAB[kind["id"]]["units"] and not got["death"]
+	check(fixed_ok and rng.state == before, "a fixed cost is the table's (1 half-heart; 사슴 and 큰부리까마귀 2) and draws no random number")
+	for kind_id in ["meotdwaeji", "deulgae", "geomdokseuri"]:
+		var kind := _kind_named({"meotdwaeji": "멧돼지", "deulgae": "들개", "geomdokseuri": "검독수리"}[kind_id])
+		var max_units: int = EXPECTED_GRAB[kind_id]["max_units"]
+		var a := RandomNumberGenerator.new()
+		var b := RandomNumberGenerator.new()
+		a.seed = 99
+		b.seed = 99
+		var deaths := 0
+		var seen := {}
+		var same := true
+		var in_range := true
+		for i in 4000:
+			var got: Dictionary = GrabScript.cost(kind, a)
+			var twin: Dictionary = GrabScript.cost(kind, b)
+			same = same and got == twin
+			if got["death"]:
+				deaths += 1
+				in_range = in_range and got["units"] == 0
+			else:
+				seen[got["units"]] = true
+				in_range = in_range and got["units"] >= 1 and got["units"] <= max_units
+		check(same and in_range, "%s: seeded, a survived grab costs 1..%d" % [kind_id, max_units])
+		check(deaths > 880 and deaths < 1120, "%s: both die about 1 time in 4 (%d of 4000)" % [kind_id, deaths])
+		check(seen.size() == max_units, "%s: every cost from 1 to %d comes up" % [kind_id, max_units])
+	# The crossing's flee.
+	var crossing = CrossingScript.new(cfg, 11)
+	var twin_crossing = CrossingScript.new(cfg, 11)
+	var walker = null
+	var twin = null
+	for i in 100:
+		walker = crossing.spawn()
+		twin = twin_crossing.spawn()
+		if walker == null:
+			break
+		if not bool(walker.kind["flies"]) and walker.habitat != "lake":
+			break
+		crossing.alive.erase(walker)
+		twin_crossing.alive.erase(twin)
+	check(walker != null and walker.kind["id"] == twin.kind["id"], "(setup) a ground animal to scare")
+	walker.advance(2.0)
+	var here: Vector2 = walker.position()
+	var exit_point := Vector2(float(walker.exit["x"]), float(walker.exit["z"]))
+	crossing.flee(walker, 2.5)
+	check(walker.fled and walker.position().distance_to(here) < 0.001 and walker.route[walker.route.size() - 1].is_equal_approx(exit_point), "fleeing starts where it stands and heads for its exit")
+	check(walker.stop_dist < 0.0 and walker.linger == 0.0 and walker.speed_scale == 2.5, "it no longer lingers and runs at 2.5x")
+	var probe: Vector2 = walker.position()
+	walker.advance(0.5)
+	check(is_equal_approx(walker.travelled, float(walker.kind["speed"]) * 2.5 * 0.5) and walker.position().distance_to(probe) > 0.1, "it covers 2.5x its speed")
+	var kept: Array = walker.route.duplicate()
+	crossing.flee(walker, 9.0)
+	check(walker.route == kept and walker.speed_scale == 2.5, "it only flees once")
+	var steps := 0
+	while not walker.is_done() and steps < 4000:
+		walker.advance(0.25)
+		steps += 1
+	check(walker.is_done() and walker.position().distance_to(exit_point) < 0.01, "it reaches its exit and is done")
+	check(crossing.rng.randf() == twin_crossing.rng.randf(), "fleeing draws no random number: the crossing's sequence is untouched")
+	var steers := true
+	for i in 200:  # never into the lake on the way
+		walker = null
+		var w = crossing.spawn()
+		if w == null:
+			crossing.alive.clear()
+			continue
+		if bool(w.kind["flies"]) or w.habitat == "lake":
+			crossing.alive.erase(w)
+			continue
+		w.advance(float(w.stop_dist) * 0.5)
+		crossing.flee(w, 2.0)
+		var guard := 0
+		while not w.is_done() and guard < 4000:
+			w.advance(0.25)
+			steers = steers and not crossing.in_lake(w.position())
+			guard += 1
+		crossing.alive.erase(w)
+	check(steers, "fleeing animals still steer round the lake")
+	# The reach ring: a share of the circle.
+	var flat := func(_x: float) -> float: return 0.0
+	var full: ArrayMesh = ReachRingScript.mesh(1.0, 0.8, Vector3.ZERO, flat)
+	var half: ArrayMesh = ReachRingScript.mesh(1.0, 0.8, Vector3.ZERO, flat, 0.5)
+	check(is_equal_approx(full.get_aabb().size.x, 2.0) and half.get_aabb().size.x < 1.05 and half.get_aabb().size.z > 1.9, "the ring mesh draws a share of the circle (half: a half disc)")
+	check(ReachRingScript.mesh(1.0, 0.8, Vector3.ZERO, flat, 0.0).get_surface_count() == 0, "...and nothing at 0")
+	_section_done("test_animals9b_grab_logic")
+
+
+## A walker of `kind_id` on the map, with its node, its letter and its slot (the cast of the
+## scene's own _add_animal); null if the dice never give one.
+func _spawn_kind(map: Node3D, kind_id: String):
+	for i in 600:
+		var walker = map.crossing.spawn()
+		if walker == null:
+			map.crossing.alive.clear()
+			continue
+		if walker.kind["id"] == kind_id:
+			map._add_animal(walker)
+			return walker
+		map.crossing.alive.erase(walker)
+	return null
+
+
+func _beside(map: Node3D, walker, offset := Vector2(0.5, 0.0)) -> void:
+	var spot: Vector2 = walker.position()
+	_put(map, map.player, spot.x + offset.x, spot.y + offset.y)
+
+
+func test_animals9b_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var cfg := _animals_config()
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(5)
+	# Letters ride every animal.
+	var tiles_ok := true
+	var seen_kinds := {}
+	for i in 700:
+		map.step(Vector2.ZERO, 0.1)
+	for walker in map.animal_nodes:
+		var node = map.animal_nodes[walker]
+		seen_kinds[walker.kind["id"]] = true
+		tiles_ok = tiles_ok and node.tile.visible and node.tile_label.text == walker.letter and NINE_B_LETTERS.has(walker.letter) and node.tile_back.material_override is StandardMaterial3D
+	check(map.animal_nodes.size() >= 2 and tiles_ok, "every animal on the map shows a letter tile with its jamo, one of the ten (%d animals)" % map.animal_nodes.size())
+	var node_a = AnimalScript.new()
+	node_a.setup(cfg["kinds"][0], cfg["label"], cfg["letters"]["tile"], cfg["watch"]["ring"])
+	node_a.set_letter("ㅏ")
+	var vowel_color: Color = node_a.tile_back.material_override.albedo_color
+	node_a.set_letter("ㄱ")
+	var consonant_color: Color = node_a.tile_back.material_override.albedo_color
+	check(vowel_color != consonant_color and node_a.tile.visible and node_a.tile.position.y > node_a.box.mesh.size.y and node_a.label.position.y > node_a.tile.position.y, "the tile floats above the back (blue vowel, orange consonant) and the name sits above it")
+	node_a.set_letter("")
+	check(not node_a.tile.visible, "a taken letter takes the tile away")
+	node_a.free()
+	map.free()
+	GameState.new_hike()
+	# Grab by hand: each kind's cost, the letter into the basket, the bite and the flight.
+	var costs := {"noru": 1, "goraeni": 1, "saseum": 2, "osori": 1, "jejujokjebi": 1, "bibaribaem": 1}
+	for kind_id in costs:
+		GameState.new_hike()
+		map = await _animals_map(8)
+		var walker = _spawn_kind(map, kind_id)
+		check(walker != null, "(setup) a %s" % kind_id)
+		_beside(map, walker, Vector2(0.4, 0.0))
+		var letter: String = walker.letter
+		var before: Dictionary = GameState.heart_units.duplicate()
+		var basket_before: int = map.picking.basket.size()
+		var got: Dictionary = {}
+		check(map.picking.nearest_target(_xz(map.player))["type"] == "plant", "%s: it is in reach (the ring's target)" % kind_id)
+		map.step(Vector2.ZERO, 0.0)
+		check(map._ring.visible and map._ring.global_position.is_equal_approx(map.animal_nodes[walker].global_position), "%s: the reach ring is on it" % kind_id)
+		check(map.pick_nearest(), "%s: Space grabs it" % kind_id)
+		check(map.picking.basket.size() == basket_before + 1 and map.picking.basket[map.picking.basket.size() - 1] == letter and walker.letter == "" and not map.animal_nodes[walker].tile.visible, "%s: its letter %s is in the basket and off the animal" % [kind_id, letter])
+		check(GameState.heart_units["fernanda"] == int(before["fernanda"]) - costs[kind_id] and GameState.heart_units["nestor"] == before["nestor"], "%s: it bites Fernanda for %d half-heart(s) and nobody else" % [kind_id, costs[kind_id]])
+		check(walker.fled and walker.speed_scale == 2.5 and walker.linger == 0.0, "%s: it flees at 2.5x" % kind_id)
+		check(not map.pick_nearest() and map.picking.basket.size() == basket_before + 1, "%s: a second grab gets nothing" % kind_id)
+		check(map.basket_hud._tiles_box.get_child_count() == map.picking.basket.size(), "%s: the basket's tile is there at once" % kind_id)
+		map.free()
+	# Flyers and 오리 cannot be grabbed by hand.
+	GameState.new_hike()
+	map = await _animals_map(9)
+	for kind_id in ["geomdokseuri", "keunburikkamagwi", "ori"]:
+		var walker = _spawn_kind(map, kind_id)
+		check(walker != null and NINE_B_LETTERS.has(walker.letter) and map.animal_nodes[walker].tile.visible, "%s carries a letter on its tile" % kind_id)
+		_beside(map, walker, Vector2(0.1, 0.0))
+		var basket_size: int = map.picking.basket.size()
+		var hearts: Dictionary = GameState.heart_units.duplicate()
+		check(map.grab_animal(walker).is_empty() and not map.pick_nearest() and map.picking.basket.size() == basket_size and GameState.heart_units == hearts and not walker.fled and walker.letter != "", "%s cannot be grabbed by hand: nothing taken, no bite, no flight" % kind_id)
+		check(not map.walker_slot.has(walker) and map.animal_at(map.camera.unproject_position(map.animal_nodes[walker].global_position + Vector3(0.0, 0.3, 0.0))) != walker, "%s has no slot in the basket's picking and cannot be clicked" % kind_id)
+	map.free()
+	# A predator: the 1/4 death roll and the 1..max cost are seeded.
+	var finder := RandomNumberGenerator.new()
+	var survive_seed := 0
+	var die_seed := 0
+	for s in range(1, 400):
+		finder.seed = s
+		var dies := finder.randf() < 0.25
+		if dies and die_seed == 0:
+			die_seed = s
+		if not dies and survive_seed == 0:
+			survive_seed = s
+	GameState.new_hike()
+	map = await _animals_map(10)
+	var boar = _spawn_kind(map, "meotdwaeji")
+	_beside(map, boar)
+	map.grab_rng.seed = survive_seed
+	var replay := RandomNumberGenerator.new()
+	replay.seed = survive_seed
+	replay.randf()
+	var expected_units := replay.randi_range(1, 5)
+	var result: Dictionary = map.grab_animal(boar)
+	check(not result.is_empty() and not result["death"] and result["units"] == expected_units and GameState.heart_units["fernanda"] == 10 - expected_units, "멧돼지 (seeded to survive): costs the replayed roll, %d half-hearts" % expected_units)
+	check(GameState.is_alive("nestor") and not map.is_death_beat_playing(), "...and nobody dies")
+	map.free()
+	GameState.new_hike()
+	map = await _animals_map(10)
+	boar = _spawn_kind(map, "meotdwaeji")
+	_beside(map, boar)
+	map.grab_rng.seed = die_seed
+	var restarted := [0]
+	map.restarted.connect(func() -> void: restarted[0] += 1)
+	result = map.grab_animal(boar)
+	check(not result.is_empty() and result["death"] and not GameState.is_alive("fernanda"), "멧돼지 (seeded to die): the grab kills Fernanda, which is both (the death flow starts)")
+	check(map.is_death_beat_playing() and map.restarting and not map.picks_allowed(), "the foraging death flow starts: the screen dims, nothing can be grabbed")
+	var wolf = _spawn_kind(map, "deulgae")
+	check(wolf == null or map.grab_animal(wolf).is_empty(), "no grabs during the death beat")
+	map.tick_beat(0.75)
+	check(map._dim.color.a > 0.0 and restarted[0] == 0, "the dim grows")
+	map.tick_beat(1.0)
+	check(restarted[0] == 1 and GameState.heart_units == {"nestor": 10, "fernanda": 10} and not map.is_death_beat_playing(), "the beat ends: the scene restarts with the hearts it began with")
+	map.free()
+	GameState.new_hike()
+	# A click chases an animal and grabs it on arrival.
+	map = await _animals_map(11)
+	var slow = _spawn_kind(map, "osori")
+	slow.advance(10.0)  # well inside the map
+	map._pose(slow)
+	map.picking.set_spot(map.walker_slot[slow], slow.position())
+	var spot: Vector2 = slow.position()
+	_put(map, map.player, spot.x + (-6.0 if spot.x > float(_animals_config()["stage"]["width"]) / 2.0 else 6.0), spot.y)
+	var center: Vector2 = map.camera.unproject_position(map.animal_nodes[slow].global_position + Vector3(0.0, 0.4, 0.0))
+	check(map.animal_at(center) == slow, "the animal is found under the mouse")
+	check(map.animal_at(Vector2(2.0, 2.0)) != slow, "...and not far from it")
+	var basket_before: int = map.picking.basket.size()
+	check(map.click(center) and map.picking.is_walking(), "a click on it starts a walk after it")
+	var grabbed := false
+	for i in 900:
+		map.step(Vector2.ZERO, DT)
+		if map.picking.basket.size() > basket_before:
+			grabbed = true
+			break
+	check(grabbed and slow.fled and GameState.heart_units["fernanda"] == 9 and not map.picking.is_walking(), "she catches it, takes the letter and it bites her (half a heart)")
+	# A walk gives up when it gets nowhere.
+	var other = _spawn_kind(map, "noru")
+	var far: Vector2 = other.position()
+	_put(map, map.player, far.x + 40.0, far.y)
+	check(map.picking.start_walk(map.walker_slot[other]), "(setup) a walk to a far animal")
+	var timeouts := 0
+	for i in 200:
+		if map.picking.walk_update(100.0, 0.1) == "stuck":
+			timeouts += 1
+			break
+	check(timeouts == 1 and not map.picking.is_walking(), "a walk that gets no closer is given up after the foraging timeout")
+	map.free()
+	# The letter leaves with its animal.
+	GameState.new_hike()
+	map = await _animals_map(12)
+	var leaver = _spawn_kind(map, "noru")
+	var slot: int = map.walker_slot[leaver]
+	check(map.picking.is_pickable(slot), "(setup) its letter can be picked")
+	map._remove_animal(leaver)
+	check(not map.picking.is_pickable(slot) and not map.walker_slot.has(leaver) and map.picking.basket.is_empty(), "when it leaves the map its letter is gone (back in the pool), the basket untouched")
+	map.free()
+	GameState.new_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_animals9b_scene")
+
+
+func _spell_word(map: Node3D, id: String, wrong_first := false) -> Dictionary:
+	var blocks: int = map.spelling.block_count(id)
+	var outcome := {}
+	for block in blocks:
+		var parts: Array[String] = Hangul.decompose(map.spelling.target_syllable(id, block))
+		var letters: Array[String] = [parts[0], parts[1]]
+		if wrong_first and block == 0:
+			letters = [parts[0], parts[0]]
+		map.picking.basket.append_array(letters)
+		map.basket_hud.refresh(0.0)
+		if not map.spelling.is_open():
+			map.open_spelling(id)
+		for slot in 2:
+			outcome = map.spelling.place(letters[slot], block, slot)
+			map.spelling_hud.apply(outcome)
+		if outcome.get("result", "") == "failed":
+			return outcome
+	return outcome
+
+
+func test_animals9b_needs_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(21)
+	var hud = map.discovery_hud
+	var viewport := map.get_viewport()
+	# Watching an animal shows its ring and then a need.
+	var walker = _spawn_kind(map, "noru")
+	_beside(map, walker, Vector2(3.0, 0.0))
+	map.partner.global_position = Vector3(2000.0, 0.0, 2000.0)  # (far away: only Fernanda watches)
+	for i in 14:
+		map._watch_animals(0.1)
+	var node = map.animal_nodes[walker]
+	check(node.watch_ring.visible and node.watch_ring.mesh.get_surface_count() > 0 and map.needs.entries.is_empty(), "1.4 s of watching: the ring shows on the animal, no need yet")
+	var small: float = node.watch_ring.mesh.get_aabb().size.x
+	for i in 14:
+		map._watch_animals(0.1)
+	check(node.watch_ring.visible and node.watch_ring.mesh.get_aabb().size.x > small and map.needs.entries.is_empty(), "2.8 s: the ring has grown, still no need")
+	map._watch_animals(0.1)
+	check(map.needs.entries.is_empty(), "2.9 s: still nothing")
+	map._watch_animals(0.1)
+	check(map.needs.entries.size() == 1 and not node.watch_ring.visible, "3 s: a need joins the list and the ring is gone")
+	var entry: Dictionary = map.needs.entries[0]
+	var id: String = entry["id"]
+	check(map.spelling.has_word(id) and not map.spelling.is_done(id) and hud._rows.has(id) and map.spelling.hover_name(id) == "", "it is a word of the spelling, with a row in the discovery list")
+	var row: PanelContainer = hud._rows[id]
+	var blocks: HBoxContainer = row.find_child("Blocks", true, false)
+	var name_label: Label = row.find_child("Name", true, false)
+	check(blocks.get_child_count() == Hangul.syllable_count(id) and name_label.text == entry["hover_name"] and name_label.modulate.a == 1.0, "...with empty syllable blocks and its English hint showing")
+	check(blocks.get_child(0).get_child_count() == 0, "...no Korean shown")
+	map.needs.update(0.3)
+	hud.refresh()
+	check(name_label.modulate.a == 1.0 and row.modulate.a == 1.0, "after 0.3 s the hint is still solid")
+	map.needs.update(0.35)
+	hud.refresh()
+	check(name_label.modulate.a == 0.0, "at 0.65 s it is flickering (it starts hidden)")
+	map.needs.update(0.6)
+	hud.refresh()
+	check(name_label.modulate.a == 0.0 and row.modulate.a == 1.0, "after 1.25 s the hint is gone for good and the row stays")
+	# E opens the selection; Enter on a word opens the spelling view and pauses.
+	_tap(viewport, KEY_E)
+	check(hud.word_select.is_open() and hud.word_select.highlighted() == id, "E opens word selection on the need")
+	_tap(viewport, KEY_ENTER)
+	check(map.spelling.open_id == id and map.spelling_hud.is_open() and get_tree().paused, "Enter opens the spelling view and pauses the map")
+	# A wrong syllable hurts both travelers as in foraging.
+	var hearts_before: Dictionary = GameState.heart_units.duplicate()
+	_spell_word(map, id, true)
+	check(map.spelling_hud.is_flashing() and not map.spelling.is_open(), "a wrong first syllable fails and flashes")
+	map.spelling_hud.tick(1.0)
+	check(not get_tree().paused and GameState.heart_units["fernanda"] == int(hearts_before["fernanda"]) - 1 and GameState.heart_units["nestor"] == int(hearts_before["nestor"]) - 1, "...then the view closes and both travelers lose a half-heart")
+	check(map.picking.basket.is_empty() and not map.spelling.is_done(id), "...the two letters are gone, the word is not done")
+	# Spelling it right finishes it through the same path.
+	var completed := []
+	map.spelling.word_completed.connect(func(word: String) -> void: completed.append(word))
+	var result := _spell_word(map, id)
+	check(result.get("result", "") == "complete" and completed == [id] and map.spelling.is_done(id) and map.needs.done.has(id), "spelling it right completes the need (the spelling's own word_completed)")
+	check(not get_tree().paused and hud.spellable_ids().is_empty(), "the map plays on and the list has nothing left to spell")
+	check(not map.complete_hud.visible, "one need done is not 6/6")
+	# Items: nothing without the item; given, one is removed and the need is done.
+	map.free()
+	GameState.new_hike()
+	map = await _animals_map(22)
+	hud = map.discovery_hud
+	GameState.inventory.add("plant_meoru", 2)
+	var entries: Array[Dictionary] = []
+	for i in 3:
+		var e: Dictionary = map.needs.discover("osori")
+		if not e.is_empty():
+			entries.append(e)
+			map._on_need_discovered(e)
+	var item_id := ""
+	for e in entries:
+		if e["kind"] == "item":
+			item_id = String(e["id"])
+	check(item_id == "plant_meoru" and map.spelling.has_word(item_id) and hud._rows.has(item_id), "with 머루 in the backpack, 오소리 can show it as an item need")
+	var item_row: PanelContainer = hud._rows[item_id]
+	check(item_row.find_child("Blocks", true, false).get_child_count() == 2 and item_row.find_child("Name", true, false).text == "Wild grape", "...two empty blocks and the item's English name as the hint")
+	GameState.inventory.remove("plant_meoru", 2)
+	check(not map.open_spelling(item_id) and not map.spelling.is_done(item_id) and not get_tree().paused and not map.spelling_hud.is_open(), "choosing the item without it in the backpack does nothing")
+	GameState.inventory.add("plant_meoru", 2)
+	var completed_ids: Array[String] = []
+	map.spelling.word_completed.connect(func(word: String) -> void: completed_ids.append(word))
+	_tap(map.get_viewport(), KEY_E)
+	check(hud.word_select.is_open(), "(E opens selection with an item need in the list)")
+	hud.word_select.index = hud.word_select.words.find(item_id)
+	_tap(map.get_viewport(), KEY_ENTER)
+	check(GameState.inventory.count("plant_meoru") == 1 and map.spelling.is_done(item_id) and map.needs.done.has(item_id) and completed_ids == [item_id], "choosing it with the item gives one (2 -> 1) and completes the need, through the spelling's word_completed")
+	check(not map.spelling_hud.is_open() and not get_tree().paused, "...with no spelling view")
+	check(not map.open_spelling(item_id) and GameState.inventory.count("plant_meoru") == 1, "a done item need cannot be given again")
+	# 6 of 6.
+	var signals := [0]
+	map.needs_complete.connect(func() -> void: signals[0] += 1)
+	var kinds_order: Array = _animals_config()["needs"]["table"].keys()
+	for kind_id in kinds_order:
+		var e: Dictionary = map.needs.discover(kind_id)
+		if not e.is_empty():
+			map._on_need_discovered(e)
+	check(map.needs.entries.size() == 6 and map.needs.done.size() == 1, "(setup) six needs shown, one done")
+	var pending: Array = []
+	for e in map.needs.entries:
+		if not map.needs.done.has(e["id"]):
+			pending.append(e)
+	for e in pending:
+		check(signals[0] == 0 and not map.complete_hud.visible, "before the sixth is done there is no 6/6 and no signal")
+		if e["kind"] == "item":
+			GameState.inventory.add(e["item"])
+			map.give_item(e["id"])
+		else:
+			_spell_word(map, e["id"])
+	check(map.needs.done.size() == 6 and signals[0] == 1 and map.complete_hud.visible, "the sixth finished need shows the 6/6 line and emits needs_complete once")
+	var line: Label = map.complete_hud.get_node("Line")
+	check(line.text == "6/6", "the line reads 6/6")
+	check(map.needs.discover("noru").is_empty() and signals[0] == 1, "no seventh need appears and the signal does not repeat")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_animals9b_needs_scene")

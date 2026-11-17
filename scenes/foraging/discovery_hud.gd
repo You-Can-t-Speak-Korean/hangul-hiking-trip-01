@@ -114,6 +114,8 @@ func refresh() -> void:
 			_rows[entry["id"]] = row
 			_box.add_child(row)
 		_rows[entry["id"]].modulate.a = _discovery.opacity(entry)
+		if _discovery.has_method("hint_alpha"):  # the animal scene's English hint fades for good
+			_rows[entry["id"]].find_child("Name", true, false).modulate.a = _discovery.hint_alpha(entry)
 		if _spelling != null:
 			_show_progress(_rows[entry["id"]], entry["id"])
 		_show_highlight(_rows[entry["id"]], word_select.highlighted() == entry["id"])
@@ -139,6 +141,7 @@ func _make_row(entry: Dictionary) -> PanelContainer:
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(column)
 	var label := Label.new()
+	label.name = "Name"
 	label.text = entry["hover_name"]
 	label.add_theme_font_size_override("font_size", NAME_FONT_SIZE)
 	column.add_child(label)
