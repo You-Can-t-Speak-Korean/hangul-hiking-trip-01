@@ -15,6 +15,9 @@ const SELECT_BORDER := Color(1.0, 0.88, 0.4)
 ## returns false while the map may not (a menu is up, restarting, dead, ...).
 var word_select := WordSelect.new()
 var open_gate: Callable
+## Optional (the animal scene's): called with an entry, returns a small Control to draw at
+## the left of its row, or null. Foraging sets none.
+var picture_maker: Callable
 
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
@@ -154,11 +157,20 @@ func _make_row(entry: Dictionary) -> PanelContainer:
 	var column := VBoxContainer.new()
 	column.add_theme_constant_override("separation", 6)
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(column)
+	var picture: Control = picture_maker.call(entry) if picture_maker.is_valid() else null
+	if picture != null:
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 10)
+		line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(line)
+		line.add_child(picture)
+		line.add_child(column)
+	else:
+		row.add_child(column)
 	var label := Label.new()
 	label.name = "Name"
 	label.text = entry["hover_name"]
-	label.visible = label.text != ""  # (the animal scene shows its English hint over the animal instead)
+	label.visible = label.text != ""
 	label.add_theme_font_size_override("font_size", NAME_FONT_SIZE)
 	column.add_child(label)
 	var blocks := HBoxContainer.new()

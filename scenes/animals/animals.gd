@@ -33,6 +33,10 @@ const NeedRewards := preload("res://scenes/animals/need_rewards.gd")
 const HealPickups := preload("res://scenes/animals/heal_pickups.gd")
 const HealPickup := preload("res://scenes/animals/heal_pickup.gd")
 const FloatLabel := preload("res://scenes/foraging/float_label.gd")
+const ThoughtBubble := preload("res://scenes/animals/thought_bubble.gd")
+const NeedPicture := preload("res://scenes/animals/need_picture.gd")
+const Guide := preload("res://scenes/animals/guide.gd")
+const GuideHud := preload("res://scenes/animals/guide_hud.gd")
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 ## The traveler a bare-hand grab hurts (and whose hands they are).
@@ -93,15 +97,18 @@ var complete_hud: CanvasLayer
 var slot_walker: Dictionary = {}
 var walker_slot: Dictionary = {}
 ## Prompt 9b-ii. The healing bottles: Picking pile index -> the item id and the node; the
-## roll of what meeting a need drops; the English hints floating over the animals (need id ->
-## panel); the style of the floating "+1 ..." label and how high it starts over the traveler.
+## roll of what meeting a need drops; the picture thought bubbles over the animals (Prompt
+## 9b-iii; need id -> bubble); the one-time guide prompts; the style of the floating "+1 ..."
+## label and how high it starts over the traveler.
 var pickup_items: Dictionary = {}
 var pickup_nodes: Dictionary = {}
 var reward_rng := RandomNumberGenerator.new()
-var hint_panels: Dictionary = {}
+var bubbles: Dictionary = {}
+var guide
+var guide_hud: CanvasLayer
 var float_label_config: Dictionary = {}
 var float_label_height := 2.3
-var _hint_layer: CanvasLayer
+var _bubble_layer: CanvasLayer
 var _pickup_time := 0.0
 ## From the moment both travelers die until the scene restarts: no grabs, walks or menus.
 var restarting := false
@@ -219,7 +226,8 @@ func step(input: Vector2, delta: float) -> void:
 	props.set_travelers(player.global_position, partner.global_position, float(config["camera"]["pitch_deg"]))
 	_update_reach(delta)
 	needs.update(delta)
-	_update_hints()
+	_update_bubbles(delta)
+	_update_guide(delta)
 	_update_pickups(delta)
 	discovery_hud.set_header(needs.counter_text())
 	discovery_hud.refresh()
@@ -321,6 +329,7 @@ func _build_needs(ui: Dictionary) -> void:
 	discovery_hud.setup(needs, spelling)
 	discovery_hud.set_header(needs.counter_text())
 	discovery_hud.entry_pressed.connect(open_spelling)
+	discovery_hud.picture_maker = _list_picture
 	discovery_hud.open_gate = _word_select_allowed
 	basket_hud = BasketHud.new()
 	add_child(basket_hud)
@@ -351,10 +360,14 @@ func _build_needs(ui: Dictionary) -> void:
 	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	complete_hud.add_child(line)
 	add_child(complete_hud)
-	_hint_layer = CanvasLayer.new()
-	_hint_layer.name = "HintLayer"
-	_hint_layer.layer = 10
-	add_child(_hint_layer)
+	_bubble_layer = CanvasLayer.new()
+	_bubble_layer.name = "BubbleLayer"
+	_bubble_layer.layer = 10
+	add_child(_bubble_layer)
+	guide = Guide.new(config["guide"], GameState.guide_seen)
+	guide_hud = GuideHud.new()
+	add_child(guide_hud)
+	guide_hud.setup(guide, config["guide"])
 	_build_pickups()
 
 
@@ -388,29 +401,37 @@ func _watch_animals(delta: float) -> void:
 		animal_nodes[walker].set_watch(needs.progress_of(walker.id))
 
 
-## A need joined the list: its word goes into the spelling (with no English: the hint is
-## the list's, and it goes away).
+## A need joined the list: its word goes into the spelling with its English (as foraging's
+## words do), a picture bubble pops over the animal, and the guide may speak.
 func _on_need_discovered(entry: Dictionary) -> void:
-	spelling.add_word(String(entry["id"]), String(entry["name_ko"]), "")
-	_start_hint(entry)
+	spelling.add_word(String(entry["id"]), String(entry["name_ko"]), String(entry["hover_name"]))
+	_start_bubble(entry)
+	guide.trigger("grab")
 	discovery_hud.refresh()
 	need_discovered.emit(String(entry["id"]))
 
 
-## The English hint of a new need floats over the animal that showed it (the foraging
-## tooltip's look): solid, then flickering, then gone for good (Needs.hint_alpha).
-func _start_hint(entry: Dictionary) -> void:
-	var panel := PanelContainer.new()
-	panel.name = "Hint_%s" % entry["id"]
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var label := Label.new()
-	label.name = "Text"
-	label.text = String(entry["hint"])
-	label.add_theme_font_size_override("font_size", int(config["needs"]["hint"]["font_size"]))
-	panel.add_child(label)
-	_hint_layer.add_child(panel)
-	hint_panels[String(entry["id"])] = panel
-	_place_hint(entry, panel)
+## The small picture at the left of a need's entry in the discovery list (or null).
+func _list_picture(entry: Dictionary) -> Control:
+	var picture_id: String = needs.picture_of(String(entry["id"]))
+	if not NeedPicture.is_known(picture_id):
+		return null
+	var picture := NeedPicture.new()
+	picture.setup(picture_id, float(config["needs"]["list_picture_px"]))
+	return picture
+
+
+## The thought bubble of a new need hangs over the animal that showed it (ThoughtBubble).
+func _start_bubble(entry: Dictionary) -> void:
+	var id := String(entry["id"])
+	var picture_id: String = needs.picture_of(id)
+	if not NeedPicture.is_known(picture_id):
+		return
+	var bubble := ThoughtBubble.new()
+	bubble.setup(config["bubble"], id, int(entry["walker"]), picture_id)
+	_bubble_layer.add_child(bubble)
+	bubbles[id] = bubble
+	_place_bubble(bubble)
 
 
 func _walker_by_id(walker_id: int):
@@ -420,32 +441,46 @@ func _walker_by_id(walker_id: int):
 	return null
 
 
-func _update_hints() -> void:
-	for id in hint_panels.keys():
-		var entry: Dictionary = needs.entry_of(id)
-		var panel: PanelContainer = hint_panels[id]
-		var walker = _walker_by_id(int(entry["walker"]))
-		if float(entry["age"]) >= needs.hint_show + needs.hint_flicker or walker == null:
-			panel.queue_free()
-			hint_panels.erase(id)
+## Ages every bubble (the map is running: the same clock as the animals) and keeps it over
+## its animal. It goes when its time is up or its animal has left the map.
+func _update_bubbles(delta: float) -> void:
+	for id in bubbles.keys():
+		var bubble: Control = bubbles[id]
+		bubble.advance(delta)
+		if bubble.expired() or _walker_by_id(bubble.walker_id) == null:
+			bubble.queue_free()
+			bubbles.erase(id)
 			continue
-		var alpha: float = needs.hint_alpha(entry)
-		panel.visible = alpha > 0.0
-		panel.modulate.a = alpha
-		if panel.visible:
-			_place_hint(entry, panel)
+		_place_bubble(bubble)
 
 
-## Centres a hint over its animal, above the name label.
-func _place_hint(entry: Dictionary, panel: PanelContainer) -> void:
-	var walker = _walker_by_id(int(entry["walker"]))
+## Hangs a bubble from a point above its animal's name label (it may be off screen: it then
+## simply is, as the animal is).
+func _place_bubble(bubble: Control) -> void:
+	var walker = _walker_by_id(bubble.walker_id)
 	if walker == null:
 		return
 	var node: Node3D = animal_nodes[walker]
-	var up := float(walker.kind["size"][1]) + float(config["label"]["lift"]) + float(config["needs"]["hint"]["lift_m"])
-	var screen := camera.unproject_position(node.global_position + Vector3(0.0, up, 0.0))
-	panel.reset_size()
-	panel.position = screen - Vector2(panel.size.x / 2.0, panel.size.y)
+	var up := float(walker.kind["size"][1]) + float(config["label"]["lift"]) + float(config["bubble"]["lift_m"])
+	bubble.hang_from(camera.unproject_position(node.global_position + Vector3(0.0, up, 0.0)))
+
+
+## The guide: its clock runs with the map; "spell" fires the first time the basket holds every
+## letter of an unfinished word need, "give" the first time an unfinished item need's item is
+## in the backpack.
+func _update_guide(delta: float) -> void:
+	if not guide.has_seen("spell"):
+		for entry in needs.entries:
+			if needs.word_ready(spelling, String(entry["id"]), picking.basket):
+				guide.trigger("spell")
+				break
+	if not guide.has_seen("give"):
+		for entry in needs.entries:
+			if entry["kind"] == Needs.ITEM and not spelling.is_done(String(entry["id"])) and GameState.inventory.count(String(entry["item"])) > 0:
+				guide.trigger("give")
+				break
+	guide.update(delta)
+	guide_hud.refresh()
 
 
 ## A discovery-list entry was chosen (click or E): a word opens the spelling view and pauses

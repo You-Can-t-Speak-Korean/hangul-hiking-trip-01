@@ -35,6 +35,10 @@ var current_scene: String = ""
 ## Fernanda's backpack. One instance for the whole run (HUDs stay connected to it).
 var inventory := InventoryScript.new()
 
+## One-time guide prompts already shown (prompt id -> true). Survives a scene restart; a new
+## hike clears it.
+var guide_seen: Dictionary = {}
+
 var _scene_start_units: Dictionary = {}
 var _scene_start_ddeok: int = 0
 var _scene_start_inventory: Dictionary = {}
@@ -91,6 +95,7 @@ func new_hike(starting_ddeok: int = -1) -> void:
 	else:
 		ddeok = int(Content.rules.get("starting_ddeok_without_save", 0))
 	inventory.clear()
+	guide_seen.clear()
 	for entry in Content.starting_kit():  # the 수첩: in every scene-start snapshot, so never lost
 		inventory.add(entry["item"], entry["count"])
 	current_scene = ""

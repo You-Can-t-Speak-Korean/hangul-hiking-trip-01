@@ -2,8 +2,8 @@ extends RefCounted
 ## The animals' needs, with no nodes (data: animals.needs, animals.watch). Watching an animal
 ## long enough shows one of its kind's needs: a word to spell or an item to hand over. A
 ## need joins the discovery list (this object has the same `entries` and `opacity()` as
-## the foraging Discovery, so DiscoveryHud draws it) with empty syllable blocks and an
-## English hint that shows, flickers and is then gone for good (`hint_alpha()`).
+## the foraging Discovery, so DiscoveryHud draws it) with empty syllable blocks and its
+## English name, which stays (as a foraging entry's does).
 ##
 ## Needs are distinct words or items for the whole run; at most `total` are shown. An item
 ## need is only drawn if `has_item` says the backpack holds the item. One animal shows one
@@ -17,12 +17,11 @@ var total := 6
 var radius := 8.0
 var seconds := 3.0
 var fade_time := 0.1
-var hint_show := 0.6
-var hint_flicker := 0.4
-var hint_rate := 10.0
+## Need id -> picture id (animals.needs.pictures).
+var pictures: Dictionary = {}
 ## Kind id -> [{"word", "en"} or {"item"}], in data order.
 var table: Dictionary = {}
-## The discovered needs in order: {"id", "hover_name" (always ""), "hint" (the English), "name_ko",
+## The discovered needs in order: {"id", "hover_name" and "hint" (both the English), "name_ko",
 ## "syllables", "age", "kind", "item", "from_kind" (the animal kind it was shown by), "walker"
 ## (the animal's id, once watch() has shown it)}.
 var entries: Array[Dictionary] = []
@@ -43,9 +42,7 @@ func _init(animals: Dictionary, seed_value: int, has_item_fn: Callable) -> void:
 	var needs: Dictionary = animals["needs"]
 	total = int(needs["needs_total"])
 	fade_time = float(needs["fade_time"])
-	hint_show = float(needs["hint"]["show_s"])
-	hint_flicker = float(needs["hint"]["flicker_s"])
-	hint_rate = float(needs["hint"]["flicker_rate"])
+	pictures = needs["pictures"]
 	table = needs["table"]
 	radius = float(animals["watch"]["radius"])
 	seconds = float(animals["watch"]["seconds"])
@@ -90,6 +87,7 @@ func discover(kind_id: String) -> Dictionary:
 		entry["name_ko"] = String(item["name_ko"])
 		entry["kind"] = ITEM
 		entry["item"] = id
+	entry["hover_name"] = entry["hint"]
 	entry["syllables"] = Hangul.syllable_count(entry["name_ko"])
 	_drawn[id] = true
 	entries.append(entry)
@@ -153,7 +151,7 @@ func progress_of(walker_id: int) -> float:
 	return clampf(best / maxf(seconds, 0.001), 0.0, 1.0)
 
 
-## Ages every entry (they fade in, and their hints run out).
+## Ages every entry (they fade in).
 func update(delta: float) -> void:
 	for entry in entries:
 		entry["age"] += delta
@@ -164,16 +162,9 @@ func opacity(entry: Dictionary) -> float:
 	return clampf(float(entry["age"]) / maxf(fade_time, 0.001), 0.0, 1.0)
 
 
-## The English hint's opacity: solid for hint_show seconds, then flickering (it starts
-## hidden) for hint_flicker seconds at hint_rate changes per second, then 0 for good.
-func hint_alpha(entry: Dictionary) -> float:
-	var age := float(entry["age"])
-	if age <= hint_show:
-		return 1.0
-	var flicker := age - hint_show
-	if flicker < hint_flicker:
-		return 1.0 if int(flicker * hint_rate) % 2 == 1 else 0.0
-	return 0.0
+## The picture id of a need (a NeedPicture id), "" if it has none.
+func picture_of(id: String) -> String:
+	return String(pictures.get(id, ""))
 
 
 ## "met/total", the counter the scene always shows.
@@ -212,3 +203,25 @@ func missing_letters(spelling, basket: Array) -> Dictionary:
 		if int(wanted[letter]) <= 0:
 			wanted.erase(letter)
 	return wanted
+
+
+## True if the basket holds every jamo the unfinished syllables of the word need `id` lack.
+## False for an item need, a finished word, or an unknown id. `spelling` holds the words.
+func word_ready(spelling, id: String, basket: Array) -> bool:
+	var entry := entry_of(id)
+	if entry.is_empty() or entry["kind"] != WORD or not spelling.has_word(id) or spelling.is_done(id):
+		return false
+	var wanted := {}
+	for block in range(spelling.solved(id).size(), spelling.block_count(id)):
+		for letter in Hangul.decompose(spelling.target_syllable(id, block)):
+			if letter != "":
+				wanted[letter] = int(wanted.get(letter, 0)) + 1
+	if wanted.is_empty():
+		return false
+	for letter in basket:
+		if wanted.has(letter):
+			wanted[letter] = int(wanted[letter]) - 1
+	for letter in wanted:
+		if int(wanted[letter]) > 0:
+			return false
+	return true

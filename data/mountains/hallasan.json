@@ -441,10 +441,11 @@
       "ring": {"pad_m": 0.4, "width_m": 0.12, "color": [1.0, 0.9, 0.35], "alpha": 0.85}
     },
     "needs": {
-      "_note": "What the animals need (Prompt 9b), by kind id: a word to spell ('word' Korean, 'en' its English hint) or an item to hand over ('item', an id of items.json; only drawn if Fernanda's backpack holds it). Needs are distinct across the run; needs_total of them end the scene's needs. A new need's English hint shows 'hint.show_s' seconds, flickers 'hint.flicker_s' seconds (flicker_rate changes per second) and is then gone for good; its row fades in over fade_time. 'complete_text' is the placeholder line shown at needs_total of needs_total.",
+      "_note": "What the animals need (Prompt 9b), by kind id: a word to spell ('word' Korean, 'en' its English hint) or an item to hand over ('item', an id of items.json; only drawn if Fernanda's backpack holds it). Needs are distinct across the run; needs_total of them end the scene's needs. A need's entry in the discovery list shows its English for good (Prompt 9b-iii), with its small picture (list_picture_px) at the left; its row fades in over fade_time. 'pictures' maps each need id (the word, or the item id) to a picture id drawn in code by scenes/animals/need_picture.gd (placeholders for art). 'complete_text' is the placeholder line shown at needs_total of needs_total.",
       "needs_total": 6,
       "fade_time": 0.1,
-      "hint": {"show_s": 0.6, "flicker_s": 0.4, "flicker_rate": 10, "lift_m": 0.8, "font_size": 20},
+      "list_picture_px": 44,
+      "pictures": {"고구마": "sweet_potato", "나무": "tree", "우리": "pen", "고기": "meat", "노루": "roe_deer", "고라니": "water_deer", "오리": "duck", "거미": "spider", "오이": "cucumber", "plant_meoru": "meoru", "plant_minari": "minari"},
       "complete_text": "6/6",
       "table": {
         "noru": [{"word": "고구마", "en": "sweet potato"}, {"word": "나무", "en": "tree"}, {"word": "우리", "en": "pen"}],
@@ -458,6 +459,22 @@
         "jejujokjebi": [{"word": "고기", "en": "meat"}, {"word": "오리", "en": "duck"}],
         "bibaribaem": [{"word": "나무", "en": "tree"}],
         "ori": [{"word": "오이", "en": "cucumber"}, {"item": "plant_minari"}]
+      }
+    },
+    "bubble": {
+      "_note": "Prompt 9b-iii: the picture thought bubble over the animal that showed a need: a rounded white panel (w x h px) holding the need's picture (pic_px), with two trailing circles ([radius, centre distance below the panel] px) toward the animal's head. Fully visible show_s seconds, then fades out over fade_s and is removed. lift_m = metres above the animal's name label. It follows the animal and leaves the screen with it.",
+      "show_s": 4.0, "fade_s": 1.0, "lift_m": 0.5,
+      "panel": [92, 80], "corner": 18, "pic_px": 60, "color": [1.0, 1.0, 1.0], "border": [0.25, 0.25, 0.25], "border_px": 2,
+      "trail": [[9, 15], [5, 31]]
+    },
+    "guide": {
+      "_note": "Prompt 9b-iii: one-time prompts in a small panel at the top centre, one line of English each, shown show_s seconds then faded over fade_s. Each shows once per hike (GameState.guide_seen), so a scene restart does not repeat it. delay_s on 'start' = seconds after the scene starts. A prompt never stacks on another: it waits until the current one is gone.",
+      "show_s": 4.0, "fade_s": 0.5, "font_size": 26, "top_px": 64,
+      "prompts": {
+        "start": {"delay_s": 2.0, "text": "Watch an animal to find out what it wants."},
+        "grab": {"text": "Grab letters from animals: Space or click."},
+        "spell": {"text": "Press E to spell."},
+        "give": {"text": "Press E to give it."}
       }
     },
     "heal_pickups": {

@@ -155,11 +155,13 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_animals9b_needs_scene",
 	"test_animals9bii_logic",
 	"test_animals9bii_scene",
+	"test_animals9biii_logic",
+	"test_animals9biii_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3718
+const MIN_CHECKS := 3764
 
 
 func check(condition: bool, label: String) -> void:
@@ -359,6 +361,9 @@ func _ready() -> void:
 	print("== Animal playtest fixes and healing sources ==")
 	test_animals9bii_logic()
 	await test_animals9bii_scene()
+	print("== Animal English entries, picture bubbles, guide prompts ==")
+	test_animals9biii_logic()
+	await test_animals9biii_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -11198,8 +11203,7 @@ func test_animals9b_data() -> void:
 	check(int(cfg["needs"]["needs_total"]) == 6 and int(cfg["letters"]["guarantee_every"]) == 3, "needs_total is 6 and guarantee_every is 3")
 	check(is_equal_approx(float(cfg["watch"]["radius"]), 8.0) and is_equal_approx(float(cfg["watch"]["seconds"]), 3.0), "the watch is 8 m for 3 s")
 	check(is_equal_approx(float(cfg["grab_radius"]), 1.2), "the grab radius is 1.2 m")
-	var hint: Dictionary = cfg["needs"]["hint"]
-	check(is_equal_approx(float(hint["show_s"]), 0.6) and is_equal_approx(float(hint["flicker_s"]), 0.4) and float(hint["flicker_rate"]) > 0.0, "the English hint shows 0.6 s and flickers 0.4 s")
+	check(not cfg["needs"].has("hint"), "no floating English hint is configured any more")
 	check(is_equal_approx(float(cfg["grab"]["flee_speed_scale"]), 2.5) and float(cfg["grab"]["fly_s"]) > 0.0, "the grab data has a flee speed and a fly time")
 	var grab_ok := true
 	for kind in cfg["kinds"]:
@@ -11275,30 +11279,15 @@ func test_animals9b_needs() -> void:
 	check(a == b and not a.has(""), "the same seed shows the same needs (%s)" % str(a))
 	# Entries: syllable blocks, hint, item entries.
 	var entry: Dictionary = _needs_for_test(2, true).discover("goraeni")
-	check(entry["id"] == "고구마" and entry["name_ko"] == "고구마" and entry["hint"] == "sweet potato" and entry["hover_name"] == "" and entry["from_kind"] == "goraeni" and entry["syllables"] == 3 and entry["kind"] == "word" and entry["age"] == 0.0, "a word entry: its word, its English hint (kept off the entry itself), the kind that showed it, one block per syllable")
+	check(entry["id"] == "고구마" and entry["name_ko"] == "고구마" and entry["hint"] == "sweet potato" and entry["hover_name"] == "sweet potato" and entry["from_kind"] == "goraeni" and entry["syllables"] == 3 and entry["kind"] == "word" and entry["age"] == 0.0, "a word entry: its word, its English (the entry keeps it), the kind that showed it, one block per syllable")
 	var item_needs = _needs_for_test(2, true)
 	var item_entry := {}
 	for i in 3:
 		var drawn: Dictionary = item_needs.discover("osori")
 		if drawn.get("kind", "") == "item":
 			item_entry = drawn
-	check(item_entry.get("id", "") == "plant_meoru" and item_entry["hint"] == "Wild grape" and item_entry["hover_name"] == "" and item_entry["syllables"] == 2 and item_entry["item"] == "plant_meoru" and item_needs.is_item("plant_meoru"), "an item entry: the item's English name as the hint, two blocks for 머루")
-	# The hint: solid, then flickering, then gone for good.
+	check(item_entry.get("id", "") == "plant_meoru" and item_entry["hint"] == "Wild grape" and item_entry["hover_name"] == "Wild grape" and item_entry["syllables"] == 2 and item_entry["item"] == "plant_meoru" and item_needs.is_item("plant_meoru"), "an item entry: the item's English name as the hint, two blocks for 머루")
 	var probe := {"age": 0.0}
-	var shown := needs.hint_alpha(probe) == 1.0
-	probe["age"] = 0.6
-	shown = shown and needs.hint_alpha(probe) == 1.0
-	check(shown, "the hint is solid until 0.6 s")
-	var alphas := {}
-	for step in 40:
-		probe["age"] = 0.6 + step * 0.01
-		alphas[needs.hint_alpha(probe)] = true
-	check(alphas.has(0.0) and alphas.has(1.0) and alphas.size() == 2, "from 0.6 s to 1.0 s it flickers between shown and hidden")
-	var gone := true
-	for age in [1.0, 1.01, 2.0, 60.0]:
-		probe["age"] = age
-		gone = gone and needs.hint_alpha(probe) == 0.0
-	check(gone, "after 1.0 s it is gone for good")
 	probe["age"] = 0.05
 	check(is_equal_approx(needs.opacity(probe), 0.5) and needs.opacity({"age": 9.0}) == 1.0, "the row fades in over fade_time")
 	# Watching.
@@ -11887,25 +11876,15 @@ func test_animals9b_needs_scene() -> void:
 	check(map.needs.entries.size() == 1 and not node.watch_ring.visible, "3 s: a need joins the list and the ring is gone")
 	var entry: Dictionary = map.needs.entries[0]
 	var id: String = entry["id"]
-	check(map.spelling.has_word(id) and not map.spelling.is_done(id) and hud._rows.has(id) and map.spelling.hover_name(id) == "", "it is a word of the spelling, with a row in the discovery list")
+	check(map.spelling.has_word(id) and not map.spelling.is_done(id) and hud._rows.has(id) and map.spelling.hover_name(id) == entry["hint"], "it is a word of the spelling (titled with its English), with a row in the discovery list")
 	var row: PanelContainer = hud._rows[id]
 	var blocks: HBoxContainer = row.find_child("Blocks", true, false)
 	var name_label: Label = row.find_child("Name", true, false)
-	check(blocks.get_child_count() == Hangul.syllable_count(id) and name_label.text == "" and not name_label.visible, "...with empty syllable blocks and no English in the entry")
+	check(blocks.get_child_count() == Hangul.syllable_count(id) and name_label.text == entry["hint"] and name_label.visible, "...with empty syllable blocks and its English in the entry")
 	check(blocks.get_child(0).get_child_count() == 0, "...no Korean shown")
-	var hint_panel: PanelContainer = map.hint_panels[id]
-	check(hint_panel.visible and hint_panel.get_node("Text").text == entry["hint"] and entry["hint"] != "" and hint_panel.position.y < map.camera.unproject_position(node.global_position).y, "the English hint floats above the animal that showed it")
-	map.needs.update(0.3)
-	map._update_hints()
+	map.needs.update(10.0)
 	hud.refresh()
-	check(hint_panel.visible and row.modulate.a == 1.0, "after 0.3 s the hint is still solid")
-	map.needs.update(0.35)
-	map._update_hints()
-	check(not hint_panel.visible, "at 0.65 s it is flickering (it starts hidden)")
-	map.needs.update(0.6)
-	map._update_hints()
-	hud.refresh()
-	check(not map.hint_panels.has(id) and row.modulate.a == 1.0, "after 1.25 s the hint is gone for good and the row stays")
+	check(name_label.visible and name_label.text == entry["hint"] and row.modulate.a == 1.0, "10 s later the English is still there (no fade, no flicker)")
 	# E opens the selection; Enter on a word opens the spelling view and pauses.
 	_tap(viewport, KEY_E)
 	check(hud.word_select.is_open() and hud.word_select.highlighted() == id, "E opens word selection on the need")
@@ -11943,7 +11922,7 @@ func test_animals9b_needs_scene() -> void:
 			item_id = String(e["id"])
 	check(item_id == "plant_meoru" and map.spelling.has_word(item_id) and hud._rows.has(item_id), "with 머루 in the backpack, 오소리 can show it as an item need")
 	var item_row: PanelContainer = hud._rows[item_id]
-	check(item_row.find_child("Blocks", true, false).get_child_count() == 2 and not item_row.find_child("Name", true, false).visible and map.needs.entry_of(item_id)["hint"] == "Wild grape", "...two empty blocks and no English in the entry (the item's English name is the floating hint)")
+	check(item_row.find_child("Blocks", true, false).get_child_count() == 2 and item_row.find_child("Name", true, false).visible and item_row.find_child("Name", true, false).text == "Wild grape", "...two empty blocks and the item's English name in the entry")
 	GameState.inventory.remove("plant_meoru", 2)
 	check(not map.open_spelling(item_id) and not map.spelling.is_done(item_id) and not get_tree().paused and not map.spelling_hud.is_open(), "choosing the item without it in the backpack does nothing")
 	GameState.inventory.add("plant_meoru", 2)
@@ -12340,18 +12319,18 @@ func test_animals9bii_scene() -> void:
 	var mean := near_total / maxf(float(ground_count), 1.0)
 	check(ground_count > 8 and mean < 60.0, "ground animals come in near the view: %.1f m from the player on average (%d of them)" % [mean, ground_count])
 	map.free()
-	# 4. Nothing English inside the entry or the spelling view.
+	# 4. The English is in the entry and in the spelling view's title, as in foraging.
 	GameState.new_hike()
 	map = await _animals_map(38)
 	var e2: Dictionary = map.needs.discover("noru")
 	map._on_need_discovered(e2)
-	check(map.spelling.hover_name(e2["id"]) == "" and e2["hover_name"] == "", "the need has no English name in the spelling or the entry")
+	check(map.spelling.hover_name(e2["id"]) == e2["hint"] and e2["hover_name"] == e2["hint"] and e2["hint"] != "", "the need has its English in the spelling and the entry")
 	map.open_spelling(e2["id"])
 	var english_found := false
-	for label in map.spelling_hud.find_children("*", "Label", true, false) + map.discovery_hud.find_children("*", "Label", true, false):
-		if label.visible and (String(label.text).findn(String(e2["hint"])) >= 0 and String(e2["hint"]) != ""):
+	for label in map.spelling_hud.find_children("*", "Label", true, false):
+		if label.visible and String(label.text) == String(e2["hint"]):
 			english_found = true
-	check(not english_found and map.spelling_hud.is_open(), "the spelling view and the discovery list show no English hint")
+	check(english_found and map.spelling_hud.is_open(), "the spelling view's title shows the English")
 	map.spelling_hud.close()
 	map.free()
 	get_tree().paused = false
@@ -12359,6 +12338,252 @@ func test_animals9bii_scene() -> void:
 	get_window().size = window_before
 	await get_tree().process_frame
 	_section_done("test_animals9bii_scene")
+
+
+const NeedPictureScript := preload("res://scenes/animals/need_picture.gd")
+const ThoughtBubbleScript := preload("res://scenes/animals/thought_bubble.gd")
+const GuideScript := preload("res://scenes/animals/guide.gd")
+
+
+## Every need id of the table: the words and the item ids.
+func _all_need_ids() -> Array[String]:
+	var ids: Array[String] = []
+	for kind_id in _animals_config()["needs"]["table"]:
+		for row in _animals_config()["needs"]["table"][kind_id]:
+			var id := NeedsScript.need_id(row)
+			if not ids.has(id):
+				ids.append(id)
+	return ids
+
+
+func test_animals9biii_logic() -> void:
+	var cfg := _animals_config()
+	# Pictures: one per need, keyed in data, each with a drawing function.
+	var pictures: Dictionary = cfg["needs"]["pictures"]
+	var ids := _all_need_ids()
+	check(ids.size() == 11 and pictures.size() == 11, "there are 11 needs (nine words, two plants) and 11 pictures (%d, %d)" % [ids.size(), pictures.size()])
+	var covered := true
+	var drawable := true
+	var probe = NeedPictureScript.new()
+	for id in ids:
+		covered = covered and pictures.has(id) and NeedPictureScript.is_known(String(pictures[id]))
+		drawable = drawable and probe.has_method("_draw_%s" % pictures[id])
+	probe.free()
+	check(covered, "every need has a picture id that the picture script knows")
+	check(drawable, "...and every picture id has a drawing function")
+	var distinct := {}
+	for id in pictures:
+		distinct[pictures[id]] = true
+	check(distinct.size() == 11 and NeedPictureScript.IDS.size() == 11, "no two needs share a picture")
+	# The bubble's clock: visible 4 s, fading over 1 s, gone at 5 s.
+	var bubble_cfg: Dictionary = cfg["bubble"]
+	check(is_equal_approx(float(bubble_cfg["show_s"]), 4.0) and is_equal_approx(float(bubble_cfg["fade_s"]), 1.0), "the bubble data: 4 s shown, 1 s fade")
+	var alphas := []
+	for age in [0.0, 3.99, 4.0, 4.5, 5.0, 7.0]:
+		alphas.append(ThoughtBubbleScript.alpha_at(age, 4.0, 1.0))
+	check(alphas == [1.0, 1.0, 1.0, 0.5, 0.0, 0.0], "the bubble's alpha: 1 until 4 s, 0.5 at 4.5 s, 0 from 5 s (%s)" % str(alphas))
+	# The guide: data, timing, once, queue.
+	var gcfg: Dictionary = cfg["guide"]
+	check(is_equal_approx(float(gcfg["show_s"]), 4.0) and is_equal_approx(float(gcfg["prompts"]["start"]["delay_s"]), 2.0), "the guide data: 4 s shown, the start prompt after 2 s")
+	check(gcfg["prompts"]["start"]["text"] == "Watch an animal to find out what it wants." and gcfg["prompts"]["grab"]["text"] == "Grab letters from animals: Space or click." and gcfg["prompts"]["spell"]["text"] == "Press E to spell." and gcfg["prompts"]["give"]["text"] == "Press E to give it.", "the four prompt texts are as briefed")
+	var seen := {}
+	var guide = GuideScript.new(gcfg, seen)
+	guide.update(1.9)
+	check(guide.current == "" and guide.alpha() == 0.0 and seen.is_empty(), "start: nothing at 1.9 s")
+	guide.update(0.2)
+	check(guide.current == "start" and guide.text() == gcfg["prompts"]["start"]["text"] and guide.alpha() == 1.0 and seen.has("start"), "start: at 2 s the first prompt shows and is marked seen")
+	guide.trigger("grab")
+	guide.trigger("grab")
+	guide.trigger("spell")
+	guide.trigger("bogus")
+	check(guide.current == "start" and guide.queued() == ["grab", "spell"], "prompts triggered meanwhile wait, once each, and do not stack (%s)" % str(guide.queued()))
+	guide.update(3.7)
+	check(guide.current == "start" and guide.alpha() == 1.0, "the first prompt is fully visible for its 4 s")
+	guide.update(0.35)
+	check(guide.current == "start" and absf(guide.alpha() - 0.5) < 0.01, "...then fades (half at 4.25 s on a 0.5 s fade)")
+	guide.update(0.3)
+	check(guide.current == "grab" and guide.alpha() == 1.0 and guide.queued() == ["spell"], "...and when it is gone the next one comes up")
+	var order: Array[String] = ["start", "grab"]
+	var overlap := false
+	for i in 80:
+		var before: String = guide.current
+		guide.update(0.25)
+		if guide.current != before and guide.current != "":
+			order.append(guide.current)
+		overlap = overlap or (guide.current != "" and guide.alpha() <= 0.0)
+	check(order == ["start", "grab", "spell"] and guide.current == "" and not overlap, "the queue plays out in order, one at a time (%s)" % str(order))
+	guide.trigger("grab")
+	guide.trigger("start")
+	guide.update(30.0)
+	check(guide.current == "" and guide.queued().is_empty() and seen.size() == 3, "a prompt that has been seen never shows again")
+	# A scene restart keeps the flags; a new hike clears them.
+	var again = GuideScript.new(gcfg, seen)
+	again.update(60.0)
+	check(again.current == "" and again.has_seen("start"), "a new scene over the same seen flags does not repeat the start prompt")
+	GameState.guide_seen["grab"] = true
+	GameState.restart_scene()
+	check(GameState.guide_seen.has("grab"), "GameState.restart_scene keeps the seen flags")
+	GameState.new_hike()
+	check(GameState.guide_seen.is_empty(), "a new hike clears them")
+	_section_done("test_animals9biii_logic")
+
+
+func test_animals9biii_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var cfg := _animals_config()
+	GameState.new_hike()
+	# Each picture is drawn (the control's _draw ran) at a small and a large size.
+	var holder := Control.new()
+	add_child(holder)
+	var made: Array = []
+	for picture_id in NeedPictureScript.IDS:
+		for px in [44.0, 60.0]:
+			var picture = NeedPictureScript.new()
+			picture.setup(picture_id, px)
+			holder.add_child(picture)
+			made.append(picture)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var all_drawn := true
+	for picture in made:
+		all_drawn = all_drawn and picture.draws > 0
+	check(all_drawn, "every picture draws into a Control without errors (%d drawn)" % made.size())
+	holder.free()
+	var map: Node3D = await _animals_map(41)
+	var hud = map.discovery_hud
+	var guide = map.guide
+	# The scene starts quiet; the start prompt comes at 2 s.
+	map._update_guide(1.9)
+	check(not map.guide_hud.panel.visible and guide.current == "", "the guide is quiet before 2 s")
+	map._update_guide(0.2)
+	check(map.guide_hud.panel.visible and map.guide_hud.label.text == cfg["guide"]["prompts"]["start"]["text"] and GameState.guide_seen.has("start"), "at 2 s the start prompt is on screen, top centre")
+	check(map.guide_hud.panel.anchor_left == 0.5 and map.guide_hud.panel.anchor_right == 0.5 and map.guide_hud.panel.anchor_top == 0.0, "...in a panel anchored at the top centre")
+	# Watching an animal: a bubble with a picture, over that animal.
+	var walker = _spawn_kind(map, "noru")
+	_beside(map, walker, Vector2(3.0, 0.0))
+	map.partner.global_position = Vector3(2000.0, 0.0, 2000.0)
+	for i in 30:
+		map._watch_animals(0.1)
+	check(map.needs.entries.size() == 1, "(setup) a need was discovered")
+	var entry: Dictionary = map.needs.entries[0]
+	var id: String = entry["id"]
+	check(map.get("hint_panels") == null and map.get_node_or_null("HintLayer") == null, "no floating English hint exists any more")
+	check(map.bubbles.has(id) and map.bubbles[id].get_parent() == map.get_node("BubbleLayer"), "a thought bubble appeared for the need")
+	var bubble: Control = map.bubbles[id]
+	var node = map.animal_nodes[walker]
+	check(bubble.walker_id == walker.id and bubble.picture.picture_id == map.needs.picture_of(id) and NeedPictureScript.is_known(bubble.picture.picture_id), "...over the animal that showed it, holding the need's picture")
+	var head: Vector2 = map.camera.unproject_position(node.global_position)
+	check(bubble.position.y + bubble.size.y < head.y and absf(bubble.position.x + bubble.size.x / 2.0 - head.x) < 1.0, "...hanging above the animal's head (%s over %s)" % [str(bubble.position), str(head)])
+	check(map.get_node("BubbleLayer").find_children("*", "Label", true, false).is_empty(), "...with no English text over the animal")
+	# The entry: its English stays, with a small picture at its left.
+	var row: PanelContainer = hud._rows[id]
+	var name_label: Label = row.find_child("Name", true, false)
+	var small: Control = row.find_child("Picture", true, false)
+	check(name_label.visible and name_label.text == entry["hover_name"] and name_label.text != "" and small != null and small.picture_id == bubble.picture.picture_id, "the list entry shows the English and the same picture")
+	check(small.get_parent().get_child(0) == small and small.get_parent().get_child(1).is_ancestor_of(row.find_child("Blocks", true, false)) and small.custom_minimum_size.x == float(cfg["needs"]["list_picture_px"]), "...the picture first (at the left), the name and blocks after it")
+	# The timeline.
+	map._update_bubbles(3.9)
+	check(bubble.modulate.a == 1.0 and map.bubbles.has(id), "after 3.9 s the bubble is fully visible")
+	map._update_bubbles(0.1)
+	check(bubble.modulate.a == 1.0, "at 4.0 s it is still fully visible")
+	map._update_bubbles(0.5)
+	check(absf(bubble.modulate.a - 0.5) < 0.001, "at 4.5 s it is half faded")
+	map._update_bubbles(0.4)
+	check(bubble.modulate.a > 0.0 and bubble.modulate.a < 0.15 and map.bubbles.has(id), "at 4.9 s it is nearly gone")
+	map._update_bubbles(0.1)
+	check(not map.bubbles.has(id) and bubble.is_queued_for_deletion(), "at 5 s it is removed")
+	map.needs.update(10.0)
+	hud.refresh()
+	check(name_label.visible and name_label.text == entry["hover_name"] and row.modulate.a == 1.0, "10 s later the entry still shows its English")
+	# Following the animal, and going with it off screen.
+	map.free()
+	GameState.new_hike()
+	map = await _animals_map(42)
+	walker = _spawn_kind(map, "noru")
+	_beside(map, walker, Vector2(3.0, 0.0))
+	map.partner.global_position = Vector3(2000.0, 0.0, 2000.0)
+	for i in 30:
+		map._watch_animals(0.1)
+	id = map.needs.entries[0]["id"]
+	bubble = map.bubbles[id]
+	node = map.animal_nodes[walker]
+	var x_before := bubble.position.x
+	node.global_position += Vector3(1.0, 0.0, 0.0)
+	map._update_bubbles(0.0)
+	check(bubble.position.x > x_before + 5.0, "the bubble follows the animal on screen")
+	node.global_position += Vector3(500.0, 0.0, 0.0)
+	map._update_bubbles(0.0)
+	check(bubble.position.x > map.get_viewport().get_visible_rect().size.x and map.bubbles.has(id), "an animal off screen takes its bubble with it (no clamping to the edge)")
+	map._remove_animal(walker)
+	map._update_bubbles(0.0)
+	check(not map.bubbles.has(id), "an animal that is gone takes its bubble with it")
+	map.free()
+	# The guide's other prompts, in a scene.
+	GameState.new_hike()
+	map = await _animals_map(43)
+	guide = map.guide
+	map._update_guide(2.0)
+	check(guide.current == "start", "(setup) the start prompt is up")
+	var e: Dictionary = map.needs.discover("goraeni")
+	check(not guide.queued().has("grab"), "(setup) the grab prompt has not fired")
+	e["walker"] = 0
+	map._on_need_discovered(e)
+	check(guide.current == "start" and guide.queued() == ["grab"], "the first discovery queues 'Grab letters...' behind the start prompt")
+	var word_id: String = e["id"]
+	var parts: Array[String] = Hangul.decompose(map.spelling.target_syllable(word_id, 0))
+	map.picking.basket.append(parts[0])
+	map._update_guide(0.0)
+	check(not guide.has_seen("spell") and not guide.queued().has("spell") and guide.current != "spell", "the spell prompt waits while the basket lacks letters of the word")
+	for block in map.spelling.block_count(word_id):
+		for letter in Hangul.decompose(map.spelling.target_syllable(word_id, block)):
+			if letter != "" and not (block == 0 and letter == parts[0]):
+				map.picking.basket.append(letter)
+	map._update_guide(0.0)
+	check(guide.queued() == ["grab", "spell"], "once the basket holds every letter of an unmet word, 'Press E to spell.' queues")
+	var shown: Array[String] = []
+	for i in 80:
+		var before: String = guide.current
+		map._update_guide(0.25)
+		if guide.current != before and guide.current != "":
+			shown.append(guide.current)
+	check(shown == ["grab", "spell"] and guide.current == "" and not map.guide_hud.panel.visible, "the prompts play one after another and the panel is gone (%s)" % str(shown))
+	# Item need: "Press E to give it." only with the item in the backpack.
+	GameState.inventory.add("plant_meoru")
+	var item_entry := {}
+	for i in 3:
+		var drawn: Dictionary = map.needs.discover("osori")
+		if drawn.get("kind", "") == "item":
+			item_entry = drawn
+		if not drawn.is_empty():
+			drawn["walker"] = 0
+			map._on_need_discovered(drawn)
+	check(not item_entry.is_empty(), "(setup) 오소리 showed the 머루 need")
+	GameState.inventory.remove("plant_meoru")
+	map._update_guide(0.0)
+	check(not guide.has_seen("give") and guide.current == "" and guide.queued().is_empty(), "the give prompt waits while the item is not in the backpack")
+	GameState.inventory.add("plant_meoru")
+	map._update_guide(0.0)
+	check(guide.current == "give" and guide.text() == "Press E to give it.", "with the item in the backpack: 'Press E to give it.'")
+	map._update_guide(60.0)
+	check(guide.current == "" and guide.queued().is_empty() and GameState.guide_seen.size() == 4, "all four prompts were seen once and nothing repeats (%d seen)" % GameState.guide_seen.size())
+	# A restart keeps them seen; a new hike brings them back.
+	map._restart()
+	map.free()
+	map = await _animals_map(43)
+	map._update_guide(5.0)
+	check(map.guide.current == "" and map.guide.has_seen("start") and not map.guide_hud.panel.visible, "after a scene restart the prompts do not repeat")
+	map.free()
+	GameState.new_hike()
+	map = await _animals_map(43)
+	map._update_guide(2.0)
+	check(map.guide.current == "start", "after a new hike the start prompt shows again")
+	map.free()
+	GameState.new_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_animals9biii_scene")
 
 
 func bounds_has(map: Node3D, spot: Vector2) -> bool:
