@@ -157,11 +157,13 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_animals9bii_scene",
 	"test_animals9biii_logic",
 	"test_animals9biii_scene",
+	"test_revive_logic",
+	"test_revive_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3764
+const MIN_CHECKS := 3906
 
 
 func check(condition: bool, label: String) -> void:
@@ -364,6 +366,9 @@ func _ready() -> void:
 	print("== Animal English entries, picture bubbles, guide prompts ==")
 	test_animals9biii_logic()
 	await test_animals9biii_scene()
+	print("== Downed travelers and revive (both scenes) ==")
+	test_revive_logic()
+	await test_revive_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -464,15 +469,21 @@ func test_game_state() -> void:
 	var deaths := []
 	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
 	GameState.travelers_died.connect(on_death)
+	var downs := []
+	var on_down := func(who, injury): downs.append([who, injury])
+	GameState.traveler_downed.connect(on_down)
 	GameState.heart_units["nestor"] = 2
 	var died := GameState.damage("nestor", "antler_skewer")
-	check(died, "1 heart to 0 kills")
-	check(deaths.size() == 1, "death signal emitted once")
-	check(deaths[0] == ["nestor", "fernanda", "antler_skewer"], "signal names dead, survivor and injury")
+	check(not died and GameState.is_downed("nestor"), "1 heart to 0 downs that traveler; the scene does not end (9b-iv: was 'kills')")
+	check(downs == [["nestor", "antler_skewer"]] and deaths.is_empty(), "the downed signal fires once and no death signal (9b-iv: was 'death signal emitted once')")
 	GameState.damage("nestor", "antler_skewer")
 	check(GameState.heart_units["nestor"] == 0, "hearts never go below 0")
-	check(deaths.size() == 1, "hitting the dead doesn't re-emit the signal")
+	check(downs.size() == 1 and deaths.is_empty(), "hitting the downed doesn't re-emit the signal")
+	check(GameState.damage_units("fernanda", 10, "antler_skewer"), "the second traveler going down ends the scene")
+	check(deaths == [["fernanda", "nestor", "antler_skewer"]], "the death signal comes once, naming the one who went down last, the other and the injury (9b-iv)")
 	GameState.travelers_died.disconnect(on_death)
+	GameState.traveler_downed.disconnect(on_down)
+	GameState.heart_units["fernanda"] = 10  # (the snapshot below restores it anyway)
 	GameState.add_ddeok(100)
 	GameState.restart_scene()
 	check(GameState.heart_units["nestor"] == 8 and GameState.heart_units["fernanda"] == 10, "restart restores both travelers' hearts")
@@ -495,6 +506,9 @@ func test_heart_units() -> void:
 	var deaths := []
 	var on_death := func(dead, survivor, injury): deaths.append(dead)
 	GameState.travelers_died.connect(on_death)
+	var downs := []
+	var on_down := func(who, injury): downs.append(who)
+	GameState.traveler_downed.connect(on_down)
 
 	_bare_hike(0)
 	check(GameState.heart_units["nestor"] == 10 and GameState.heart_units["fernanda"] == 10, "hike start: everyone at max units")
@@ -526,12 +540,13 @@ func test_heart_units() -> void:
 	_bare_hike(0)
 	deaths.clear()
 	GameState.heart_units["nestor"] = 1
-	check(GameState.damage_units("nestor", 5, "x"), "damage past 0 kills")
-	check(GameState.heart_units["nestor"] == 0 and deaths == ["nestor"], "units floor at 0 and the death fires once")
+	check(not GameState.damage_units("nestor", 5, "x"), "damage past 0 downs one traveler, not the scene (9b-iv: was 'kills')")
+	check(GameState.heart_units["nestor"] == 0 and downs == ["nestor"] and deaths.is_empty(), "units floor at 0 and the downed signal fires once (9b-iv)")
 	changes.clear()
 	GameState.heal("nestor", 4)
-	check(GameState.heart_units["nestor"] == 0 and changes.is_empty(), "healing the dead does nothing")
-	check(GameState.damage_units("nestor", 1) and deaths.size() == 1, "hitting the dead doesn't re-emit death")
+	check(GameState.heart_units["nestor"] == 0 and changes.is_empty(), "healing the downed does nothing (revive is the way up)")
+	check(not GameState.damage_units("nestor", 1) and downs.size() == 1 and deaths.is_empty(), "hitting the downed does nothing and doesn't re-emit (9b-iv)")
+	check(GameState.damage_units("fernanda", 99, "x") and deaths == ["fernanda"], "the second one down ends the scene, announced once (9b-iv)")
 
 	# Restart restores an odd unit count exactly.
 	_bare_hike(0)
@@ -546,6 +561,7 @@ func test_heart_units() -> void:
 
 	GameState.hearts_changed.disconnect(on_change)
 	GameState.travelers_died.disconnect(on_death)
+	GameState.traveler_downed.disconnect(on_down)
 	_bare_hike(0)
 	_section_done("test_heart_units")
 
@@ -1178,6 +1194,12 @@ func test_terrain_scene() -> void:
 ## existed expects an empty backpack at the start of a hike and counts its rows and
 ## contents; this keeps their set-up as it was. The 수첩-era tests call
 ## GameState.new_hike() itself.
+## Both travelers at 0 hearts (downed): the scene is over.
+func _down_both() -> void:
+	GameState.damage_units("fernanda", 99, "test")
+	GameState.damage_units("nestor", 99, "test")
+
+
 func _bare_hike(starting_ddeok := -1) -> void:
 	GameState.new_hike(starting_ddeok)
 	GameState.inventory.clear()
@@ -1910,16 +1932,14 @@ func test_picking_scene() -> void:
 	gated.pick_plant(near["plant"])
 	check(gated.picking.basket.is_empty() and near["plant"].letter != "", "a pick while restarting takes nothing")
 	gated.restarting = false
-	while GameState.is_alive("fernanda") and GameState.is_alive("nestor"):
-		GameState.damage("fernanda", "test")
+	_down_both()  # (9b-iv: one at 0 is only downed now; the scene ends when both are)
 	check(not gated.picks_allowed() and not gated.click(near["screen"]), "a click with the travelers dead is ignored")
 	gated.pick_plant(near["plant"])
 	check(gated.picking.basket.is_empty() and near["plant"].letter != "", "a pick with the travelers dead takes nothing")
 	_bare_hike()
 	check(gated.picks_allowed() and gated.click(near["screen"]), "after the hike restarts a click works again")
 	gated.step(Vector2.ZERO, 0.0)
-	while GameState.is_alive("nestor"):  # they die mid-walk
-		GameState.damage("nestor", "test")
+	_down_both()  # they go down mid-walk (9b-iv: was a loop on Nestor alone)
 	gated.step(Vector2.ZERO, 0.1)
 	check(gated.picking.walk_target == -1, "a walk in progress is dropped when the travelers die")
 	_bare_hike()
@@ -2265,8 +2285,7 @@ func test_reach_scene() -> void:
 	map._unhandled_input(_key_event(KEY_SPACE))
 	check(target.letter != "" and map.picking.basket.is_empty(), "Space while restarting takes nothing")
 	map.restarting = false
-	while GameState.is_alive("fernanda") and GameState.is_alive("nestor"):
-		GameState.damage("fernanda", "test")
+	_down_both()  # (9b-iv: one at 0 is only downed now; the scene ends when both are)
 	map._unhandled_input(_key_event(KEY_SPACE))
 	check(target.letter != "" and map.picking.basket.is_empty(), "Space with the travelers dead takes nothing")
 	map.free()
@@ -2583,9 +2602,8 @@ func test_spelling_scene() -> void:
 	map.restarting = true
 	check(not map.open_spelling("ma") and not get_tree().paused and not map.spelling.is_open(), "opening is refused while restarting")
 	map.restarting = false
-	for i in 5:
-		GameState.damage("nestor", "test")
-	check(not GameState.is_alive("nestor") and not map.open_spelling("ma") and not get_tree().paused, "opening is refused when a traveler is dead")
+	_down_both()
+	check(GameState.all_downed() and not map.open_spelling("ma") and not get_tree().paused, "opening is refused when both travelers are downed (9b-iv: was 'a traveler is dead')")
 	_bare_hike()
 	GameState.controlled = "fernanda"
 
@@ -2749,8 +2767,27 @@ func test_damage_logic() -> void:
 		if damage.settle()["died"]:
 			died_at.append(i + 1)
 	check(died_at == [10], "ten failures kill on the tenth, and only then (%s)" % str(died_at))
-	check(deaths == [["nestor", "fernanda", "spelling"]], "the death was announced exactly once, with the injury 'spelling'")
-	check(GameState.heart_units["nestor"] == 0 and GameState.heart_units["fernanda"] == 1, "nestor reached 0 first; the survivor's units are left as they were when the rule fired")
+	check(deaths == [["fernanda", "nestor", "spelling"]], "the end was announced exactly once, naming the one downed last, with the injury 'spelling' (9b-iv: was nestor first)")
+	check(GameState.heart_units["nestor"] == 0 and GameState.heart_units["fernanda"] == 0, "equal hearts: the failure that downs one downs the other too (9b-iv: was 'the survivor's units are left as they were')")
+	# Unequal hearts: only the one who reaches 0 is downed, and the downed take no more damage.
+	_bare_hike(0)
+	deaths.clear()
+	GameState.heart_units["nestor"] = 1
+	damage.queue_failure()
+	result = damage.settle()
+	check(result == {"failures": 1, "died": false} and GameState.is_downed("nestor") and GameState.heart_units["fernanda"] == 9 and deaths.is_empty(), "one failure downs the traveler on 1 unit; the other (9 left) stands and the scene goes on (9b-iv)")
+	damage.queue_failure()
+	result = damage.settle()
+	check(result["died"] == false and GameState.heart_units["nestor"] == 0 and GameState.heart_units["fernanda"] == 8, "the next failure hurts only the one still standing (9b-iv)")
+	GameState.heart_units["fernanda"] = 1
+	damage.queue_failure()
+	result = damage.settle()
+	check(result["died"] and deaths == [["fernanda", "nestor", "spelling"]], "when the standing one goes down the scene ends, once (9b-iv)")
+	_bare_hike(0)
+	deaths.clear()
+	for i in 10:
+		damage.queue_failure()
+		damage.settle()
 	damage.queue_failure()
 	check(damage.settle() == {"failures": 0, "died": false} and deaths.size() == 1, "failures after the death do nothing and announce nothing")
 	# Ten queued at once and twelve queued at once.
@@ -2760,7 +2797,7 @@ func test_damage_logic() -> void:
 		for i in count:
 			damage.queue_failure()
 		result = damage.settle()
-		check(result["died"] and deaths.size() == 1 and damage.pending == 0, "%d queued at once: one death, nothing left over" % count)
+		check(result["died"] and deaths.size() == 1 and damage.pending == 0, "%d queued at once: one end, nothing left over" % count)
 		check(result["failures"] == 10, "%d queued at once: only the 10 that happened are applied (%d)" % [count, result["failures"]])
 	# The old whole-heart call still works.
 	_bare_hike(0)
@@ -2920,7 +2957,7 @@ func test_hearts_scene() -> void:
 		_fail_and_close(map)
 	check(GameState.heart_units["nestor"] == 1 and GameState.is_alive("nestor") and beats.is_empty() and not map.restarting, "nine failures leave both on half a heart, no beat")
 	_fail_and_close(map)
-	check(GameState.heart_units["nestor"] == 0 and deaths == ["nestor"], "the tenth kills (one traveler at 0 first, the rule kills both), announced once")
+	check(GameState.heart_units["nestor"] == 0 and deaths == ["fernanda"], "the tenth downs both at once and ends the scene, announced once (9b-iv: the one downed last is named)")
 	check(beats.size() == 1 and map.restarting and map.is_death_beat_playing(), "and the death beat starts once")
 	check(hud.drawn_states("nestor") == [0, 0, 0, 0, 0], "the readout shows the traveler at 0 as outlines")
 	GameState.travelers_died.disconnect(on_death)
@@ -2973,7 +3010,10 @@ func test_hearts_scene() -> void:
 	check(doomed.picking.basket.size() == 1 and not doomed.discovery.entries.is_empty(), "(before the death the scene holds a letter and a list entry)")
 	for i in 7:
 		_fail_and_close(doomed)
-	check(not GameState.is_alive("nestor") and doomed.restarting, "seven half-heart failures kill the one at 3.5 hearts")
+	check(GameState.is_downed("nestor") and not doomed.restarting and GameState.heart_units["fernanda"] == 2, "seven half-heart failures down the one at 3.5 hearts; the other stands on 2 and the scene goes on (9b-iv: was 'kill')")
+	for i in 2:
+		_fail_and_close(doomed)
+	check(GameState.all_downed() and doomed.restarting, "two more downs the second and the scene ends (9b-iv)")
 	doomed.tick_beat(0.5)
 	check(started.is_empty(), "the scene has not restarted mid-beat")
 	doomed.tick_beat(float(gore["death_beat"]))
@@ -4674,10 +4714,10 @@ func test_stuck_scene() -> void:
 	map.free()
 	get_tree().paused = false
 	map = await _stuck_map()
-	GameState.damage_units("nestor", 99, "test")
+	_down_both()  # 9b-iv: one downed traveler no longer stops the countdown (the other still plays); both downed does
 	map.picking.basket.clear()
 	var verdict: Dictionary = map.evaluate_stuck("test")
-	check(verdict["stuck"] and not map.countdown.running and map.countdown.starts == 0 and not map.music_playing, "stuck with a traveler dead: no countdown, no music")
+	check(verdict["stuck"] and not map.countdown.running and map.countdown.starts == 0 and not map.music_playing, "stuck with both travelers downed: no countdown, no music (9b-iv: was 'a traveler dead')")
 	map.free()
 	# Nothing starts while the scene is restarting, and a run is abandoned when the beat begins.
 	map = await _stuck_map()
@@ -4764,14 +4804,14 @@ func test_stuck_monster() -> void:
 	var mid: float = map.deer.global_position.y
 	check(map.deer.global_position.x > edge - 3.5 and mid > map.terrain.height_at(map.deer.global_position.x) + 0.1, "mid-leap the deer is in the air and coming in")
 	_run(map, float(monster["leap_seconds"]) / 2.0 + 0.02, 0.01)
-	check(not GameState.is_alive(order[0]) and GameState.is_alive(order[1]) and deaths.size() == 1 and deaths[0][0] == order[0] and deaths[0][2] == "monster", "the first hit kills the first traveler")
+	check(GameState.is_downed(order[0]) and GameState.is_alive(order[1]) and deaths.is_empty(), "the first hit takes every heart of the first traveler (9b-iv: the scene's end is announced with the second; was 'deaths.size() == 1')")
 	check(map.deer.global_position.distance_to(first_before) <= float(monster["standoff"]) + 0.5, "the deer stands beside it")
 	var big := roundi(40.0 * float(monster["burst_strength"]))
 	var blood: Array = map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big)
 	check(blood.size() == 1 and big > 40, "with a blood burst bigger than the placeholder's (%d droplets instead of 40)" % big)
 	check(map.travelers[order[0]].body_color().is_equal_approx(tinted) or map.travelers[order[0]].body_color().r > 0.5, "and a red tint flash")
 	_run(map, float(monster["hit_gap_seconds"]), 0.01)
-	check(not GameState.is_alive(order[1]) and deaths.size() == 2 and deaths[1][0] == order[1], "about 0.35 s later the second traveler is down, in order")
+	check(not GameState.is_alive(order[1]) and deaths.size() == 1 and deaths[0][0] == order[1] and deaths[0][2] == "monster", "about 0.35 s later the second traveler is down, and the monster has killed both, announced once (9b-iv: was deaths.size() == 2)")
 	blood = map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big)
 	check(blood.size() == 2, "with a second burst")
 	check(beats.is_empty() and not map.is_death_beat_playing(), "the death beat has not begun while the deer is still there")
@@ -4782,7 +4822,7 @@ func test_stuck_monster() -> void:
 	_run(map, float(monster["aftermath_seconds"]) + 0.3, 0.01)
 	check(beats.size() == 1 and map.is_death_beat_playing() and map.restarting, "then the existing death beat starts, once")
 	_run(map, 3.0, 0.05)
-	check(beats.size() == 1 and deaths.size() == 2 and map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big).size() <= 2, "and nothing repeats")
+	check(beats.size() == 1 and deaths.size() == 1 and map.get_children().filter(func(n): return n is CPUParticles3D and n.amount == big).size() <= 2, "and nothing repeats")
 	check(map.music_starts == 1 and map.music_stops == 1 and map.audio_calls == 0, "the music started once and stopped once, with no audio call headless")
 	check(map.deer.get_child_count() >= 12, "the deer is built from parts (%d)" % map.deer.get_child_count())
 	var dim: ColorRect = map._dim
@@ -5639,8 +5679,10 @@ func test_backpack_ignored() -> void:
 	check(not map.open_backpack() and not pack.is_open, "once a restart has been asked for it can't open")
 	map.pause_menu.restart_requests = 0
 	GameState.heart_units["nestor"] = 0
-	check(not map.open_backpack() and not pack.is_open, "with a traveler dead it can't open")
+	GameState.heart_units["fernanda"] = 0  # 9b-iv: both downed (one downed traveler leaves the other able to open it)
+	check(not map.open_backpack() and not pack.is_open, "with both travelers downed it can't open (9b-iv: was 'a traveler dead')")
 	GameState.heart_units["nestor"] = GameState.max_units()
+	GameState.heart_units["fernanda"] = GameState.max_units()
 	_tap(viewport, KEY_TAB)
 	check(pack.is_open, "(control) with all of that cleared the same key opens it")
 	_tap(viewport, KEY_TAB)
@@ -5929,6 +5971,7 @@ func test_harm_pick() -> void:
 	var map: Node3D = await _decoy_map("fernanda", {"ddeok": 1})
 	GameState.inventory.add("gongjindan")
 	GameState.heart_units["fernanda"] = 1
+	GameState.heart_units["nestor"] = 0  # 9b-iv: Nestor is already down, so this pick downs the last one standing and the scene ends (it used to end with the picker alone)
 	var deaths: Array = []
 	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
 	GameState.travelers_died.connect(on_death)
@@ -6231,6 +6274,7 @@ func test_decoy_gore_lethal() -> void:
 		var tag: String = pair[0] + ": "
 		GameState.inventory.add("gongjindan")
 		GameState.heart_units["fernanda"] = 1
+		GameState.heart_units["nestor"] = 0  # 9b-iv: Nestor is already down, so this pick downs the last one standing and the scene ends (it used to end with the picker alone)
 		var deaths: Array = []
 		var on_death := func(dead, _survivor, _injury): deaths.append(dead)
 		GameState.travelers_died.connect(on_death)
@@ -6274,6 +6318,7 @@ func test_decoy_gore_lethal() -> void:
 	var map: Node3D = await _decoy_map()
 	map.gore_table = {}
 	GameState.heart_units["fernanda"] = 1
+	GameState.heart_units["nestor"] = 0  # 9b-iv: Nestor is already down, so this pick downs the last one standing and the scene ends (it used to end with the picker alone)
 	_pick_harm(map, "butsunnamu")
 	check(not map.decoy_gore.active and map.is_death_beat_playing(), "without a usable gore table a lethal pick starts the death at once")
 	map.free()
@@ -7986,6 +8031,7 @@ func test_new_gore_flow() -> void:
 		# A lethal pick: gore first, death one tick after.
 		map = await _seeded_map(seed_value, {"ddeok": 1})
 		GameState.heart_units["fernanda"] = 1
+		GameState.heart_units["nestor"] = 0  # 9b-iv: Nestor is already down, so this pick downs the last one standing and the scene ends
 		var deaths: Array = []
 		var on_death := func(dead, _survivor, _injury): deaths.append(dead)
 		GameState.travelers_died.connect(on_death)
@@ -8344,7 +8390,8 @@ func test_pile_pickup() -> void:
 		var screen_at: Vector2 = m.camera.unproject_position(target.global_position + Vector3(0.0, 0.3, 0.0))
 		match state:
 			"a dead traveler":
-				GameState.heart_units["nestor"] = 0
+				GameState.heart_units["nestor"] = 0  # 9b-iv: with both downed nobody can pick
+				GameState.heart_units["fernanda"] = 0
 			"the death beat":
 				m.begin_death_beat()
 			"the monster":
@@ -9006,8 +9053,10 @@ func test_notebook_quick_keys() -> void:
 	check(not map.open_notebook("notebook_p1") and not pack.is_open, "once a restart has been asked for it can't open")
 	map.pause_menu.restart_requests = 0
 	GameState.heart_units["nestor"] = 0
-	check(not map.open_notebook("notebook_p1") and not pack.is_open, "with a traveler dead it can't open")
+	GameState.heart_units["fernanda"] = 0  # 9b-iv: both downed
+	check(not map.open_notebook("notebook_p1") and not pack.is_open, "with both travelers downed it can't open (9b-iv: was 'a traveler dead')")
 	GameState.heart_units["nestor"] = GameState.max_units()
+	GameState.heart_units["fernanda"] = GameState.max_units()
 	_tap(viewport, KEY_Q)
 	check(pack.is_open, "(control) with all of that cleared the same key opens it")
 	_tap(viewport, KEY_Q)
@@ -11771,8 +11820,9 @@ func test_animals9b_scene() -> void:
 	map.grab_rng.seed = die_seed
 	var restarted := [0]
 	map.restarted.connect(func() -> void: restarted[0] += 1)
+	GameState.heart_units["nestor"] = 0  # 9b-iv: Nestor is already down, so the roll that downs Fernanda ends the scene
 	result = map.grab_animal(boar)
-	check(not result.is_empty() and result["death"] and not GameState.is_alive("fernanda"), "멧돼지 (seeded to die): the grab kills Fernanda, which is both (the death flow starts)")
+	check(not result.is_empty() and result["death"] and not GameState.is_alive("fernanda"), "멧돼지 (seeded to die): the grab downs Fernanda, the last one standing, so the scene ends (the death flow starts) (9b-iv: was 'kills Fernanda, which is both')")
 	check(map.is_death_beat_playing() and map.restarting and not map.picks_allowed(), "the foraging death flow starts: the screen dims, nothing can be grabbed")
 	var wolf = _spawn_kind(map, "deulgae")
 	check(wolf == null or map.grab_animal(wolf).is_empty(), "no grabs during the death beat")
@@ -12584,6 +12634,406 @@ func test_animals9biii_scene() -> void:
 	get_window().size = window_before
 	await get_tree().process_frame
 	_section_done("test_animals9biii_scene")
+
+
+const ReviveScript := preload("res://scenes/foraging/revive.gd")
+
+
+## Prompt 9b-iv, node-free: the down rule in GameState and Revive's logic.
+func test_revive_logic() -> void:
+	var cfg: Dictionary = Content.rules["revive"]
+	check(is_equal_approx(float(cfg["radius_m"]), 1.2) and is_equal_approx(float(cfg["channel_s"]), 1.5) and float(cfg["bleed_out_s"]) == 0.0, "rules.json revive: radius 1.2 m, channel 1.5 s, bleed-out off (0)")
+	var order: Array = ReviveScript.healing_items()
+	check(order == ["ssanghwatang", "gongjindan"], "the healing items are used in data order: 쌍화탕, then 공진단 (%s)" % str(order))
+	check(ReviveScript.no_item_text() == "No 쌍화탕 or 공진단 to revive.", "the no-item note reads 'No 쌍화탕 or 공진단 to revive.'")
+
+	# The down rule.
+	var downs := []
+	var deaths := []
+	var ups := []
+	var changes := [0]
+	var on_down := func(who, injury): downs.append([who, injury])
+	var on_death := func(dead, survivor, injury): deaths.append([dead, survivor, injury])
+	var on_up := func(who, units): ups.append([who, units])
+	var on_change := func(_who, _units): changes[0] += 1
+	GameState.traveler_downed.connect(on_down)
+	GameState.travelers_died.connect(on_death)
+	GameState.traveler_revived.connect(on_up)
+	GameState.hearts_changed.connect(on_change)
+	_bare_hike(0)
+	var over := GameState.damage_units("fernanda", 99, "bite")
+	check(not over and GameState.is_downed("fernanda") and not GameState.is_alive("fernanda") and GameState.heart_units["fernanda"] == 0 and not GameState.all_downed(), "damage to 0 downs one traveler; the scene does not end")
+	check(downs == [["fernanda", "bite"]] and deaths.is_empty() and GameState.is_alive("nestor"), "traveler_downed fires once, travelers_died does not")
+	changes[0] = 0
+	check(not GameState.damage_units("fernanda", 3, "x") and GameState.heart_units["fernanda"] == 0 and downs.size() == 1 and changes[0] == 0, "a downed traveler takes no further damage (no change, no signal)")
+	GameState.heal("fernanda", 2)
+	check(GameState.heart_units["fernanda"] == 0, "heal() does not raise the downed")
+	check(GameState.damage_units("nestor", 99, "bite") and GameState.all_downed(), "the second traveler going down ends the scene")
+	check(deaths == [["nestor", "fernanda", "bite"]] and downs.size() == 2, "travelers_died fires once, naming the one downed last")
+	check(GameState.damage_units("nestor", 1) and deaths.size() == 1, "hitting the downed afterwards announces nothing more")
+	_bare_hike(0)
+	GameState.damage_units("nestor", 99, "bite")
+	check(GameState.revive("nestor", 2) and GameState.heart_units["nestor"] == 2 and not GameState.is_downed("nestor") and ups == [["nestor", 2]], "revive() stands the downed up with the units given and announces it")
+	check(not GameState.revive("nestor", 1) and ups.size() == 1, "revive() on a standing traveler does nothing")
+	GameState.damage_units("nestor", 99, "bite")
+	check(GameState.revive("nestor", 99) and GameState.heart_units["nestor"] == GameState.max_units(), "revive() never passes the maximum")
+	GameState.traveler_downed.disconnect(on_down)
+	GameState.travelers_died.disconnect(on_death)
+	GameState.traveler_revived.disconnect(on_up)
+	GameState.hearts_changed.disconnect(on_change)
+
+	# Who is controlled.
+	_bare_hike(0)
+	GameState.controlled = "fernanda"
+	check(ReviveScript.controller() == "fernanda", "nobody downed: control stays")
+	GameState.damage_units("fernanda", 99, "x")
+	check(ReviveScript.controller() == "nestor", "the controlled traveler is downed: control goes to the partner")
+	GameState.damage_units("nestor", 99, "x")
+	check(ReviveScript.controller() == "fernanda", "both downed: control stays (the scene is over)")
+	GameState.controlled = "nestor"
+	GameState.revive("nestor", 1)
+	check(ReviveScript.controller() == "nestor", "a revive does not hand control back")
+	GameState.controlled = "fernanda"
+
+	# Range and the pick action.
+	var rv = ReviveScript.new(cfg)
+	_bare_hike(0)
+	GameState.damage_units("fernanda", 99, "x")
+	var pos := {"fernanda": Vector2(5.0, 5.0), "nestor": Vector2(6.19, 5.0)}
+	check(rv.downed_near("nestor", pos) == "fernanda", "1.19 m from the downed: in range (radius 1.2)")
+	pos["nestor"] = Vector2(6.21, 5.0)
+	check(rv.downed_near("nestor", pos) == "" and rv.press("nestor", pos) == "none", "1.21 m: out of range, the pick action is not a revive")
+	check(rv.downed_near("fernanda", pos) == "", "a downed traveler cannot revive anyone")
+	pos["nestor"] = Vector2(5.8, 5.0)
+
+	# No healing item: a note, nothing else.
+	check(GameState.inventory.snapshot() == {} and ReviveScript.next_item() == "", "(setup) the backpack holds no healing item")
+	check(rv.press("nestor", pos) == "no_item" and rv.note == "No 쌍화탕 or 공진단 to revive." and is_equal_approx(rv.note_left, 2.0), "no item: the note is up for 2 s")
+	check(not rv.is_channeling() and GameState.is_downed("fernanda") and GameState.inventory.snapshot() == {}, "...and nothing else happened")
+	check(rv.tick(1.9, "nestor", pos).is_empty() and rv.note != "", "the note is still there at 1.9 s")
+	check(rv.tick(0.2, "nestor", pos).is_empty() and rv.note == "", "...and gone after 2 s")
+	check(GameState.is_downed("fernanda"), "she stays down until an item turns up")
+
+	# An item turns up: the channel runs 1.5 s, then the hearts equal the item's heal_units.
+	GameState.inventory.add("ssanghwatang")
+	check(ReviveScript.next_item() == "ssanghwatang", "(setup) a 쌍화탕 is picked up")
+	check(rv.press("nestor", pos) == "started" and rv.is_channeling() and rv.target == "fernanda" and is_equal_approx(rv.channel_left, 1.5) and rv.progress() == 0.0, "in range + pick starts a 1.5 s channel")
+	check(rv.press("nestor", pos) == "busy", "a second press during the channel changes nothing")
+	var events: Array = rv.tick(1.4, "nestor", pos)
+	check(events.is_empty() and rv.is_channeling() and rv.progress() > 0.9 and GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 1, "after 1.4 s she is still down and the item is still held")
+	events = rv.tick(0.11, "nestor", pos)
+	check(events.size() == 1 and events[0]["event"] == "revived" and events[0]["id"] == "fernanda" and events[0]["item"] == "ssanghwatang" and events[0]["units"] == 1, "at 1.5 s the revive completes (%s)" % str(events))
+	check(GameState.heart_units["fernanda"] == 1 and not GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 0 and not rv.is_channeling(), "she stands with half a heart (= 쌍화탕 heal_units 1), the item is gone")
+
+	# 쌍화탕 before 공진단; 공진단 alone gives a whole heart.
+	GameState.damage_units("fernanda", 99, "x")
+	GameState.inventory.add("gongjindan")
+	GameState.inventory.add("ssanghwatang")
+	check(rv.press("nestor", pos) == "started", "(setup) a second revive starts")
+	events = rv.tick(1.6, "nestor", pos)
+	check(events.size() == 1 and events[0]["item"] == "ssanghwatang" and GameState.heart_units["fernanda"] == 1 and GameState.inventory.count("gongjindan") == 1 and GameState.inventory.count("ssanghwatang") == 0, "with both held, 쌍화탕 is used first and 공진단 is kept")
+	GameState.damage_units("fernanda", 99, "x")
+	check(rv.press("nestor", pos) == "started", "(setup) a third revive starts")
+	events = rv.tick(1.6, "nestor", pos)
+	check(events.size() == 1 and events[0]["item"] == "gongjindan" and GameState.heart_units["fernanda"] == 2 and GameState.inventory.count("gongjindan") == 0, "with only 공진단, it is used: a whole heart (2 units)")
+
+	# Leaving range and damage cancel.
+	GameState.damage_units("fernanda", 99, "x")
+	GameState.inventory.add("ssanghwatang")
+	rv.press("nestor", pos)
+	rv.tick(0.5, "nestor", pos)
+	pos["nestor"] = Vector2(9.0, 5.0)
+	events = rv.tick(0.1, "nestor", pos)
+	check(events.size() == 1 and events[0]["event"] == "cancelled" and events[0]["why"] == "range" and not rv.is_channeling() and GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 1, "walking out of range cancels the channel; she stays down and the item is kept")
+	pos["nestor"] = Vector2(5.8, 5.0)
+	rv.press("nestor", pos)
+	rv.tick(0.5, "nestor", pos)
+	GameState.damage_units("nestor", 1, "x")
+	events = rv.tick(0.1, "nestor", pos)
+	check(events.size() == 1 and events[0]["why"] == "damage" and not rv.is_channeling() and GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 1, "damage to the rescuer cancels the channel; the item is kept")
+	rv.press("nestor", pos)
+	GameState.inventory.remove("ssanghwatang")
+	events = rv.tick(1.6, "nestor", pos)
+	check(events.size() == 1 and events[0]["why"] == "no_item" and GameState.is_downed("fernanda"), "an item that goes before the end cancels it without a revive")
+
+	# Bleed-out.
+	var bleeding = ReviveScript.new({"radius_m": 1.2, "channel_s": 1.5, "bleed_out_s": 5.0, "note_s": 2.0})
+	_bare_hike(0)
+	GameState.damage_units("fernanda", 99, "x")
+	check(bleeding.tick(4.9, "nestor", pos).is_empty(), "bleed_out_s 5: nothing at 4.9 s")
+	events = bleeding.tick(0.2, "nestor", pos)
+	check(events.size() == 1 and events[0]["event"] == "bled_out" and events[0]["id"] == "fernanda", "...the traveler bleeds out at 5 s")
+	check(bleeding.tick(1.0, "nestor", pos).is_empty(), "...and it is reported once")
+	var calm = ReviveScript.new(cfg)
+	var quiet := true
+	for i in 100:
+		quiet = quiet and calm.tick(10.0, "nestor", pos).is_empty()
+	check(quiet, "bleed_out_s 0: 1000 s down and nobody bleeds out")
+	GameState.revive("fernanda", 1)
+	bleeding.tick(0.1, "nestor", pos)
+	check(bleeding.downed_for("fernanda") == 0.0, "a revived traveler's clock is cleared")
+	_bare_hike(0)
+	_section_done("test_revive_logic")
+
+
+## A near-pair: Nestor `gap` metres from where Fernanda lies (same row).
+func _revive_beside(map: Node3D, gap: float) -> void:
+	var fern: Node3D = map.travelers["fernanda"]
+	_put(map, map.travelers["nestor"], fern.global_position.x + gap, fern.global_position.z)
+
+
+func _floating_text(map: Node3D, text: String) -> bool:
+	for child in map.get_children():
+		if child is Label3D and child.text == text:
+			return true
+	return false
+
+
+## The checks both scenes share (animals and foraging): `map` is a fresh scene, Fernanda
+## controlled, both at full hearts.
+func _revive_flow(map: Node3D, tag: String) -> void:
+	var cfg: Dictionary = Content.rules["revive"]
+	var fern: Node3D = map.travelers["fernanda"]
+	var nes: Node3D = map.travelers["nestor"]
+	var hearts_changes := [0]
+	var on_change := func(_who, _units): hearts_changes[0] += 1
+	GameState.inventory.clear()
+	map.step(Vector2.ZERO, DT)
+	check(map.player == fern and not fern.downed and not nes.downed, tag + "(setup) Fernanda is the player and both stand")
+	var own_color: Color = fern.body_color()
+	# Down: she lies flat, grey, with a DOWN label; the scene goes on; control passes.
+	var down_at := _xz(fern)
+	GameState.damage_units("fernanda", 99, "test")
+	map.step(Vector2.ZERO, DT)
+	var tint: Array = cfg["down_tint"]
+	check(GameState.is_downed("fernanda") and fern.downed and not map.restarting and not map.is_death_beat_playing(), tag + "damage to 0 downs Fernanda: she is down and the scene goes on")
+	check(fern.body_color().is_equal_approx(Color(tint[0], tint[1], tint[2])), tag + "...her body is grey")
+	var label: Label3D = fern.find_child("DownLabel", false, false)
+	check(label != null and label.visible and label.text == "DOWN" and label.position.y > 1.0, tag + "...a small DOWN label hangs above her")
+	await get_tree().create_timer(0.45).timeout
+	var pivot: Node3D = fern.get_node("Pivot")
+	check(absf(pivot.rotation.z) > 1.4 and pivot.position.y > 0.2, tag + "...and she lies on her side (tipped %.2f rad)" % pivot.rotation.z)
+	check(GameState.controlled == "nestor" and map.player == nes and map.partner == fern and map.picks_allowed(), tag + "control passes to Nestor at once")
+	# The camera follows the new player; the partner AI leaves her where she fell.
+	var far := 12.0 if down_at.x + 12.0 < map.walk_bounds().end.x else -12.0
+	_put(map, nes, down_at.x + far, down_at.y)
+	for i in 240:
+		map.step(Vector2.ZERO, DT)
+	check(absf(map.camera.global_position.x - nes.global_position.x) < 3.0 and absf(map.camera.global_position.x - down_at.x) > 6.0, tag + "the camera follows Nestor, not her (cam %.1f, Nestor %.1f, Fernanda %.1f)" % [map.camera.global_position.x, nes.global_position.x, down_at.x])
+	check(_xz(fern).is_equal_approx(down_at), tag + "the partner AI no longer follows the downed traveler")
+	# A downed traveler takes no damage: not from a hit, not from a failed syllable.
+	GameState.hearts_changed.connect(on_change)
+	GameState.damage_units("fernanda", 5, "x")
+	check(GameState.heart_units["fernanda"] == 0 and hearts_changes[0] == 0, tag + "a hit on the downed changes nothing")
+	_fail_and_close(map)
+	check(GameState.heart_units["fernanda"] == 0 and GameState.heart_units["nestor"] == GameState.max_units() - 1 and not map.restarting, tag + "a failed syllable hurts only the one standing (Nestor 10 -> 9), the scene goes on")
+	GameState.hearts_changed.disconnect(on_change)
+	# A downed traveler cannot act: with the controlled traveler downed nothing can be picked or opened.
+	GameState.controlled = "fernanda"
+	check(not map.picks_allowed() and not map.pick_nearest() and not map.open_backpack(), tag + "the downed cannot pick, grab or open the backpack")
+	GameState.controlled = "nestor"
+	# No healing item: the note and nothing else.
+	_revive_beside(map, 0.8)
+	map.step(Vector2.ZERO, DT)
+	check(map.revive_view.range_ring.visible and not map._ring.visible, tag + "a reach ring shows on the downed traveler when Nestor is in range")
+	check(map.pick_nearest() and not map.revive.is_channeling() and map.revive.note == "No 쌍화탕 or 공진단 to revive.", tag + "no item: the pick key only shows the note")
+	map.step(Vector2.ZERO, DT)
+	check(map.revive_view.note_label.visible and map.revive_view.note_label.text == "No 쌍화탕 or 공진단 to revive." and GameState.is_downed("fernanda"), tag + "...it is on screen and she is still down")
+	_run(map, 2.1)
+	check(not map.revive_view.note_label.visible and map.revive.note == "", tag + "...and gone after 2 s")
+	# After an item turns up, the revive works; hearts = heal_units; the item is gone.
+	GameState.inventory.add("ssanghwatang")
+	check(map.pick_nearest() and map.revive.is_channeling(), tag + "with a 쌍화탕 held, Space starts the channel")
+	map.step(Vector2.ZERO, DT)
+	check(map.revive_view.progress_ring.visible, tag + "...a small progress ring shows")
+	_run(map, 1.4)
+	check(GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 1, tag + "at 1.4 s she is still down, the item still held")
+	_run(map, 0.25)
+	check(not GameState.is_downed("fernanda") and not fern.downed and GameState.heart_units["fernanda"] == 1, tag + "at 1.5 s she stands with half a heart (쌍화탕 heals 1 unit)")
+	check(GameState.inventory.count("ssanghwatang") == 0 and not map.revive_view.progress_ring.visible and not label.visible and fern.body_color().is_equal_approx(own_color), tag + "the item is gone from the backpack; the ring and the label are gone and she has her own colour back")
+	check(_floating_text(map, "-1 쌍화탕"), tag + "a '-1 쌍화탕' label floats")
+	check(GameState.controlled == "nestor" and map.player == nes, tag + "control stays with Nestor after the revive")
+	await get_tree().create_timer(0.1).timeout
+	check(absf(pivot.rotation.z) < 0.01 and absf(pivot.position.y) < 0.01, tag + "she is upright again")
+	# Leaving range cancels, damage cancels; both keep the item.
+	GameState.damage_units("fernanda", 99, "x")
+	GameState.inventory.add("ssanghwatang")
+	map.step(Vector2.ZERO, DT)
+	check(map.pick_nearest() and map.revive.is_channeling(), tag + "(setup) a channel runs")
+	_run(map, 0.5)
+	_revive_beside(map, 4.0)
+	_run(map, 0.1)
+	check(not map.revive.is_channeling() and GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 1, tag + "walking away cancels it: still down, item kept")
+	_revive_beside(map, 0.8)
+	check(map.pick_nearest() and map.revive.is_channeling(), tag + "(setup) a new channel runs")
+	_run(map, 0.5)
+	GameState.damage_units("nestor", 1, "x")
+	_run(map, 0.1)
+	check(not map.revive.is_channeling() and GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 1, tag + "damage to Nestor cancels it: still down, item kept")
+	# 쌍화탕 before 공진단.
+	GameState.inventory.add("gongjindan")
+	check(map.pick_nearest() and map.revive.is_channeling(), tag + "(setup) a channel with both items held")
+	_run(map, 1.6)
+	check(not GameState.is_downed("fernanda") and GameState.inventory.count("ssanghwatang") == 0 and GameState.inventory.count("gongjindan") == 1 and GameState.heart_units["fernanda"] == 1, tag + "쌍화탕 is used before 공진단")
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(map.pick_nearest(), tag + "(setup) down again, a channel with 공진단 only")
+	_run(map, 1.6)
+	check(not GameState.is_downed("fernanda") and GameState.heart_units["fernanda"] == 2 and GameState.inventory.count("gongjindan") == 0 and _floating_text(map, "-1 공진단"), tag + "공진단 gives a whole heart and floats '-1 공진단'")
+	# A failed syllable that downs one, then the other: the scene ends only with the second.
+	GameState.heart_units["fernanda"] = 1
+	GameState.heart_units["nestor"] = 3
+	_fail_and_close(map)
+	check(GameState.is_downed("fernanda") and GameState.heart_units["nestor"] == 2 and not map.restarting and not map.is_death_beat_playing(), tag + "a failed syllable downs the one on 1 unit; the scene goes on")
+	_fail_and_close(map)
+	check(not map.is_death_beat_playing(), tag + "...still going with Nestor on 1 unit")
+	_fail_and_close(map)
+	check(GameState.all_downed() and map.restarting and map.is_death_beat_playing(), tag + "the second down ends the scene with the death beat")
+	check(not map.picks_allowed() and not map.pick_nearest(), tag + "with both down nothing can be picked")
+	GameState.controlled = "fernanda"
+
+
+## Both at 1 unit: one failed syllable downs both at once, which ends the scene.
+func _revive_both_failure(map: Node3D, tag: String) -> void:
+	GameState.heart_units["fernanda"] = 1
+	GameState.heart_units["nestor"] = 1
+	var deaths := []
+	var on_death := func(dead, _survivor, _injury): deaths.append(dead)
+	GameState.travelers_died.connect(on_death)
+	_fail_and_close(map)
+	GameState.travelers_died.disconnect(on_death)
+	check(GameState.all_downed() and map.restarting and map.is_death_beat_playing() and deaths.size() == 1, tag + "a failed syllable that downs both ends the scene (one announcement)")
+
+
+## bleed_out_s: 0 never ends the scene; above 0 it ends after that long without a revive.
+func _revive_bleed(map: Node3D, tag: String) -> void:
+	GameState.inventory.clear()
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(map.revive.bleed_out_s == 0.0, tag + "bleed-out is off in the data")
+	_run(map, 60.0, 0.1)
+	check(not map.restarting and not map.is_death_beat_playing() and GameState.is_downed("fernanda"), tag + "with bleed_out_s 0 a minute down never ends the scene")
+	GameState.revive("fernanda", 1)
+	map.step(Vector2.ZERO, DT)
+	map.revive.bleed_out_s = 3.0
+	GameState.damage_units("fernanda", 99, "x")
+	_run(map, 2.8, 0.1)
+	check(not map.is_death_beat_playing() and not map.restarting, tag + "with bleed_out_s 3 the scene goes on at 2.8 s")
+	_run(map, 0.4, 0.1)
+	check(map.is_death_beat_playing() and map.restarting, tag + "...and ends (the death beat) once 3 s have passed without a revive")
+
+
+func test_revive_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	# ---- The animal scene ----
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(61)
+	await _revive_flow(map, "animals: ")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	map = await _animals_map(62)
+	_revive_both_failure(map, "animals: ")
+	map.free()
+	get_tree().paused = false
+	GameState.new_hike()
+	map = await _animals_map(63)
+	_revive_bleed(map, "animals: ")
+	map.free()
+	get_tree().paused = false
+	# A predator's 1/4 roll downs the grabber, it does not kill; Nestor then grabs at his own cost.
+	var finder := RandomNumberGenerator.new()
+	var die_seed := 0
+	for s in range(1, 400):
+		finder.seed = s
+		if finder.randf() < 0.25:
+			die_seed = s
+			break
+	GameState.new_hike()
+	map = await _animals_map(64)
+	var boar = _spawn_kind(map, "meotdwaeji")
+	_beside(map, boar)
+	map.grab_rng.seed = die_seed
+	var result: Dictionary = map.grab_animal(boar)
+	map.step(Vector2.ZERO, DT)
+	check(not result.is_empty() and result["death"] and GameState.is_downed("fernanda") and GameState.is_alive("nestor"), "animals: the predator's 1/4 roll downs Fernanda, it does not kill both")
+	check(not map.restarting and not map.is_death_beat_playing() and GameState.controlled == "nestor" and map.travelers["fernanda"].downed, "animals: ...the scene goes on, she lies down, control is Nestor's")
+	var noru = _spawn_kind(map, "noru")
+	_beside(map, noru, Vector2(0.3, 0.0))
+	map.grab_rng.seed = _roll_seed(0.3, true)
+	var nestor_hearts: int = GameState.heart_units["nestor"]
+	check(not map.grab_animal(noru).is_empty() and GameState.heart_units["nestor"] == nestor_hearts - 1 and GameState.heart_units["fernanda"] == 0, "animals: Nestor's own grab bites Nestor (the downed Fernanda takes nothing)")
+	# A healing bottle picked up on the map makes the revive work.
+	GameState.inventory.clear()
+	var bottle: int = map.pickup_nodes.keys()[0]
+	var bottle_spot: Vector2 = map.picking.pile_spot(bottle)
+	_put(map, map.player, bottle_spot.x + 0.4, bottle_spot.y)
+	map.step(Vector2.ZERO, DT)
+	var bottle_item: String = map.pickup_items[bottle]
+	check(map.pick_nearest() and GameState.inventory.count(bottle_item) == 1, "animals: Space on the map picks the bottle up (%s)" % bottle_item)
+	_put(map, map.travelers["nestor"], map.travelers["fernanda"].global_position.x + 0.8, map.travelers["fernanda"].global_position.z)
+	map.step(Vector2.ZERO, DT)
+	check(map.pick_nearest() and map.revive.is_channeling(), "animals: with the bottle in the backpack the revive starts")
+	_run(map, 1.6)
+	check(not GameState.is_downed("fernanda") and GameState.heart_units["fernanda"] == int(Content.item(bottle_item)["heal_units"]) and GameState.inventory.count(bottle_item) == 0, "animals: ...and she stands with that item's heal_units (%d)" % int(Content.item(bottle_item)["heal_units"]))
+	map.free()
+	get_tree().paused = false
+
+	# ---- The foraging scene ----
+	map = await _fresh_reach_map()
+	await _revive_flow(map, "foraging: ")
+	map.free()
+	get_tree().paused = false
+	map = await _fresh_reach_map()
+	_revive_both_failure(map, "foraging: ")
+	map.free()
+	get_tree().paused = false
+	map = await _fresh_reach_map()
+	_revive_bleed(map, "foraging: ")
+	map.free()
+	get_tree().paused = false
+	# A lethal harm decoy downs the picker (after its gore) instead of ending the scene.
+	map = await _seeded_map(_seed_with_decoy("norugui", "harm"), {"ddeok": 1})
+	GameState.heart_units["fernanda"] = 1
+	var deaths := []
+	var on_death := func(dead, _survivor, _injury): deaths.append(dead)
+	GameState.travelers_died.connect(on_death)
+	var harm: Node3D = _pick_new_harm(map, "norugui")
+	check(deaths.is_empty() and GameState.is_downed("fernanda") and map.is_gore_playing(), "foraging: a lethal harm decoy downs the picker; the gore plays first, no death")
+	_finish_gore(map)
+	map.tick_gore(1.0 / 60.0)
+	map.step(Vector2.ZERO, DT)
+	check(not map.is_death_beat_playing() and not map.restarting and deaths.is_empty(), "foraging: after the gore the scene goes on")
+	check(map.travelers["fernanda"].downed and GameState.controlled == "nestor" and map.player == map.travelers["nestor"] and map.picks_allowed(), "foraging: she lies down and Nestor is the player")
+	GameState.heart_units["nestor"] = 1
+	map._harm_picker(harm)
+	_finish_gore(map)
+	map.tick_gore(1.0 / 60.0)
+	map.tick_gore(1.0 / 60.0)
+	check(GameState.all_downed() and map.is_death_beat_playing() and deaths == ["nestor"], "foraging: a second lethal decoy downs Nestor too: the death beat starts, once")
+	GameState.travelers_died.disconnect(on_death)
+	map.free()
+	get_tree().paused = false
+	# The stuck-countdown monster still kills both outright, even with one already down.
+	map = await _fresh_reach_map()
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	var killed := []
+	var on_kill := func(dead, _survivor, injury): killed.append([dead, injury])
+	GameState.travelers_died.connect(on_kill)
+	map._begin_monster()
+	_run(map, 20.0, 0.05)
+	GameState.travelers_died.disconnect(on_kill)
+	check(map.kill != null and GameState.heart_units["nestor"] == 0 and GameState.heart_units["fernanda"] == 0 and killed.size() == 1 and killed[0][1] == "monster", "foraging: the monster takes every heart of the standing traveler too (one announcement)")
+	check(map.is_death_beat_playing(), "foraging: ...and the death beat follows")
+	map.free()
+	get_tree().paused = false
+	_bare_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_revive_scene")
 
 
 func bounds_has(map: Node3D, spot: Vector2) -> bool:

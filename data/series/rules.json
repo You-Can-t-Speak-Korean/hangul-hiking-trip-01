@@ -15,6 +15,14 @@
     "cooking_dish": 50
   },
   "starting_ddeok_without_save": 0,
+  "_note_revive": "A traveler at 0 hearts is downed, not dead. The standing traveler within radius_m of them presses pick to revive: a channel_s seconds channel (moving out of range or taking damage cancels it) that uses ONE healing item from the backpack (the first held of the elixir items in items.json order, so 쌍화탕 before 공진단) and stands them up with that item's heal_units. bleed_out_s: a downed traveler not revived in this many seconds counts as dead and the scene ends; 0 = off. note_s: how long the no-item note stays. down_label is the word over a downed traveler; down_tint is its body colour (r, g, b); label_height is metres over the feet; ring colours are r, g, b with alpha (range ring on the downed traveler, progress ring inside it). Placeholder.",
+  "revive": {
+    "radius_m": 1.2, "channel_s": 1.5, "bleed_out_s": 0, "note_s": 2.0,
+    "down_label": "DOWN", "down_tint": [0.55, 0.55, 0.55], "label_height": 1.2, "lie_seconds": 0.25,
+    "range_ring": {"color": [0.5, 0.95, 0.6], "alpha": 0.35, "width_m": 0.1},
+    "progress_ring": {"color": [0.5, 1.0, 0.65], "alpha": 0.9, "outer_m": 0.55, "width_m": 0.14},
+    "note_font_size": 26, "note_color": [1.0, 0.9, 0.6]
+  },
   "_note_starting_kit": "What Fernanda's backpack holds at the start of a hike (GameState.new_hike). It is part of every scene-start snapshot, so a death or a restart never takes it away.",
   "starting_kit": [
     {"item": "sucheop", "count": 1}

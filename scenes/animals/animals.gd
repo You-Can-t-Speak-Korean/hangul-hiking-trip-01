@@ -33,14 +33,16 @@ const NeedRewards := preload("res://scenes/animals/need_rewards.gd")
 const HealPickups := preload("res://scenes/animals/heal_pickups.gd")
 const HealPickup := preload("res://scenes/animals/heal_pickup.gd")
 const FloatLabel := preload("res://scenes/foraging/float_label.gd")
+const Revive := preload("res://scenes/foraging/revive.gd")
+const ReviveView := preload("res://scenes/foraging/revive_view.gd")
 const ThoughtBubble := preload("res://scenes/animals/thought_bubble.gd")
 const NeedPicture := preload("res://scenes/animals/need_picture.gd")
 const Guide := preload("res://scenes/animals/guide.gd")
 const GuideHud := preload("res://scenes/animals/guide_hud.gd")
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
-## The traveler a bare-hand grab hurts (and whose hands they are).
-const GRABBER := "fernanda"
+## A bare-hand grab hurts (and is made by) the traveler being controlled: Fernanda until she is
+## downed, then Nestor (Prompt 9b-iv).
 ## Salts of the seeds derived from the crossing seed (the crossing's own draws are untouched).
 const SALT_LETTERS := 1
 const SALT_GRAB := 2
@@ -107,6 +109,11 @@ var bubbles: Dictionary = {}
 var guide
 var guide_hud: CanvasLayer
 var float_label_config: Dictionary = {}
+## Prompt 9b-iv. Downed travelers and reviving them (shared with foraging): the logic, how it
+## is drawn, and rules.json `revive`.
+var revive
+var revive_view: Node3D
+var revive_config: Dictionary = {}
 var float_label_height := 2.3
 var _bubble_layer: CanvasLayer
 var _pickup_time := 0.0
@@ -172,10 +179,19 @@ func _ready() -> void:
 	backpack_hud.close_requested.connect(close_backpack)
 	crossing = Crossing.new(config, crossing_seed)
 	_build_needs(ui)
+	revive_config = Content.rules["revive"]
+	revive = Revive.new(revive_config)
+	revive_view = ReviveView.new()
+	add_child(revive_view)
+	revive_view.setup(revive_config)
+	GameState.traveler_downed.connect(_on_traveler_downed)
+	_sync_downed()  # the hearts may already hold a downed traveler (a pending bank)
 	update_camera(0.0, true)
 
 
 func _exit_tree() -> void:
+	if GameState.traveler_downed.is_connected(_on_traveler_downed):
+		GameState.traveler_downed.disconnect(_on_traveler_downed)
 	if (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open) or (spelling_hud != null and spelling_hud.is_open()):  # never leave the tree paused behind
 		get_tree().paused = false
 
@@ -216,15 +232,20 @@ func step(input: Vector2, delta: float) -> void:
 	var running: bool = not restarting and not pause_menu.is_open and not backpack.is_open
 	if running:
 		if not discovery_hud.word_select.is_open():
-			player.drive(walk, delta)
-			partner.follow(player.global_position, float(config["partner_stop_distance"]), delta)
+			if not GameState.is_downed(GameState.controlled):
+				player.drive(walk, delta)
+			if not GameState.is_downed(GameState.partner_of(GameState.controlled)):
+				partner.follow(player.global_position, float(config["partner_stop_distance"]), delta)
+		_tick_revive(delta)
 		for t in travelers.values():
 			_push_out_of_lake(t)
 		_tick_animals(delta)
 		_watch_animals(delta)
+	_sync_downed()
 	update_camera(delta)
 	props.set_travelers(player.global_position, partner.global_position, float(config["camera"]["pitch_deg"]))
 	_update_reach(delta)
+	revive_view.refresh(revive, GameState.controlled, _world_positions(), terrain.height_at)
 	needs.update(delta)
 	_update_bubbles(delta)
 	_update_guide(delta)
@@ -371,14 +392,12 @@ func _build_needs(ui: Dictionary) -> void:
 	_build_pickups()
 
 
-## False while restarting, while a menu or the backpack is open, or once a traveler is dead.
+## False while restarting, while a menu or the backpack is open, or when the traveler being
+## controlled is downed (a downed one cannot pick, grab, spell or open the backpack).
 func picks_allowed() -> bool:
 	if restarting or pause_menu.is_open or backpack.is_open:
 		return false
-	for id in GameState.TRAVELERS:
-		if not GameState.is_alive(id):
-			return false
-	return true
+	return not GameState.is_downed(GameState.controlled)
 
 
 ## True if E may open word selection now (nothing is paused or open over the map).
@@ -390,8 +409,9 @@ func _word_select_allowed() -> bool:
 ## A traveler within the watch radius of an animal long enough shows one of its needs.
 func _watch_animals(delta: float) -> void:
 	var spots: Array = []
-	for t in travelers.values():
-		spots.append(Vector2(t.global_position.x, t.global_position.z))
+	for id in travelers:
+		if not GameState.is_downed(id):  # animals take no notice of a downed traveler
+			spots.append(Vector2(travelers[id].global_position.x, travelers[id].global_position.z))
 	var seen: Array = []
 	for walker in crossing.alive:
 		seen.append({"id": walker.id, "kind": String(walker.kind["id"]), "spot": walker.position()})
@@ -658,6 +678,8 @@ func pick_nearest() -> bool:
 	picking.cancel_walk()
 	if not picks_allowed():
 		return false
+	if press_revive() != "none":  # a downed traveler in range comes first
+		return true
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
 	if target["type"] == "pile":
 		return not collect_pickup(int(target["index"])).is_empty()
@@ -756,9 +778,10 @@ func grab_animal(walker) -> Dictionary:
 	crossing.flee(walker, float(config["grab"]["flee_speed_scale"]))
 	if not cost["bite"]:  # it only ran: the grab cost nothing
 		return {"letter": letter, "units": 0, "death": false, "bite": false}
-	var units: int = int(GameState.heart_units[GRABBER]) if cost["death"] else int(cost["units"])
-	var lethal := GameState.damage_units(GRABBER, units, "animal_bite")
-	HitFx.hit(self, travelers[GRABBER], gore)
+	var grabber := GameState.controlled
+	var units: int = int(GameState.heart_units[grabber]) if cost["death"] else int(cost["units"])
+	var lethal := GameState.damage_units(grabber, units, "animal_bite")
+	HitFx.hit(self, travelers[grabber], gore)
 	if lethal:
 		begin_death_beat()
 	return {"letter": letter, "units": units, "death": cost["death"], "bite": true}
@@ -789,6 +812,9 @@ func _fly_letter(letter: String, from_world: Vector3) -> void:
 ## The reach ring sits on the nearest animal in grab range.
 func _update_reach(delta: float) -> void:
 	_ring_time += delta
+	if revive.downed_near(GameState.controlled, _flat_positions()) != "":  # the revive ring takes over
+		_ring.visible = false
+		return
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
 	var walker = slot_walker.get(int(target["index"])) if target["type"] == "plant" else null
 	var bottle = pickup_nodes.get(int(target["index"])) if target["type"] == "pile" else null
@@ -800,6 +826,57 @@ func _update_reach(delta: float) -> void:
 	var outer: float = picking.ring_radius()
 	_ring.mesh = ReachRing.mesh(outer, maxf(outer - picking.ring_width, 0.0), at, terrain.height_at)
 	_ring_material.albedo_color.a = picking.ring_alpha_at(_ring_time)
+
+
+# ---- Downed travelers and reviving them (Prompt 9b-iv) ----
+
+func _flat_positions() -> Dictionary:
+	var flat := {}
+	for id in travelers:
+		flat[id] = Vector2(travelers[id].global_position.x, travelers[id].global_position.z)
+	return flat
+
+
+func _world_positions() -> Dictionary:
+	var world := {}
+	for id in travelers:
+		world[id] = travelers[id].global_position
+	return world
+
+
+func _on_traveler_downed(_id: String, _injury: String) -> void:
+	_sync_downed()
+
+
+## Puts every body in the pose its hearts say (lying at 0, upright above), and hands control
+## to the partner when the controlled traveler is downed and the partner is not.
+func _sync_downed() -> void:
+	for id in travelers:
+		ReviveView.pose(travelers[id], GameState.is_downed(id), revive_config)
+	var who := Revive.controller()
+	if who != GameState.controlled:
+		GameState.controlled = who
+		player = travelers[who]
+		partner = travelers[GameState.partner_of(who)]
+		picking.cancel_walk()
+
+
+## The pick action with a downed traveler in range: starts the revive channel, or shows the
+## no-item note. "none" if nobody downed is in range (nothing was done).
+func press_revive() -> String:
+	return revive.press(GameState.controlled, _flat_positions())
+
+
+## One tick of the revive channel and the bleed-out clocks (only while the map runs).
+func _tick_revive(delta: float) -> void:
+	for event in revive.tick(delta, GameState.controlled, _flat_positions()):
+		match event["event"]:
+			"revived":
+				ReviveView.pose(travelers[event["id"]], false, revive_config)
+				var item_name := String(Content.item(String(event["item"]))["name_ko"])
+				FloatLabel.make(self, "-1 %s" % item_name, travelers[event["id"]].global_position + Vector3(0.0, float_label_height, 0.0), float_label_config)
+			"bled_out":
+				begin_death_beat()
 
 
 # ---- Menus (the foraging scene's, with the same keys) ----
@@ -833,7 +910,7 @@ func open_notebook(action: String) -> bool:
 
 
 func _panel_allowed() -> bool:
-	return not pause_menu.is_open and pause_menu.restart_requests == 0 and not restarting and not spelling_hud.is_open() and not discovery_hud.word_select.is_open()
+	return not GameState.is_downed(GameState.controlled) and not pause_menu.is_open and pause_menu.restart_requests == 0 and not restarting and not spelling_hud.is_open() and not discovery_hud.word_select.is_open()
 
 
 func _pause_for_panel() -> void:

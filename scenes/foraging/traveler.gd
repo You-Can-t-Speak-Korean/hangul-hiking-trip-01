@@ -24,6 +24,13 @@ var _fall_speed := 0.0
 var _body_material: StandardMaterial3D
 var _body_color := Color.WHITE
 var _flash: Tween
+var _lie_tween: Tween
+## Downed (0 hearts): lying on its side, grey, with a label; see lie_down().
+var downed := false
+var _pivot: Node3D       # holds the body and the nose, so lying down tips only them
+var _down_label: Label3D
+var _normal_color := Color.WHITE
+var _normal_layer := 1
 
 
 static func gray_mesh(mesh: Mesh, color: Color) -> MeshInstance3D:
@@ -44,14 +51,18 @@ func setup(display_name: String, color: Color) -> void:
 	var body := gray_mesh(capsule, color)
 	_body_material = body.material_override
 	_body_color = color
+	_normal_color = color
+	_pivot = Node3D.new()
+	_pivot.name = "Pivot"
+	add_child(_pivot)
 	body.position.y = HEIGHT / 2.0
-	add_child(body)
+	_pivot.add_child(body)
 
 	var nose_mesh := BoxMesh.new()
 	nose_mesh.size = Vector3(0.2, 0.2, 0.3)
 	var nose := gray_mesh(nose_mesh, color.darkened(0.45))
 	nose.position = Vector3(0.0, HEIGHT * 0.8, -RADIUS)
-	add_child(nose)
+	_pivot.add_child(nose)
 
 	var shape := CapsuleShape3D.new()
 	shape.radius = RADIUS
@@ -86,6 +97,53 @@ func knock_down(away: Vector3, time: float, tilt_degrees: float = 90.0) -> void:
 	var tween := create_tween().set_parallel(true).set_trans(Tween.TRANS_EXPO).set_ease(Tween.EASE_OUT)
 	tween.tween_property(self, "global_position", global_position + away, time)
 	tween.tween_property(self, "rotation:z", side * deg_to_rad(tilt_degrees), time)
+
+
+## Downed: the body tips onto its side over `seconds`, turns `tint`, a small `text` label hangs
+## above it and other bodies pass through it (so the rescuer can stand beside it). A flash
+## now fades back to the grey. `label_font` is the label's font.
+func lie_down(tint: Color, text: String, label_height: float, label_font: Font, seconds: float = 0.25) -> void:
+	if downed:
+		return
+	downed = true
+	_normal_layer = collision_layer
+	collision_layer = 0
+	_body_color = tint
+	reset_flash()
+	_lie_tween = create_tween().set_parallel(true)
+	_lie_tween.tween_property(_pivot, "rotation:z", PI / 2.0, maxf(seconds, 0.001))
+	_lie_tween.tween_property(_pivot, "position:y", RADIUS, maxf(seconds, 0.001))
+	if _down_label == null:
+		_down_label = Label3D.new()
+		_down_label.name = "DownLabel"
+		_down_label.font = label_font
+		_down_label.font_size = 40
+		_down_label.pixel_size = 0.01
+		_down_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_down_label.shaded = false
+		_down_label.no_depth_test = true
+		_down_label.outline_size = 12
+		_down_label.outline_modulate = Color(0.08, 0.06, 0.1)
+		add_child(_down_label)
+	_down_label.text = text
+	_down_label.position = Vector3(0.0, label_height, 0.0)
+	_down_label.visible = true
+
+
+## Revived: upright and its own colour again. The next drive() settles it onto the ground.
+func stand_up() -> void:
+	if not downed:
+		return
+	downed = false
+	collision_layer = _normal_layer
+	_body_color = _normal_color
+	reset_flash()
+	if _lie_tween != null and _lie_tween.is_valid():
+		_lie_tween.kill()
+	_pivot.rotation.z = 0.0
+	_pivot.position.y = 0.0
+	if _down_label != null:
+		_down_label.visible = false
 
 
 ## The body's current colour, so tests can see the flash.

@@ -7,7 +7,9 @@ extends Node
 ## - Full hearts only at the start of the hike. Healing exists only through items that
 ##   decoy plants can give (half a heart or a whole heart); those items are not built yet.
 ##   The scene-start snapshot rule still applies.
-## - If one traveler hits 0, both die (the monster eats the survivor).
+## - A traveler at 0 hearts is DOWNED, not dead; a downed traveler can be revived with a
+##   healing item (scenes/foraging/revive.gd). The scene ends only when BOTH are downed
+##   (travelers_died), or when the stuck-countdown monster kills both outright.
 ## - Death restarts the current scene with the hearts held at its start.
 ## - DDEOK (the currency) carries over to the next game.
 ## - Fernanda's backpack (`inventory`) is restored with the hearts: a death or a
@@ -19,6 +21,11 @@ const InventoryScript := preload("res://scripts/inventory.gd")
 ## `units` is the traveler's new total in half-units, not hearts.
 signal hearts_changed(traveler: String, units: int)
 signal ddeok_changed(ddeok: int)
+## A traveler just reached 0 hearts (still alive in the story: they can be revived).
+signal traveler_downed(traveler: String, injury: String)
+## A downed traveler stood up again with `units` half-units.
+signal traveler_revived(traveler: String, units: int)
+## Both travelers are downed: the scene is over. `dead` is the one that went down last.
 signal travelers_died(dead: String, survivor: String, injury: String)
 
 const TRAVELERS: Array[String] = ["nestor", "fernanda"]
@@ -41,6 +48,7 @@ var guide_seen: Dictionary = {}
 
 var _scene_start_units: Dictionary = {}
 var _scene_start_ddeok: int = 0
+var _scene_start_controlled: String = "fernanda"
 var _scene_start_inventory: Dictionary = {}
 ## The bank handed to the next scene: {"units", "ddeok", "inventory", "target"}, or {}.
 ## Stored when a scene ends (store_pending_bank) and applied by the next scene's
@@ -112,6 +120,7 @@ func begin_scene(scene_id: String) -> void:
 	current_scene = scene_id
 	_scene_start_units = heart_units.duplicate()
 	_scene_start_ddeok = ddeok
+	_scene_start_controlled = controlled
 	_scene_start_inventory = inventory.snapshot()
 	# Saving goes here later (progress save per scene).
 
@@ -146,6 +155,7 @@ func _apply_pending_bank() -> void:
 func restart_scene() -> void:
 	heart_units = _scene_start_units.duplicate()
 	ddeok = _scene_start_ddeok
+	controlled = _scene_start_controlled  # a revive may have handed control to the partner
 	inventory.restore(_scene_start_inventory)
 	for t in TRAVELERS:
 		hearts_changed.emit(t, heart_units[t])
@@ -157,28 +167,56 @@ func damage(traveler: String, injury: String) -> bool:
 	return damage_units(traveler, units_per_heart(), injury)
 
 
-## Lowers a traveler by `units` half-units (floor 0). Returns true if they are dead afterwards.
+## Lowers a traveler by `units` half-units (floor 0). A traveler reaching 0 is downed
+## (traveler_downed); when that downs both, travelers_died fires once. A downed traveler takes
+## no further damage. Returns true if both travelers are downed afterwards (the scene is over).
 func damage_units(traveler: String, units: int, injury: String = "") -> bool:
-	if not is_alive(traveler):
-		return true  # already dead: the death signal fired once, don't repeat it
+	if is_downed(traveler):
+		return all_downed()  # nothing more to take; the end was announced once
 	heart_units[traveler] = max(0, int(heart_units[traveler]) - units)
 	hearts_changed.emit(traveler, heart_units[traveler])
 	if heart_units[traveler] == 0:
-		travelers_died.emit(traveler, partner_of(traveler), injury)
-		return true
-	return false
+		traveler_downed.emit(traveler, injury)
+		if all_downed():
+			travelers_died.emit(traveler, partner_of(traveler), injury)
+	return all_downed()
 
 
-## Raises a traveler by `units` half-units, capped at max. The dead can't be healed.
+## Raises a traveler by `units` half-units, capped at max. The downed can't be healed this
+## way (revive() stands them up).
 func heal(traveler: String, units: int) -> void:
-	if not is_alive(traveler):
+	if is_downed(traveler):
 		return
 	heart_units[traveler] = min(max_units(), int(heart_units[traveler]) + units)
 	hearts_changed.emit(traveler, heart_units[traveler])
 
 
+## Stands a downed traveler up with `units` half-units (at least 1, at most max). False if
+## they were not downed.
+func revive(traveler: String, units: int) -> bool:
+	if not is_downed(traveler):
+		return false
+	heart_units[traveler] = clampi(units, 1, max_units())
+	hearts_changed.emit(traveler, heart_units[traveler])
+	traveler_revived.emit(traveler, heart_units[traveler])
+	return true
+
+
+## Hearts above 0.
 func is_alive(traveler: String) -> bool:
 	return int(heart_units.get(traveler, 0)) > 0
+
+
+## At 0 hearts: lying down, waiting for a revive.
+func is_downed(traveler: String) -> bool:
+	return int(heart_units.get(traveler, 0)) <= 0
+
+
+func all_downed() -> bool:
+	for t in TRAVELERS:
+		if not is_downed(t):
+			return false
+	return true
 
 
 func add_ddeok(amount: int) -> void:

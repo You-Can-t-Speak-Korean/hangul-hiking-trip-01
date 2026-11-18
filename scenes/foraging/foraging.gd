@@ -41,6 +41,8 @@ const Ending := preload("res://scenes/foraging/ending.gd")
 const ExitNote := preload("res://scenes/foraging/exit_note.gd")
 const DeadTree := preload("res://scenes/foraging/dead_tree.gd")
 const EndingHud := preload("res://scenes/foraging/ending_hud.gd")
+const Revive := preload("res://scenes/foraging/revive.gd")
+const ReviveView := preload("res://scenes/foraging/revive_view.gd")
 const PLANT_FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 const CAMERA_PITCH_DEG := 28.0  # angled down, like a 90s beat-em-up
@@ -206,6 +208,11 @@ var gore: Dictionary = {}
 var travelers: Dictionary = {}
 var player: CharacterBody3D
 var partner: CharacterBody3D
+## Prompt 9b-iv. Downed travelers and reviving them (shared with the animal scene): the logic,
+## how it is drawn, and rules.json `revive`.
+var revive
+var revive_view: Node3D
+var revive_config: Dictionary = {}
 
 var fade_opacity := 1.0   # opacity of a prop covering a traveler (data: prop_fade)
 var fade_time := 0.2      # seconds to fade in or out (data: prop_fade)
@@ -367,10 +374,19 @@ func _ready() -> void:
 	for t in travelers.values():  # settle onto the ground before the first frame
 		for i in 10:
 			t.drive(Vector2.ZERO, 1.0 / 60.0)
+	revive_config = Content.rules["revive"]
+	revive = Revive.new(revive_config)
+	revive_view = ReviveView.new()
+	add_child(revive_view)
+	revive_view.setup(revive_config)
+	GameState.traveler_downed.connect(_on_traveler_downed)
+	_sync_downed()  # the hearts may already hold a downed traveler (a pending bank)
 	evaluate_stuck("scene start")
 
 
 func _exit_tree() -> void:
+	if GameState.traveler_downed.is_connected(_on_traveler_downed):
+		GameState.traveler_downed.disconnect(_on_traveler_downed)
 	if (spelling_hud != null and spelling_hud.is_open()) or (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open):  # never leave the tree paused behind
 		get_tree().paused = false
 
@@ -413,15 +429,20 @@ func step(input: Vector2, delta: float) -> void:
 	elif picking.is_walking():
 		walk = _walk_step(delta)
 	if not restarting and not pause_menu.is_open and not backpack.is_open and not is_gore_playing() and exit_state == "" and not discovery_hud.word_select.is_open():  # the last second, the kill, the gore, the death beat, the menus and the exit: nobody walks
-		player.drive(walk, delta)
-		partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
+		if not GameState.is_downed(GameState.controlled):
+			player.drive(walk, delta)
+		if not GameState.is_downed(GameState.partner_of(GameState.controlled)):
+			partner.follow(player.global_position, PARTNER_STOP_DISTANCE, delta)
+		_tick_revive(delta)
+	_sync_downed()
 	update_camera(delta)
 	update_prop_fade(delta)
 	_grow_spares(delta)
 	_update_reach(delta)
 	var spots: Array[Vector2] = []
-	for traveler in travelers.values():
-		spots.append(Vector2(traveler.global_position.x, traveler.global_position.z))
+	for id in travelers:
+		if not GameState.is_downed(id):  # a downed traveler discovers nothing
+			spots.append(Vector2(travelers[id].global_position.x, travelers[id].global_position.z))
 	discovery.update(spots, delta)
 	discovery_hud.refresh()
 	basket_hud.refresh(delta)
@@ -430,15 +451,13 @@ func step(input: Vector2, delta: float) -> void:
 
 
 ## False while restarting, while the pause menu or the backpack is open, while a
-## gore beat plays, once the exit has been entered, or once the travelers are dead (no one can pick). The spelling
+## gore beat plays, once the exit has been entered, or when the traveler being controlled is
+## downed (a downed one cannot pick, spell or open the backpack). The spelling
 ## view, both menus and the click-walk ask this too.
 func picks_allowed() -> bool:
 	if restarting or pause_menu.is_open or backpack.is_open or is_gore_playing() or exit_state != "":
 		return false
-	for id in GameState.TRAVELERS:
-		if not GameState.is_alive(id):
-			return false
-	return true
+	return not GameState.is_downed(GameState.controlled)
 
 
 ## Opens the spelling view for a discovered word and pauses the map. False if
@@ -508,7 +527,61 @@ func _blood(at: Vector3, strength: float = 1.0) -> CPUParticles3D:
 	return HitFx.blood(self, gore, at, strength)
 
 
-## Both travelers are dead: from now on nothing can be picked, walked to or
+# ---- Downed travelers and reviving them (Prompt 9b-iv) ----
+
+func _flat_positions() -> Dictionary:
+	var flat := {}
+	for id in travelers:
+		flat[id] = Vector2(travelers[id].global_position.x, travelers[id].global_position.z)
+	return flat
+
+
+func _world_positions() -> Dictionary:
+	var world := {}
+	for id in travelers:
+		world[id] = travelers[id].global_position
+	return world
+
+
+func _on_traveler_downed(_id: String, _injury: String) -> void:
+	_sync_downed()
+
+
+## Puts every body in the pose its hearts say (lying at 0, upright above), and hands control
+## to the partner when the controlled traveler is downed and the partner is not. Waits while
+## a decoy's gore beat plays on the picker, and leaves the monster's own knock-down alone.
+func _sync_downed() -> void:
+	if travelers.is_empty() or is_gore_playing() or kill != null:
+		return
+	for id in travelers:
+		ReviveView.pose(travelers[id], GameState.is_downed(id), revive_config)
+	var who := Revive.controller()
+	if who != GameState.controlled:
+		GameState.controlled = who
+		player = travelers[who]
+		partner = travelers[GameState.partner_of(who)]
+		picking.cancel_walk()
+
+
+## The pick action with a downed traveler in range: starts the revive channel, or shows the
+## no-item note. "none" if nobody downed is in range (nothing was done).
+func press_revive() -> String:
+	return revive.press(GameState.controlled, _flat_positions())
+
+
+## One tick of the revive channel and the bleed-out clocks (only while the map runs).
+func _tick_revive(delta: float) -> void:
+	for event in revive.tick(delta, GameState.controlled, _flat_positions()):
+		match event["event"]:
+			"revived":
+				ReviveView.pose(travelers[event["id"]], false, revive_config)
+				var item_name := String(Content.item(String(event["item"]))["name_ko"])
+				FloatLabel.make(self, "-1 %s" % item_name, travelers[event["id"]].global_position + Vector3(0.0, float(word_rewards["label_height"]), 0.0), reward_label_config)
+			"bled_out":
+				begin_death_beat()
+
+
+## Both travelers are downed: from now on nothing can be picked, walked to or
 ## opened, the screen dims, and when gore.death_beat seconds have passed the
 ## scene restarts. Does nothing if the beat is already playing.
 func begin_death_beat() -> void:
@@ -575,6 +648,8 @@ func pick_nearest() -> bool:
 	picking.cancel_walk()
 	if not picks_allowed():
 		return false
+	if press_revive() != "none":  # a downed traveler in range comes first
+		return true
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
 	if target["type"] == "":
 		return false
@@ -592,6 +667,10 @@ func pick_nearest() -> bool:
 ## partner never does) and keeps the ring on the nearest pickable plant.
 func _update_reach(delta: float) -> void:
 	var spot := Vector2(player.global_position.x, player.global_position.z)
+	revive_view.refresh(revive, GameState.controlled, _world_positions(), terrain.height_at)
+	if revive.downed_near(GameState.controlled, _flat_positions()) != "":  # the revive ring takes over
+		_ring.visible = false
+		return
 	var entered: Array[int] = picking.entered_reach(spot)
 	if not entered.is_empty():
 		_start_tooltip(plants[entered[entered.size() - 1]], false)
@@ -778,6 +857,7 @@ func tick_gore(delta: float) -> void:
 				_gore_fx.pop()
 			"done":
 				_end_gore()
+				_sync_downed()  # the picker may have been downed by this pick
 				_death_pending = _gore_lethal
 				_gore_lethal = false
 				if not _death_pending:
