@@ -489,22 +489,40 @@
       "endangered": {"ssanghwatang": 0.7, "gongjindan": 0.2},
       "extinct": {"ssanghwatang": 0.8, "gongjindan": 0.35}
     },
+    "tools": {
+      "_note": "Prompt 9c: breakable tools for grabbing letters (items.json kind tool). 'classes' are the animal classes every kind lists as 'class' (ground, small, flyer, water). One tool is equipped at a time, or Hands (tool_next, R, cycles; the backpack panel can equip too). A tool grab (Space, or a click on an animal already in reach) takes the letter of the nearest animal within the tool's reach (metres over the ground, flyers by ground distance) that the tool works on; it never costs hearts and has no bite or death roll, and the animal still flees. A wrong target shows a note for note_s seconds and spends nothing. Each attempt spends 1 use (quirks in items.json); at 0 the tool breaks. windup_s: the grab lands that long after the press and misses if the animal has left the reach by then (the use is still spent). 'start': tools in the backpack at scene start (the first is equipped). 'hud' is the bottom-left line: the equipped tool's name and one pip per use (a filled one per use left).",
+      "classes": ["ground", "small", "flyer", "water"],
+      "note_s": 1.5,
+      "start": [{"item": "eomuk_kkochi", "count": 1}],
+      "hud": {"margin": 24, "font_size": 30, "note_font_size": 24, "pip_on": "●", "pip_off": "○", "hands_text": "손 Hands", "color": [1.0, 1.0, 1.0], "note_color": [1.0, 0.85, 0.4], "back_color": [0.1, 0.1, 0.12], "back_alpha": 0.55, "padding": 10}
+    },
+    "tool_pickups": {
+      "_note": "Prompt 9c: tools lying on the map, placed like heal_pickups (seeded, own salt): count_min..count_max of them, each tool rolled by weight, each at a walkable land point outside the lake at least min_spacing_m from the travelers' starts, the bottles and each other; a 뜰채 lies within shore_m of the lake shore. Plus one 등산스틱 spot per run ('pole_spot'): a pole lying beside a brown poop mound and a green 막걸리 bottle (placeholders, no letters), picked up like a bottle. 'look' is the placeholder pickup (a bar of 'length' x 'thickness' m lying 'lift' m up, bobbing, with the tool's name above).",
+      "count_min": 2, "count_max": 3, "min_spacing_m": 2.0, "shore_m": 6.0,
+      "weights": {"eomuk_kkochi": 3, "jipge": 2, "hyojason": 2, "jamjarichae": 2, "tteulchae": 2, "usan": 2, "selcabong": 1, "gomu_janggap": 2},
+      "pole_spot": {"item": "deungsan_stick", "mound_color": [0.36, 0.22, 0.12], "mound_radius": 0.28, "bottle_color": [0.2, 0.62, 0.3], "bottle_label": "막걸리", "bottle_offset": [0.55, 0.2], "mound_offset": [-0.5, 0.15]},
+      "look": {"length": 0.7, "thickness": 0.06, "lift": 0.12, "bob_m": 0.06, "bob_hz": 0.6, "color": [0.75, 0.6, 0.35], "label_lift": 0.35, "label_font_size": 40, "label_pixel_size": 0.008, "label_outline_size": 8}
+    },
+    "tool_rewards": {
+      "_note": "Prompt 9c: after the items of need_rewards, meeting a need rolls one more time for a tool, by the tier of the kind it was discovered from (chance 0..1); a win is one tool picked by tool_pickups.weights. Its own seeded rng, so need_rewards' sequence is untouched.",
+      "common": 0.25, "endangered": 0.4, "extinct": 0.6
+    },
     "spawn": {"interval_min_s": 2.4, "interval_max_s": 5.4, "start_cap": 4, "peak_cap": 10, "ramp_seconds": 240, "min_cap": 3, "target_samples": 24, "first_spawn_s": 1.0},
     "linger": {"min_s": 4.0, "max_s": 8.0, "duck_waypoints_min": 2, "duck_waypoints_max": 3},
     "path": {"wobble_amplitude_m": 0.8, "wobble_wavelength_m": 10.0, "fly_height": 4.0},
     "label": {"lift": 1.0, "font_size": 48, "pixel_size": 0.008, "color": [1.0, 1.0, 1.0], "outline_size": 12},
     "kinds": [
-      {"id": "noru", "name_ko": "노루", "tier": "endangered", "predator": false, "flies": false, "size": [0.5, 0.9, 1.1], "speed": 3.5, "color": [0.72, 0.52, 0.32], "habitat": ["forest", "grass"], "weight": 10, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
-      {"id": "goraeni", "name_ko": "고라니", "tier": "extinct", "predator": false, "flies": false, "size": [0.5, 0.8, 1.0], "speed": 3.5, "color": [0.62, 0.48, 0.3], "habitat": ["shore"], "weight": 8, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
-      {"id": "saseum", "name_ko": "사슴", "tier": "extinct", "predator": false, "flies": false, "size": [0.6, 1.2, 1.4], "speed": 3.0, "color": [0.55, 0.38, 0.22], "habitat": ["forest", "grass"], "weight": 3, "grab": {"hand": true, "units": 2, "bite_chance": 0.5}},
-      {"id": "meotdwaeji", "name_ko": "멧돼지", "tier": "common", "predator": true, "flies": false, "size": [0.7, 0.8, 1.3], "speed": 3.0, "color": [0.25, 0.2, 0.18], "habitat": ["forest"], "weight": 5, "grab": {"hand": true, "max_units": 5, "death_chance": 0.25}},
-      {"id": "deulgae", "name_ko": "들개", "tier": "common", "predator": true, "flies": false, "size": [0.4, 0.7, 0.9], "speed": 4.0, "color": [0.55, 0.5, 0.42], "habitat": ["grass"], "weight": 4, "grab": {"hand": true, "max_units": 4, "death_chance": 0.25}},
-      {"id": "geomdokseuri", "name_ko": "검독수리", "tier": "endangered", "predator": true, "flies": true, "size": [1.4, 0.4, 0.8], "speed": 7.0, "color": [0.2, 0.15, 0.1], "habitat": ["air"], "weight": 2, "grab": {"hand": false, "max_units": 4, "death_chance": 0.25}},
-      {"id": "keunburikkamagwi", "name_ko": "큰부리까마귀", "tier": "common", "predator": false, "flies": true, "size": [0.6, 0.3, 0.5], "speed": 5.0, "color": [0.08, 0.08, 0.1], "habitat": ["air"], "weight": 6, "grab": {"hand": false, "units": 2, "bite_chance": 0.5}},
-      {"id": "osori", "name_ko": "오소리", "tier": "common", "predator": false, "flies": false, "size": [0.5, 0.45, 0.8], "speed": 1.5, "color": [0.4, 0.4, 0.42], "habitat": ["forest"], "weight": 5, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
-      {"id": "jejujokjebi", "name_ko": "제주족제비", "tier": "common", "predator": false, "flies": false, "size": [0.2, 0.2, 0.6], "speed": 3.0, "color": [0.7, 0.45, 0.2], "habitat": ["shore"], "weight": 3, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
-      {"id": "bibaribaem", "name_ko": "비바리뱀", "tier": "endangered", "predator": false, "flies": false, "size": [0.12, 0.12, 1.0], "speed": 1.0, "color": [0.3, 0.55, 0.25], "habitat": ["shore"], "weight": 2, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
-      {"id": "ori", "name_ko": "오리", "tier": "common", "predator": false, "flies": false, "size": [0.3, 0.35, 0.5], "speed": 1.5, "color": [0.45, 0.55, 0.35], "habitat": ["lake"], "weight": 6, "grab": {"hand": false, "units": 1, "bite_chance": 0.3}}
+      {"id": "noru", "class": "ground", "name_ko": "노루", "tier": "endangered", "predator": false, "flies": false, "size": [0.5, 0.9, 1.1], "speed": 3.5, "color": [0.72, 0.52, 0.32], "habitat": ["forest", "grass"], "weight": 10, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
+      {"id": "goraeni", "class": "ground", "name_ko": "고라니", "tier": "extinct", "predator": false, "flies": false, "size": [0.5, 0.8, 1.0], "speed": 3.5, "color": [0.62, 0.48, 0.3], "habitat": ["shore"], "weight": 8, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
+      {"id": "saseum", "class": "ground", "name_ko": "사슴", "tier": "extinct", "predator": false, "flies": false, "size": [0.6, 1.2, 1.4], "speed": 3.0, "color": [0.55, 0.38, 0.22], "habitat": ["forest", "grass"], "weight": 3, "grab": {"hand": true, "units": 2, "bite_chance": 0.5}},
+      {"id": "meotdwaeji", "class": "ground", "name_ko": "멧돼지", "tier": "common", "predator": true, "flies": false, "size": [0.7, 0.8, 1.3], "speed": 3.0, "color": [0.25, 0.2, 0.18], "habitat": ["forest"], "weight": 5, "grab": {"hand": true, "max_units": 5, "death_chance": 0.25}},
+      {"id": "deulgae", "class": "ground", "name_ko": "들개", "tier": "common", "predator": true, "flies": false, "size": [0.4, 0.7, 0.9], "speed": 4.0, "color": [0.55, 0.5, 0.42], "habitat": ["grass"], "weight": 4, "grab": {"hand": true, "max_units": 4, "death_chance": 0.25}},
+      {"id": "geomdokseuri", "class": "flyer", "name_ko": "검독수리", "tier": "endangered", "predator": true, "flies": true, "size": [1.4, 0.4, 0.8], "speed": 7.0, "color": [0.2, 0.15, 0.1], "habitat": ["air"], "weight": 2, "grab": {"hand": false, "max_units": 4, "death_chance": 0.25}},
+      {"id": "keunburikkamagwi", "class": "flyer", "name_ko": "큰부리까마귀", "tier": "common", "predator": false, "flies": true, "size": [0.6, 0.3, 0.5], "speed": 5.0, "color": [0.08, 0.08, 0.1], "habitat": ["air"], "weight": 6, "grab": {"hand": false, "units": 2, "bite_chance": 0.5}},
+      {"id": "osori", "class": "ground", "name_ko": "오소리", "tier": "common", "predator": false, "flies": false, "size": [0.5, 0.45, 0.8], "speed": 1.5, "color": [0.4, 0.4, 0.42], "habitat": ["forest"], "weight": 5, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
+      {"id": "jejujokjebi", "class": "small", "name_ko": "제주족제비", "tier": "common", "predator": false, "flies": false, "size": [0.2, 0.2, 0.6], "speed": 3.0, "color": [0.7, 0.45, 0.2], "habitat": ["shore"], "weight": 3, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
+      {"id": "bibaribaem", "class": "small", "name_ko": "비바리뱀", "tier": "endangered", "predator": false, "flies": false, "size": [0.12, 0.12, 1.0], "speed": 1.0, "color": [0.3, 0.55, 0.25], "habitat": ["shore"], "weight": 2, "grab": {"hand": true, "units": 1, "bite_chance": 0.3}},
+      {"id": "ori", "class": "water", "name_ko": "오리", "tier": "common", "predator": false, "flies": false, "size": [0.3, 0.35, 0.5], "speed": 1.5, "color": [0.45, 0.55, 0.35], "habitat": ["lake"], "weight": 6, "grab": {"hand": false, "units": 1, "bite_chance": 0.3}}
     ]
   }
 }

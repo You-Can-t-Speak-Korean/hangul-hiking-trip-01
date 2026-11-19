@@ -159,11 +159,14 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_animals9biii_scene",
 	"test_revive_logic",
 	"test_revive_scene",
+	"test_tools9c_data",
+	"test_tools9c_logic",
+	"test_tools9c_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 3906
+const MIN_CHECKS := 4062
 
 
 func check(condition: bool, label: String) -> void:
@@ -183,6 +186,7 @@ func _ready() -> void:
 	# decoys at the fixed positions of the data and no piles; they run in the legacy
 	# layout. The 7d sections switch it off and build maps with pinned seeds.
 	Foraging.legacy_layout = true
+	AnimalsScript.tools_enabled = false  # the animal sections before Prompt 9c expect no tools in the scene; the 9c section turns them on
 	print("== Hangul engine ==")
 	test_compose()
 	print("== Curriculum ==")
@@ -369,6 +373,10 @@ func _ready() -> void:
 	print("== Downed travelers and revive (both scenes) ==")
 	test_revive_logic()
 	await test_revive_scene()
+	print("== Animal tools (Prompt 9c) ==")
+	test_tools9c_data()
+	test_tools9c_logic()
+	await test_tools9c_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -5313,14 +5321,14 @@ const KO_FONT_FILE := "NotoSansKR-VariableFont_wght.ttf"
 
 func test_items_data() -> void:
 	var file: Array = Content.load_json(Content.ITEMS_PATH).get("items", [])
-	check(file.size() == 12 and Content.items.size() == 13, "items.json lists twelve items and all of them loaded, plus the one note registered from data/notes")
-	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm", "ddeok", "plant_ma", "plant_meoru", "plant_minari", "plant_gosari", "plant_gobi", "plant_siromi", "sucheop", "hallasan_exit_sumin"], "the ids load in file order, the registered notes after them")
+	check(file.size() == 21 and Content.items.size() == 22, "items.json lists twenty-one items (the nine tools of Prompt 9c among them) and all of them loaded, plus the one note registered from data/notes")
+	check(Content.items.keys() == ["ssanghwatang", "gongjindan", "spelling_hint", "slow_time_charm", "ddeok", "plant_ma", "plant_meoru", "plant_minari", "plant_gosari", "plant_gobi", "plant_siromi", "eomuk_kkochi", "jipge", "hyojason", "jamjarichae", "tteulchae", "usan", "selcabong", "deungsan_stick", "gomu_janggap", "sucheop", "hallasan_exit_sumin"], "the ids load in file order, the registered notes after them")
 	for id in Content.items:
 		var item: Dictionary = Content.item(id)
 		check(item["id"] == id and Content.ITEM_KINDS.has(item["kind"]), "%s has its id and a valid kind" % id)
 		check(item["name_en"] is String and item["name_en"] != "" and item["description_en"] is String and (item["description_en"] != "" or item["kind"] == "note"), "%s has an English name and description (a note has no description: it never has a row)" % id)
 		check(item["name_ko"] is String, "%s has a name_ko (possibly empty)" % id)
-	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note", "currency", "plant", "notebook"], "the kinds are elixir, charm, hint, note, currency, plant and notebook")
+	check(Content.ITEM_KINDS == ["elixir", "charm", "hint", "note", "currency", "plant", "notebook", "tool"], "the kinds are elixir, charm, hint, note, currency, plant, notebook and tool")
 	var a: Dictionary = Content.item("ssanghwatang")
 	check(a["kind"] == "elixir" and a["name_ko"] == "쌍화탕" and a["name_en"] == "Ssanghwatang" and a["description_en"] == "Herbal tonic. Restores half a heart." and a["heal_units"] == 1, "ssanghwatang is as briefed")
 	var b: Dictionary = Content.item("gongjindan")
@@ -13038,3 +13046,458 @@ func test_revive_scene() -> void:
 
 func bounds_has(map: Node3D, spot: Vector2) -> bool:
 	return map.walk_bounds().has_point(spot)
+
+
+# ---- Animal tools (Prompt 9c) ----
+
+const ItemIconScript := preload("res://scenes/foraging/item_icon.gd")
+const ToolUseScript := preload("res://scenes/animals/tool_use.gd")
+const ToolBeltScript := preload("res://scripts/tool_belt.gd")
+const ToolPickupsScript := preload("res://scenes/animals/tool_pickups.gd")
+const ToolHudScript := preload("res://scenes/animals/tool_hud.gd")
+const TOOL_IDS: Array[String] = ["eomuk_kkochi", "jipge", "hyojason", "jamjarichae", "tteulchae", "usan", "selcabong", "deungsan_stick", "gomu_janggap"]
+## id -> [uses, reach_m, targets, windup_s] as briefed.
+const TOOL_SPECS := {
+	"eomuk_kkochi": [3, 1.8, ["ground"], 0.0],
+	"jipge": [6, 1.8, ["small", "ground"], 0.0],
+	"hyojason": [5, 3.0, ["ground", "small"], 0.6],
+	"jamjarichae": [4, 3.0, ["flyer", "small"], 0.0],
+	"tteulchae": [5, 3.0, ["water"], 0.0],
+	"usan": [6, 3.0, ["ground", "small"], 0.0],
+	"selcabong": [3, 4.5, ["ground", "small", "water"], 0.8],
+	"deungsan_stick": [10, 4.5, ["ground", "small"], 0.0],
+	"gomu_janggap": [4, 0.0, ["ground", "small"], 0.0],
+}
+const KIND_CLASSES := {"noru": "ground", "goraeni": "ground", "saseum": "ground", "meotdwaeji": "ground", "deulgae": "ground", "osori": "ground", "jejujokjebi": "small", "bibaribaem": "small", "geomdokseuri": "flyer", "keunburikkamagwi": "flyer", "ori": "water"}
+
+
+func _basket_is(map: Node3D, letters: Array) -> bool:
+	if map.picking.basket.size() != letters.size():
+		return false
+	for i in letters.size():
+		if map.picking.basket[i] != letters[i]:
+			return false
+	return true
+
+
+func _survive_seed() -> int:
+	var finder := RandomNumberGenerator.new()
+	for s in range(1, 400):
+		finder.seed = s
+		if finder.randf() >= 0.25:
+			return s
+	return 0
+
+
+func test_tools9c_data() -> void:
+	var cfg := _animals_config()
+	var file: Array = Content.load_json(Content.ITEMS_PATH).get("items", [])
+	var tools_in_file := 0
+	for entry in file:
+		tools_in_file += 1 if entry["kind"] == "tool" else 0
+	check(tools_in_file == 9 and Content.ITEM_KINDS.has("tool"), "items.json lists the nine tools, and tool is an item kind")
+	for id in TOOL_IDS:
+		var def: Dictionary = Content.item(id)
+		var spec: Array = TOOL_SPECS[id]
+		check(def.get("kind", "") == "tool" and String(def["name_ko"]) != "" and String(def["name_en"]) != "" and String(def["description_en"]) != "", "%s is a tool with its names and a description" % id)
+		check(int(def["uses"]) == spec[0] and is_equal_approx(float(def["reach_m"]), spec[1]) and is_equal_approx(float(def.get("windup_s", 0.0)), spec[3]) and def["targets"] == spec[2], "%s: uses %d, reach %.1f, targets %s, windup %.1f as briefed" % [id, spec[0], spec[1], str(spec[2]), spec[3]])
+		check(Content.item_problem(def, {}) == "" and ItemIconScript.is_known(String(def["icon"])), "%s passes the loader's rules and has a placeholder icon" % id)
+		var classes_ok := true
+		for target in def["targets"]:
+			classes_ok = classes_ok and cfg["tools"]["classes"].has(target)
+		check(classes_ok, "%s: every target class exists" % id)
+	check(Content.item("eomuk_kkochi")["name_ko"] == "어묵꼬치" and Content.item("jipge")["name_ko"] == "집게" and Content.item("hyojason")["name_ko"] == "효자손" and Content.item("jamjarichae")["name_ko"] == "잠자리채" and Content.item("tteulchae")["name_ko"] == "뜰채" and Content.item("usan")["name_ko"] == "우산" and Content.item("selcabong")["name_ko"] == "셀카봉" and Content.item("deungsan_stick")["name_ko"] == "등산스틱" and Content.item("gomu_janggap")["name_ko"] == "고무장갑", "the Korean names are as briefed")
+	var bad := {"id": "t", "kind": "tool", "name_ko": "x", "name_en": "x", "description_en": "x", "uses": 0, "reach_m": 1.0, "targets": ["ground"]}
+	check(Content.item_problem(bad, {}).contains("uses"), "a tool without uses is rejected")
+	bad = {"id": "t", "kind": "tool", "uses": 1, "reach_m": 1.0, "targets": ["sky"]}
+	check(Content.item_problem(bad, {}).contains("sky"), "a tool with an unknown target class is rejected")
+	bad = {"id": "t", "kind": "tool", "uses": 1, "reach_m": 1.0, "targets": []}
+	check(Content.item_problem(bad, {}).contains("targets"), "a tool with no targets is rejected")
+	var kinds_ok := true
+	for kind in cfg["kinds"]:
+		kinds_ok = kinds_ok and KIND_CLASSES.get(kind["id"], "") == kind.get("class", "?") and cfg["tools"]["classes"].has(kind["class"])
+	check(kinds_ok and cfg["kinds"].size() == KIND_CLASSES.size(), "every animal kind has a class, as briefed (%d kinds)" % cfg["kinds"].size())
+	var start: Array = cfg["tools"]["start"]
+	check(start.size() == 1 and start[0]["item"] == "eomuk_kkochi" and int(start[0]["count"]) == 1 and is_equal_approx(float(cfg["tools"]["note_s"]), 1.5), "animals.tools: one 어묵꼬치 to start, notes last 1.5 s")
+	var tp: Dictionary = cfg["tool_pickups"]
+	var wanted_weights := {"eomuk_kkochi": 3, "jipge": 2, "hyojason": 2, "jamjarichae": 2, "tteulchae": 2, "usan": 2, "selcabong": 1, "gomu_janggap": 2}
+	var weights_match: bool = tp["weights"].size() == wanted_weights.size()
+	for id in wanted_weights:
+		weights_match = weights_match and tp["weights"].has(id) and int(tp["weights"][id]) == wanted_weights[id]
+	check(int(tp["count_min"]) == 2 and int(tp["count_max"]) == 3 and weights_match and tp["pole_spot"]["item"] == "deungsan_stick", "tool_pickups: 2..3 tools with the briefed weights, and the 등산스틱 spot")
+	var weights_known := true
+	for id in tp["weights"]:
+		weights_known = weights_known and TOOL_IDS.has(id) and Content.item(id)["kind"] == "tool"
+	check(weights_known and not tp["weights"].has("deungsan_stick"), "...every weighted id is a tool (the 등산스틱 comes only from its spot)")
+	var rw: Dictionary = cfg["tool_rewards"]
+	check(is_equal_approx(float(rw["common"]), 0.25) and is_equal_approx(float(rw["endangered"]), 0.4) and is_equal_approx(float(rw["extinct"]), 0.6), "tool_rewards: common 0.25, endangered 0.4, extinct 0.6")
+	check(cfg["need_rewards"]["common"].size() == 1, "need_rewards keeps its item rolls untouched")
+	_section_done("test_tools9c_data")
+
+
+func test_tools9c_logic() -> void:
+	var cfg := _animals_config()
+	# Target rules: each tool works only on its classes.
+	var table_ok := true
+	var spent_ok := true
+	var rows := 0
+	for id in TOOL_IDS:
+		var def: Dictionary = Content.item(id)
+		for kind in cfg["kinds"]:
+			var expected: bool = (TOOL_SPECS[id][2] as Array).has(KIND_CLASSES[kind["id"]])
+			table_ok = table_ok and ToolUseScript.works_on(def, kind) == expected
+			rows += 1
+	check(table_ok and rows == 99, "each tool works on exactly its classes (9 tools x 11 kinds = %d)" % rows)
+	check(ToolUseScript.wrong_target_note(Content.item("tteulchae")) == "뜰채: water only" and ToolUseScript.wrong_target_note(Content.item("eomuk_kkochi")) == "어묵꼬치: ground only" and ToolUseScript.wrong_target_note(Content.item("jipge")) == "집게: small or ground only", "a wrong target's note names the tool and what it works on")
+	# Reach and wind-up.
+	var skewer: Dictionary = Content.item("eomuk_kkochi")
+	check(ToolUseScript.in_reach(skewer, 1.8, 1.2) and not ToolUseScript.in_reach(skewer, 1.81, 1.2) and ToolUseScript.in_reach(Content.item("selcabong"), 4.5, 1.2) and not ToolUseScript.in_reach(Content.item("selcabong"), 4.6, 1.2), "a tool hits inside its reach and not beyond it")
+	check(is_equal_approx(ToolUseScript.reach(Content.item("gomu_janggap"), 1.2), 1.2) and is_equal_approx(ToolUseScript.windup(Content.item("hyojason")), 0.6) and is_equal_approx(ToolUseScript.windup(Content.item("selcabong")), 0.8) and ToolUseScript.windup(skewer) == 0.0, "the gloves reach as far as a hand; the wind-ups are 0.6 s and 0.8 s")
+	# Quirks.
+	var snake: Dictionary = _kind_data("bibaribaem")
+	var eagle: Dictionary = _kind_data("geomdokseuri")
+	check(ToolUseScript.cost(Content.item("jipge"), snake, 6) == 2 and ToolUseScript.cost(Content.item("jipge"), _kind_data("noru"), 6) == 1 and ToolUseScript.cost(Content.item("usan"), snake, 6) == 1, "집게 costs 2 on a 비바리뱀 and 1 on anything else, other tools 1")
+	check(ToolUseScript.cost(Content.item("jamjarichae"), eagle, 4) == 4 and ToolUseScript.cost(Content.item("jamjarichae"), eagle, 1) == 1 and ToolUseScript.cost(Content.item("jamjarichae"), _kind_data("keunburikkamagwi"), 4) == 1, "잠자리채 on a 검독수리 costs every use it has left; on a crow, 1")
+	check(ToolUseScript.is_gloves(Content.item("gomu_janggap")) and not ToolUseScript.is_gloves(skewer) and ToolUseScript.glove_grab(_kind_data("meotdwaeji"))["shredded"] and ToolUseScript.glove_grab(_kind_data("deulgae"))["shredded"] and not ToolUseScript.glove_grab(_kind_data("noru"))["shredded"] and ToolUseScript.glove_grab(_kind_data("noru"))["cost"] == 1, "the gloves are shredded by the two predators you can grab and cost 1 use on the rest")
+	# The belt: instances, breaking, equipping.
+	var belt = ToolBeltScript.new()
+	check(belt.add("ssanghwatang") == 0 and belt.add("nope") == 0 and belt.is_empty(), "only tools go into the belt")
+	var a: int = belt.add("jipge")
+	var b: int = belt.add("jipge")
+	check(a > 0 and b > a and belt.count("jipge") == 2 and belt.get_tool(a)["uses"] == 6 and belt.get_tool(b)["uses"] == 6, "two 집게 are two instances with 6 uses each")
+	belt.spend(a, 2)
+	check(belt.get_tool(a)["uses"] == 4 and belt.get_tool(b)["uses"] == 6, "instances keep separate counts")
+	check(belt.equipped().is_empty() and belt.equip(a) and belt.equipped()["uid"] == a and not belt.equip(999), "one tool is equipped at a time; an unknown one cannot be")
+	var c: int = belt.add("tteulchae")
+	var d: int = belt.add("usan")
+	var path := []
+	for i in 6:
+		path.append(belt.cycle())
+	check(path == [b, c, d, 0, a, b], "R cycles Hands -> every tool in the order held -> Hands (%s)" % str(path))
+	var broke: Dictionary = belt.spend(c, 5)
+	check(broke["broke"] and broke["id"] == "tteulchae" and belt.count("tteulchae") == 0 and belt.get_tool(c).is_empty(), "spending the last use breaks the tool: it is removed")
+	belt.equip(b)
+	path = []
+	for i in 4:
+		path.append(belt.cycle())
+	check(path == [d, 0, a, b] and not path.has(c), "R skips the broken tool")
+	belt.equip(d)
+	belt.spend(d, 99)
+	check(belt.equipped().is_empty() and belt.count("usan") == 0, "a broken equipped tool leaves Hands in hand")
+	var snap: Dictionary = belt.snapshot()
+	belt.spend(a, 1)
+	belt.add("selcabong")
+	check(belt.restore(snap) and belt.get_tool(a)["uses"] == 4 and belt.count("selcabong") == 0 and belt.snapshot() == snap, "a snapshot puts the belt back exactly")
+	check(not belt.restore({"tools": [{"uid": 1, "id": "nope", "uses": 1}]}) and belt.snapshot() == snap, "an invalid snapshot changes nothing")
+	# The backpack panel's tool rows.
+	var pack = BackpackScript.new()
+	var items := [{"id": "ssanghwatang", "count": 1}, {"id": "tool:%d" % a, "count": 4}]
+	check(BackpackScript.is_selectable("tool:%d" % a) and BackpackScript.tool_uid("tool:%d" % a) == a and BackpackScript.tool_uid("jipge") == 0, "a tool row can be selected")
+	pack.open(true)
+	check(pack.select("tool:%d" % a, items) and pack.key("place", items) == "equip", "place on a selected tool row says equip")
+	# Where the tools lie.
+	var tp: Dictionary = cfg["tool_pickups"]
+	var r := TravelerScript.RADIUS
+	var bounds := Rect2(Vector2(r, -float(cfg["stage"]["depth"]) / 2.0 + r), Vector2(float(cfg["stage"]["width"]) - 2.0 * r, float(cfg["stage"]["depth"]) - 2.0 * r))
+	var lake_center := Vector2(float(cfg["lake"]["center"][0]), float(cfg["lake"]["center"][1]))
+	var lake_radius := float(cfg["lake"]["radius"])
+	var clearance := float(cfg["lake"]["clearance_m"])
+	var starts: Array = []
+	for id in cfg["start"]:
+		starts.append(Vector2(float(cfg["start"][id][0]), float(cfg["start"][id][1])))
+	var counts_ok := true
+	var spacing_ok := true
+	var lake_ok := true
+	var poles_ok := true
+	var weights_ok := true
+	var bottles: Array = [Vector2(40.0, 10.0)]
+	for s in range(1, 301):
+		var placed: Array[Dictionary] = ToolPickupsScript.place(tp, s, bounds, lake_center, lake_radius, clearance, starts, bottles)
+		var again: Array[Dictionary] = ToolPickupsScript.place(tp, s, bounds, lake_center, lake_radius, clearance, starts, bottles)
+		counts_ok = counts_ok and placed.size() >= 3 and placed.size() <= 4 and placed == again
+		var pole_count := 0
+		for i in placed.size():
+			var spot: Vector2 = placed[i]["spot"]
+			pole_count += 1 if placed[i]["pole"] else 0
+			poles_ok = poles_ok and (placed[i]["pole"] == (placed[i]["item"] == "deungsan_stick"))
+			weights_ok = weights_ok and (placed[i]["pole"] or tp["weights"].has(placed[i]["item"]))
+			lake_ok = lake_ok and bounds.has_point(spot) and not (spot.distance_to(lake_center) < lake_radius + clearance and spot.y <= lake_center.y + clearance)
+			for start in starts:
+				spacing_ok = spacing_ok and spot.distance_to(start) >= 2.0
+			for bottle in bottles:
+				spacing_ok = spacing_ok and spot.distance_to(bottle) >= 2.0
+			for j in range(i + 1, placed.size()):
+				spacing_ok = spacing_ok and spot.distance_to(placed[j]["spot"]) >= 2.0
+		poles_ok = poles_ok and pole_count == 1 and placed[0]["pole"]
+	check(counts_ok, "300 seeds: the 등산스틱 spot plus 2..3 tools, the same every time for a seed")
+	check(poles_ok and weights_ok, "...exactly one 등산스틱 spot, and every other tool is one of the weighted ones")
+	check(spacing_ok, "...each at least 2 m from the starts, the bottles and each other")
+	check(lake_ok, "...all on walkable land, none in the lake or beside it")
+	var net_cfg: Dictionary = tp.duplicate(true)
+	net_cfg["weights"] = {"tteulchae": 1}
+	net_cfg["count_min"] = 3
+	net_cfg["count_max"] = 3
+	var near_ok := true
+	var nets := 0
+	for s in range(1, 101):
+		for entry in ToolPickupsScript.place(net_cfg, s, bounds, lake_center, lake_radius, clearance, starts, bottles):
+			if entry["item"] == "tteulchae":
+				nets += 1
+				var spot: Vector2 = entry["spot"]
+				near_ok = near_ok and spot.distance_to(lake_center) - lake_radius <= float(tp["shore_m"]) + 0.0001 and spot.distance_to(lake_center) >= lake_radius + clearance
+	check(nets == 300 and near_ok, "a 뜰채 always lies within %.0f m of the shore, outside the lake (%d placed)" % [float(tp["shore_m"]), nets])
+	# What a met need drops: one tool roll per tier, its own rng.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 424242
+	var rates_ok := true
+	var wins_by_tool := {}
+	var total_wins := 0
+	var rates := []
+	for tier in ["common", "endangered", "extinct"]:
+		var wins := 0
+		for i in 1000:
+			var tool_id: String = NeedRewardsScript.roll_tool(cfg["tool_rewards"], tier, tp["weights"], rng)
+			if tool_id != "":
+				wins += 1
+				wins_by_tool[tool_id] = int(wins_by_tool.get(tool_id, 0)) + 1
+		rates.append(wins / 1000.0)
+		rates_ok = rates_ok and absf(wins / 1000.0 - float(cfg["tool_rewards"][tier])) <= 0.05
+		total_wins += wins
+	check(rates_ok, "1000 rolls per tier win a tool at the tier's rate within 5%% (common %.3f, endangered %.3f, extinct %.3f)" % [rates[0], rates[1], rates[2]])
+	var share_ok := true
+	var weight_sum := 0.0
+	for id in tp["weights"]:
+		weight_sum += float(tp["weights"][id])
+	for id in tp["weights"]:
+		share_ok = share_ok and absf(float(wins_by_tool.get(id, 0)) / total_wins - float(tp["weights"][id]) / weight_sum) <= 0.05
+	check(share_ok and not wins_by_tool.has("deungsan_stick"), "...and the tool won follows the weights (never a 등산스틱)")
+	var seeded_a := RandomNumberGenerator.new()
+	var seeded_b := RandomNumberGenerator.new()
+	seeded_a.seed = 9
+	seeded_b.seed = 9
+	var same := true
+	for i in 50:
+		same = same and NeedRewardsScript.roll_tool(cfg["tool_rewards"], "extinct", tp["weights"], seeded_a) == NeedRewardsScript.roll_tool(cfg["tool_rewards"], "extinct", tp["weights"], seeded_b)
+	check(same, "one seed gives one sequence of tool rolls")
+	check(ToolHudScript.text_for({}, cfg["tools"]["hud"]) == "손 Hands" and ToolHudScript.text_for({"id": "eomuk_kkochi", "uses": 2}, cfg["tools"]["hud"]) == "어묵꼬치 ●●○" and ToolHudScript.text_for({"id": "jipge", "uses": 6}, cfg["tools"]["hud"]) == "집게 ●●●●●●", "the HUD line: 손 Hands, or the name and a pip per use")
+	_section_done("test_tools9c_logic")
+
+
+func test_tools9c_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	AnimalsScript.tools_enabled = true
+	var cfg := _animals_config()
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(51)
+	# 1. The start kit, in hand, on the HUD.
+	check(GameState.tools.count("eomuk_kkochi") == 1 and GameState.tools.equipped()["id"] == "eomuk_kkochi" and GameState.inventory.snapshot() == {"sucheop": 1}, "the scene starts with one 어묵꼬치 in hand (the backpack's counted items are as before)")
+	check(map.tool_hud.line_text() == "어묵꼬치 ●●●", "the HUD shows it with 3 pips")
+	var tool_nodes: Node = map.get_node("ToolPickups")
+	var tool_count: int = tool_nodes.get_child_count()
+	check(tool_count >= 3 and tool_count <= 4, "%d tools lie on the map (the 등산스틱 spot and 2-3 more)" % tool_count)
+	var pole_index := -1
+	var tool_piles := 0
+	for index in map.pickup_items:
+		if Content.item(map.pickup_items[index])["kind"] == "tool":
+			tool_piles += 1
+			if map.pickup_items[index] == "deungsan_stick":
+				pole_index = int(index)
+	check(tool_piles == tool_count and pole_index >= 0, "each is a pile of the basket's picking; one is the 등산스틱")
+	var pole_node = map.pickup_nodes[pole_index]
+	check(pole_node.mound != null and pole_node.bottle != null and pole_node.bottle_label.text == "막걸리" and pole_node.mound.position.distance_to(pole_node.bottle.position) > 0.3, "the pole lies beside a poop mound and a 막걸리 bottle (placeholders)")
+	var lake_ok := true
+	for index in map.pickup_nodes:
+		lake_ok = lake_ok and not map.in_lake(map.picking.pile_spot(index))
+	check(lake_ok, "no pickup lies in the lake")
+	# Picking the pole up (with the skewer in hand: pickups come first).
+	_put(map, map.player, map.picking.pile_spot(pole_index).x, map.picking.pile_spot(pole_index).y)
+	check(map.pick_nearest() and GameState.tools.count("deungsan_stick") == 1 and not pole_node.visible and GameState.tools.equipped()["id"] == "eomuk_kkochi", "Space picks the 등산스틱 up into the belt without changing what is in hand")
+	check("+1 등산스틱" in _float_texts(map), "...with a floating \"+1 등산스틱\"")
+	map.free()
+	# 2. A skewer takes a letter from 1.5 m: no hearts, no bite roll, a use spent, the animal flees.
+	GameState.new_hike()
+	map = await _animals_map(52)
+	var deer = _spawn_kind(map, "noru")
+	_beside(map, deer, Vector2(1.5, 0.0))
+	var letter: String = deer.letter
+	var hearts: Dictionary = GameState.heart_units.duplicate()
+	var rng_state: int = map.grab_rng.state
+	map.step(Vector2.ZERO, 0.0)
+	check(map._ring.visible and map._ring.global_position.is_equal_approx(map.animal_nodes[deer].global_position), "the reach ring is on the animal the skewer would take")
+	check(map.picking.nearest_target(_xz(map.player))["type"] == "" and map.pick_nearest(), "(1.5 m is beyond a hand's 1.2 m) Space with the skewer takes it")
+	check(_basket_is(map, [letter]) and deer.letter == "" and not map.animal_nodes[deer].tile.visible, "its letter %s is in the basket and off the animal" % letter)
+	check(GameState.heart_units == hearts and map.grab_rng.state == rng_state, "no hearts lost and no bite or death roll drawn")
+	check(deer.fled and deer.speed_scale == 2.5, "the animal still flees")
+	check(GameState.tools.equipped()["uses"] == 2 and map.tool_hud.line_text() == "어묵꼬치 ●●○", "a use is spent: 2 left, 2 pips")
+	# A wrong target: a note, nothing spent.
+	var duck = _spawn_kind(map, "ori")
+	_beside(map, duck, Vector2(1.0, 0.0))
+	var basket_size: int = map.picking.basket.size()
+	check(not map.pick_nearest() and GameState.tools.equipped()["uses"] == 2 and map.picking.basket.size() == basket_size and duck.letter != "", "the skewer on a duck takes nothing and spends nothing")
+	check(map.tool_hud.note_text() == "어묵꼬치: ground only", "...and a note says what it works on")
+	map.tool_hud._process(1.4)
+	check(map.tool_hud.note_text() != "", "the note is still there after 1.4 s")
+	map.tool_hud._process(0.2)
+	check(map.tool_hud.note_text() == "", "...and gone after 1.5 s")
+	# Breaking: the third use.
+	for n in 2:
+		var next_deer = _spawn_kind(map, "noru")
+		_beside(map, next_deer, Vector2(1.5, 0.0))
+		check(map.pick_nearest(), "(setup) grab %d with the skewer" % (n + 2))
+	check(GameState.tools.count("eomuk_kkochi") == 0 and GameState.tools.equipped().is_empty() and map.tool_hud.line_text() == "손 Hands", "at 0 uses the skewer breaks: gone from the belt, Hands in hand")
+	check("어묵꼬치 broke!" in _float_texts(map), "...with a floating \"어묵꼬치 broke!\"")
+	map.free()
+	# 3. Each class with its tool: a duck from the shore, a crow, two quirks.
+	GameState.new_hike()
+	map = await _animals_map(53)
+	var net: int = GameState.tools.add("tteulchae")
+	GameState.tools.equip(net)
+	duck = _spawn_kind(map, "ori")
+	_beside(map, duck, Vector2(2.8, 0.0))
+	letter = duck.letter
+	hearts = GameState.heart_units.duplicate()
+	check(map.pick_nearest() and _basket_is(map, [letter]) and duck.letter == "" and duck.fled and GameState.heart_units == hearts and GameState.tools.get_tool(net)["uses"] == 4, "a 뜰채 takes a duck's letter from 2.8 m, a use spent")
+	var bug_net: int = GameState.tools.add("jamjarichae")
+	GameState.tools.equip(bug_net)
+	var crow = _spawn_kind(map, "keunburikkamagwi")
+	_beside(map, crow, Vector2(2.5, 1.0))
+	letter = crow.letter
+	check(map.pick_nearest() and map.picking.basket.has(letter) and crow.letter == "" and GameState.tools.get_tool(bug_net)["uses"] == 3 and not map.walker_slot.has(crow), "a 잠자리채 takes a crow's letter (by ground distance), with no slot in the basket's picking")
+	var eagle = _spawn_kind(map, "geomdokseuri")
+	_beside(map, eagle, Vector2(2.0, 0.0))
+	letter = eagle.letter
+	check(map.pick_nearest() and map.picking.basket.has(letter) and eagle.letter == "", "a 잠자리채 takes a 검독수리's letter too...")
+	check(GameState.tools.count("jamjarichae") == 0 and GameState.tools.equipped().is_empty() and "잠자리채 broke!" in _float_texts(map), "...and breaks at once")
+	var tongs: int = GameState.tools.add("jipge")
+	GameState.tools.equip(tongs)
+	var viper = _spawn_kind(map, "bibaribaem")
+	_beside(map, viper, Vector2(1.5, 0.0))
+	check(map.pick_nearest() and GameState.tools.get_tool(tongs)["uses"] == 4, "집게 on a 비바리뱀 spends 2")
+	var stoat = _spawn_kind(map, "jejujokjebi")
+	_beside(map, stoat, Vector2(1.5, 0.0))
+	check(map.pick_nearest() and GameState.tools.get_tool(tongs)["uses"] == 3, "...and 1 on a 제주족제비")
+	var second: int = GameState.tools.add("jipge")
+	check(GameState.tools.get_tool(second)["uses"] == 6 and GameState.tools.get_tool(tongs)["uses"] == 3, "a second 집게 keeps its own 6 uses")
+	# Wrong class: a 우산 does not work on a flyer.
+	var umbrella: int = GameState.tools.add("usan")
+	GameState.tools.equip(umbrella)
+	var other_crow = _spawn_kind(map, "keunburikkamagwi")
+	_beside(map, other_crow, Vector2(1.0, 0.0))
+	check(not map.pick_nearest() and GameState.tools.get_tool(umbrella)["uses"] == 6 and map.tool_hud.note_text() == "우산: ground or small only", "a 우산 on a crow: a note, nothing spent")
+	map.free()
+	# 4. Wind-up: a hit, and a miss that still costs the use.
+	GameState.new_hike()
+	map = await _animals_map(54)
+	var scratcher: int = GameState.tools.add("hyojason")
+	GameState.tools.equip(scratcher)
+	deer = _spawn_kind(map, "noru")
+	_beside(map, deer, Vector2(2.5, 0.0))
+	letter = deer.letter
+	var results: Array = []
+	map.tool_grab_done.connect(func(r: Dictionary) -> void: results.append(r))
+	check(map.pick_nearest() and map.tool_pending.size() > 0 and deer.letter == letter and GameState.tools.get_tool(scratcher)["uses"] == 4, "a 효자손's grab waits for its wind-up: the use is spent, the letter not yet taken")
+	check(not map.pick_nearest() and GameState.tools.get_tool(scratcher)["uses"] == 4, "no second grab while it winds up")
+	map._tick_tool(0.5)
+	check(results.is_empty() and deer.letter == letter, "after 0.5 s it has not landed")
+	map._tick_tool(0.15)
+	check(results.size() == 1 and results[0]["result"] == "hit" and results[0]["letter"] == letter and _basket_is(map, [letter]) and deer.fled and map.tool_pending.is_empty(), "after 0.6 s it lands: a hit, the letter in the basket")
+	var runner = _spawn_kind(map, "noru")
+	_beside(map, runner, Vector2(2.5, 0.0))
+	check(map.pick_nearest() and GameState.tools.get_tool(scratcher)["uses"] == 3, "(setup) a second wind-up")
+	_put(map, map.player, runner.position().x + 12.0, runner.position().y)
+	map._tick_tool(0.7)
+	check(results.size() == 2 and results[1]["result"] == "miss" and runner.letter != "" and GameState.tools.get_tool(scratcher)["uses"] == 3 and not runner.fled, "the animal left the reach during the wind-up: a miss, the use stays spent, the letter stays on it")
+	# A click on an animal in reach fires the tool; out of reach nothing happens.
+	var clicked = _spawn_kind(map, "osori")
+	clicked.advance(10.0)
+	map._pose(clicked)
+	var at: Vector2 = clicked.position()
+	_put(map, map.player, at.x + (-2.0 if at.x > 72.0 else 2.0), at.y)
+	var center: Vector2 = map.camera.unproject_position(map.animal_nodes[clicked].global_position + Vector3(0.0, 0.3, 0.0))
+	check(map.animal_at(center, true) == clicked and map.click(center) and map.tool_pending.size() > 0, "a click on an animal in reach starts the tool grab")
+	map._tick_tool(1.0)
+	check(clicked.letter == "", "...and it lands")
+	map.free()
+	# 5. Gloves.
+	GameState.new_hike()
+	map = await _animals_map(55)
+	var gloves: int = GameState.tools.add("gomu_janggap")
+	GameState.tools.equip(gloves)
+	check(map.equipped_tool_def().is_empty() and not map.equipped_gloves().is_empty(), "(setup) gloves in hand work through bare-hand grabs")
+	deer = _spawn_kind(map, "noru")
+	_beside(map, deer, Vector2(0.4, 0.0))
+	letter = deer.letter
+	hearts = GameState.heart_units.duplicate()
+	map.grab_rng.seed = _roll_seed(0.3, true)
+	check(map.pick_nearest() and _basket_is(map, [letter]) and GameState.heart_units == hearts and GameState.tools.get_tool(gloves)["uses"] == 3 and deer.fled, "gloves: a harmless grab never bites (the dice said bite) and spends a use")
+	var wolf = _spawn_kind(map, "deulgae")
+	_beside(map, wolf)
+	map.grab_rng.seed = _survive_seed()
+	var replay := RandomNumberGenerator.new()
+	replay.seed = _survive_seed()
+	replay.randf()
+	var expected_units := replay.randi_range(1, 4)
+	var result: Dictionary = map.grab_animal(wolf)
+	check(not result.is_empty() and not result["death"] and result["units"] == expected_units and GameState.heart_units["fernanda"] == 10 - expected_units, "gloves on a predator: the normal predator rules apply (%d half-hearts)" % expected_units)
+	check(GameState.tools.count("gomu_janggap") == 0 and GameState.tools.equipped().is_empty() and "고무장갑 shredded!" in _float_texts(map), "...and the gloves are shredded at once")
+	map.free()
+	# 6. R, the panel, rewards, restart.
+	GameState.new_hike()
+	map = await _animals_map(56)
+	var skewer_uid: int = GameState.tools.equipped_uid()
+	var tongs_uid: int = GameState.tools.add("jipge")
+	map._unhandled_input(_key_event(KEY_R))
+	check(GameState.tools.equipped_uid() == tongs_uid and map.tool_hud.line_text() == "집게 ●●●●●●", "R equips the next tool (skewer -> 집게)")
+	map._unhandled_input(_key_event(KEY_R))
+	check(GameState.tools.equipped().is_empty() and map.tool_hud.line_text() == "손 Hands", "R again: Hands")
+	map._unhandled_input(_key_event(KEY_R))
+	check(GameState.tools.equipped_uid() == skewer_uid, "R again: the skewer (the cycle wraps)")
+	map._unhandled_input(_key_event(KEY_R, false))
+	check(GameState.tools.equipped_uid() == skewer_uid, "a release of R does nothing")
+	GameState.damage_units("fernanda", 99, "x")
+	GameState.damage_units("nestor", 99, "x")
+	check(not map.picks_allowed() and map.cycle_tool() == -1 and GameState.tools.equipped_uid() == skewer_uid, "R does nothing once both travelers are down")
+	GameState.new_hike()
+	map.free()
+	map = await _animals_map(57)
+	skewer_uid = GameState.tools.equipped_uid()
+	tongs_uid = GameState.tools.add("jipge")
+	check(map.open_backpack() and map.backpack_hud.row_count() == 3, "the backpack lists the tools after the counted items (수첩, 어묵꼬치, 집게)")
+	var skewer_row := -1
+	var tongs_row := -1
+	for i in map.backpack_hud.row_count():
+		skewer_row = i if map.backpack_hud.row_id(i) == "tool:%d" % skewer_uid else skewer_row
+		tongs_row = i if map.backpack_hud.row_id(i) == "tool:%d" % tongs_uid else tongs_row
+	check(skewer_row >= 0 and tongs_row >= 0 and map.backpack_hud.row_label(skewer_row, "Count").text == "3/3 uses · equipped" and map.backpack_hud.row_label(tongs_row, "Count").text == "6/6 uses", "...each with its uses, the one in hand marked")
+	check(map.backpack_hud.equip_row("tool:%d" % tongs_uid) and GameState.tools.equipped_uid() == tongs_uid and map.tool_hud.line_text() == "집게 ●●●●●●", "the panel equips a tool")
+	check(map.backpack_hud.equip_row("tool:%d" % tongs_uid) and GameState.tools.equipped().is_empty(), "...and the equipped one again puts it away")
+	map.close_backpack()
+	# A restart gives back the scene-start belt.
+	GameState.tools.equip(skewer_uid)
+	GameState.tools.spend(skewer_uid, 2)
+	GameState.restart_scene()
+	check(GameState.tools.count("jipge") == 0 and GameState.tools.get_tool(skewer_uid)["uses"] == 3 and GameState.tools.equipped_uid() == skewer_uid, "Restart scene puts the belt back as the scene began (the skewer whole and in hand)")
+	map.free()
+	# A reload does not hand the kit out twice.
+	map = await _animals_map(58)
+	check(GameState.tools.count("eomuk_kkochi") == 1, "a scene entered again in the same hike does not hand out a second skewer")
+	# Rewards.
+	var e: Dictionary = map.needs.discover("goraeni")
+	map._on_need_discovered(e)
+	map.reward_rng.seed = 77
+	var win_seed := _roll_seed(float(cfg["tool_rewards"]["extinct"]), true)
+	map.tool_rng.seed = win_seed
+	var replay_rng := RandomNumberGenerator.new()
+	replay_rng.seed = win_seed
+	var expected_tool: String = NeedRewardsScript.roll_tool(cfg["tool_rewards"], "extinct", cfg["tool_pickups"]["weights"], replay_rng)
+	var held_before: int = GameState.tools.count(expected_tool)
+	map.spelling.complete_word(e["id"])
+	check(expected_tool != "" and GameState.tools.count(expected_tool) == held_before + 1 and ("+1 " + String(Content.item(expected_tool)["name_ko"])) in _float_texts(map), "meeting a need can drop a tool (%s): into the belt with a floating label" % expected_tool)
+	map.free()
+	AnimalsScript.tools_enabled = false
+	GameState.new_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_tools9c_scene")

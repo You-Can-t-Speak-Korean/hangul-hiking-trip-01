@@ -38,6 +38,9 @@ var notebook_open_handler := Callable()
 
 var _backpack
 var _inventory
+## The tool belt (animal scene only, set_tools): its instances are rows "tool:<uid>" after the
+## counted items; a click or place on one equips it.
+var _tools
 var _config: Dictionary = {}
 var _root: Control
 var _panel: PanelContainer
@@ -139,7 +142,28 @@ func setup(backpack, inventory, config: Dictionary) -> void:
 	refresh()
 
 
+## Lists the belt's tools as rows too (they equip on a click or place key).
+func set_tools(belt) -> void:
+	if _tools != null and _tools.changed.is_connected(refresh):
+		_tools.changed.disconnect(refresh)
+	_tools = belt
+	if _tools != null:
+		_tools.changed.connect(refresh)
+	refresh()
+
+
+## What the rows list: the counted items, then one entry per tool instance.
+func _list_items() -> Array:
+	var items: Array = _inventory.items()
+	if _tools != null:
+		for entry in _tools.tools():
+			items.append({"id": "tool:%d" % int(entry["uid"]), "count": int(entry["uses"])})
+	return items
+
+
 func _exit_tree() -> void:
+	if _tools != null and _tools.changed.is_connected(refresh):
+		_tools.changed.disconnect(refresh)
 	if _inventory != null and _inventory.changed.is_connected(refresh):
 		_inventory.changed.disconnect(refresh)
 	if GameState.hearts_changed.is_connected(_on_hearts_changed):
@@ -155,11 +179,11 @@ func _process(delta: float) -> void:
 ## Shows or hides the panel to match the Backpack, and redraws the rows.
 func refresh() -> void:
 	_root.visible = _backpack.is_open
-	_backpack.sync(_inventory.items())
+	var items: Array = _list_items()
+	_backpack.sync(items)
 	for row in _rows.get_children():
 		_rows.remove_child(row)
 		row.queue_free()
-	var items: Array = _inventory.items()
 	for entry in items:
 		var id := String(entry["id"])
 		if BookLogic.is_note(id):
@@ -278,10 +302,12 @@ func scroll_notebook(direction: int) -> bool:
 ## A movement or place key of either player while the panel is open. True if it
 ## did something (an empty or elixir-free backpack leaves the key alone).
 func _on_key_action(action: String) -> bool:
-	var result: String = _backpack.key(action, _inventory.items())
+	var result: String = _backpack.key(action, _list_items())
 	if result == "":
 		return false
-	if result == "ask":
+	if result == "equip":
+		equip_row(_backpack.selected)
+	elif result == "ask":
 		_ask()
 	elif result == "drink":
 		drink_chosen()
@@ -314,13 +340,29 @@ func _on_hearts_changed(_traveler: String, _units: int) -> void:
 
 func _on_row_input(event: InputEvent, id: String) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		if _backpack.select(id, _inventory.items()):
-			if BackpackLogic.is_notebook(id):
+		if _backpack.select(id, _list_items()):
+			if BackpackLogic.is_tool_row(id):
+				equip_row(id)
+			elif BackpackLogic.is_notebook(id):
 				_backpack.show_notebook(_inventory.items())
 			else:
 				_ask()
 			refresh()
 		get_viewport().set_input_as_handled()
+
+
+## Equips the tool a "tool:<uid>" row shows (equipping the equipped one puts it away: Hands).
+func equip_row(id: String) -> bool:
+	if _tools == null or not BackpackLogic.is_tool_row(id):
+		return false
+	var uid := BackpackLogic.tool_uid(id)
+	var now: bool = _tools.equipped_uid() != uid
+	if not _tools.equip(uid if now else 0):
+		return false
+	var def: Dictionary = Content.item(String(_tools.get_tool(uid)["id"]))
+	_backpack.set_message(("Equipped %s." % def["name_ko"]) if now else "Hands.", float(_config["message_seconds"]))
+	refresh()
+	return true
 
 
 func _on_choice_pressed(index: int) -> void:
@@ -612,7 +654,8 @@ func _update_book(items: Array) -> void:
 
 
 func _make_row(id: String, count: int) -> PanelContainer:
-	var item: Dictionary = Content.item(id)
+	var tool_uid := BackpackLogic.tool_uid(id)
+	var item: Dictionary = Content.item(String(_tools.get_tool(tool_uid)["id"])) if tool_uid > 0 else Content.item(id)
 	var row := PanelContainer.new()
 	row.name = "Row_" + id
 	row.set_meta("item_id", id)
@@ -667,6 +710,8 @@ func _make_row(id: String, count: int) -> PanelContainer:
 	top.add_child(en)
 	var amount := _label("Count", int(_config["count_font_size"]), _color(_config["count_color"]))
 	amount.text = "×%d" % count
+	if tool_uid > 0:  # a tool instance: its uses left, and whether it is the one in hand
+		amount.text = "%d/%d uses%s" % [count, int(item["uses"]), " · equipped" if _tools.equipped_uid() == tool_uid else ""]
 	top.add_child(amount)
 	var description := _label("Description", int(_config["description_font_size"]), _color(_config["muted_text_color"]))
 	description.text = String(item.get("description_en", ""))

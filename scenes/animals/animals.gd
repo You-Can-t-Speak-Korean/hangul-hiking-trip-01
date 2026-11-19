@@ -39,6 +39,10 @@ const ThoughtBubble := preload("res://scenes/animals/thought_bubble.gd")
 const NeedPicture := preload("res://scenes/animals/need_picture.gd")
 const Guide := preload("res://scenes/animals/guide.gd")
 const GuideHud := preload("res://scenes/animals/guide_hud.gd")
+const ToolUse := preload("res://scenes/animals/tool_use.gd")
+const ToolPickups := preload("res://scenes/animals/tool_pickups.gd")
+const ToolPickup := preload("res://scenes/animals/tool_pickup.gd")
+const ToolHud := preload("res://scenes/animals/tool_hud.gd")
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 ## A bare-hand grab hurts (and is made by) the traveler being controlled: Fernanda until she is
@@ -49,12 +53,17 @@ const SALT_GRAB := 2
 const SALT_NEEDS := 3
 const SALT_PICKUPS := 4
 const SALT_REWARDS := 5
+const SALT_TOOLS := 6          # where the tools lie (Prompt 9c)
+const SALT_TOOL_REWARDS := 7   # the tool a met need drops
 
 const GROUND_STEP := 1.0   # metres between ground mesh vertices along x
 
 ## Set by tests (and nothing else) before a scene is built: >= 0 fixes the crossing seed
 ## (a --seed=N user argument does the same when this is -1).
 static var seed_override := -1
+## Set by tests only: false leaves the tools out of the scene (no starting skewer, no tool
+## pickups, no tool rewards), as before Prompt 9c.
+static var tools_enabled := true
 
 var config: Dictionary = {}
 var stage_width := 0.0
@@ -109,6 +118,12 @@ var bubbles: Dictionary = {}
 var guide
 var guide_hud: CanvasLayer
 var float_label_config: Dictionary = {}
+## Prompt 9c. The tool HUD (bottom left), the roll of the tool a met need drops, the tool grab
+## in its wind-up ({} when none: {walker, left, def}) and how the last one ended.
+var tool_hud: CanvasLayer
+var tool_rng := RandomNumberGenerator.new()
+var tool_pending: Dictionary = {}
+var last_tool_result: Dictionary = {}
 ## Prompt 9b-iv. Downed travelers and reviving them (shared with foraging): the logic, how it
 ## is drawn, and rules.json `revive`.
 var revive
@@ -126,6 +141,8 @@ signal restarted
 signal needs_complete
 ## A need joined the discovery list (its id).
 signal need_discovered(id: String)
+## A tool grab ended: {"result": "hit" | "miss", "letter"}.
+signal tool_grab_done(result: Dictionary)
 
 var _aim_height := 0.0
 var _beat_left := -1.0
@@ -157,6 +174,7 @@ func _ready() -> void:
 	camera.rotation_degrees = Vector3(-float(cam["pitch_deg"]), 0.0, 0.0)
 	$WorldEnvironment.environment.background_color = _color(config["backdrop_color"])
 	GameState.begin_scene(String(config["begin_id"]))  # a pending bank for this scene is applied here
+	_give_start_tools()
 	_choose_seed()  # the ground and the props are seeded too
 	_build_ground()
 	_build_lake()
@@ -174,11 +192,15 @@ func _ready() -> void:
 	backpack_hud = BackpackHud.new()
 	add_child(backpack_hud)
 	backpack_hud.setup(backpack, GameState.inventory, ui["backpack_hud"])
+	backpack_hud.set_tools(GameState.tools)
 	backpack_hud.open_handler = open_backpack
 	backpack_hud.notebook_open_handler = open_notebook
 	backpack_hud.close_requested.connect(close_backpack)
 	crossing = Crossing.new(config, crossing_seed)
 	_build_needs(ui)
+	tool_hud = ToolHud.new()
+	add_child(tool_hud)
+	tool_hud.setup(GameState.tools, config["tools"])
 	revive_config = Content.rules["revive"]
 	revive = Revive.new(revive_config)
 	revive_view = ReviveView.new()
@@ -213,6 +235,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event.is_action_pressed("p1_pick"):  # no echo: holding Space grabs once
 		pick_nearest()
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("tool_next"):
+		cycle_tool()
+		get_viewport().set_input_as_handled()
 
 
 ## One tick of the map. Public so tests can drive it without a keyboard. While the pause
@@ -237,6 +262,7 @@ func step(input: Vector2, delta: float) -> void:
 			if not GameState.is_downed(GameState.partner_of(GameState.controlled)):
 				partner.follow(player.global_position, float(config["partner_stop_distance"]), delta)
 		_tick_revive(delta)
+		_tick_tool(delta)
 		for t in travelers.values():
 			_push_out_of_lake(t)
 		_tick_animals(delta)
@@ -341,6 +367,7 @@ func _build_needs(ui: Dictionary) -> void:
 	var review := LetterSupply.need_weights(config["kinds"], config["needs"]["table"], config["letters"]["set"])
 	supply = LetterSupply.new(config["letters"], DecoyPlacement.derive_seed(crossing_seed, SALT_LETTERS), review)
 	reward_rng.seed = DecoyPlacement.derive_seed(crossing_seed, SALT_REWARDS)
+	tool_rng.seed = DecoyPlacement.derive_seed(crossing_seed, SALT_TOOL_REWARDS)
 	float_label_config = ui["decoy_rewards"]["floating_label"]
 	float_label_height = float(ui["word_rewards"]["label_height"])
 	grab_rng.seed = DecoyPlacement.derive_seed(crossing_seed, SALT_GRAB)
@@ -578,6 +605,12 @@ func _reward_need(id: String) -> Array[String]:
 			var at: Vector3 = player.global_position + Vector3(0.0, float_label_height + 0.5 * given.size(), 0.0)
 			FloatLabel.make(self, "+1 %s" % String(Content.item(item_id)["name_ko"]), at, float_label_config)
 			given.append(item_id)
+	if tools_enabled:  # Prompt 9c: one more roll, for a tool (its own rng, so the rolls above are untouched)
+		var tool_id := NeedRewards.roll_tool(config["tool_rewards"], tier, config["tool_pickups"]["weights"], tool_rng)
+		if tool_id != "" and GameState.tools.add(tool_id) > 0:
+			var tool_at: Vector3 = player.global_position + Vector3(0.0, float_label_height + 0.5 * given.size(), 0.0)
+			FloatLabel.make(self, "+1 %s" % String(Content.item(tool_id)["name_ko"]), tool_at, float_label_config)
+			given.append(tool_id)
 	return given
 
 
@@ -596,6 +629,7 @@ func begin_death_beat() -> void:
 		return
 	restarting = true
 	picking.cancel_walk()
+	tool_pending = {}
 	_beat_left = float(gore["death_beat"])
 	_dim = HitFx.make_dim(self)
 
@@ -620,6 +654,9 @@ func tick_beat(delta: float) -> void:
 func click(screen_pos: Vector2) -> bool:
 	if not picks_allowed():
 		return false
+	if not equipped_tool_def().is_empty():  # a tool fires at once at an animal already in reach
+		var target = animal_at(screen_pos, true)
+		return target != null and not grab_with_tool(target).is_empty()
 	var walker = animal_at(screen_pos)
 	if walker != null:
 		return picking.start_walk(walker_slot[walker])
@@ -627,9 +664,10 @@ func click(screen_pos: Vector2) -> bool:
 	return pile >= 0 and picking.start_walk_pile(pile)
 
 
-## The grabbable animal (that still has its letter) under a screen point, or null: the ray
+## The grabbable animal (that still has its letter) under a screen point, or null (with
+## `any_letter`, every animal that still has its letter, flyers and ducks too): the ray
 ## against the animal's box, grown by grab.click_pad_m and up over its letter tile.
-func animal_at(screen_pos: Vector2):
+func animal_at(screen_pos: Vector2, any_letter := false):
 	var origin := camera.project_ray_origin(screen_pos)
 	var direction := camera.project_ray_normal(screen_pos)
 	var pad := float(config["grab"]["click_pad_m"])
@@ -637,7 +675,10 @@ func animal_at(screen_pos: Vector2):
 	var best = null
 	var best_distance := INF
 	for walker in animal_nodes:
-		if not walker_slot.has(walker) or not picking.is_pickable(walker_slot[walker]):
+		if any_letter:  # a tool takes any animal that still carries its letter
+			if walker.letter == "":
+				continue
+		elif not walker_slot.has(walker) or not picking.is_pickable(walker_slot[walker]):
 			continue
 		var size: Array = walker.kind["size"]
 		var half := maxf(float(size[0]), float(size[2])) / 2.0 + pad
@@ -680,6 +721,11 @@ func pick_nearest() -> bool:
 		return false
 	if press_revive() != "none":  # a downed traveler in range comes first
 		return true
+	if not equipped_tool_def().is_empty():  # a tool in hand: a pickup under it first, else the tool grab
+		var near_pile: int = picking.nearest_pile(_flat_of(player))
+		if near_pile >= 0:
+			return not collect_pickup(near_pile).is_empty()
+		return not grab_with_tool().is_empty()
 	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
 	if target["type"] == "pile":
 		return not collect_pickup(int(target["index"])).is_empty()
@@ -708,6 +754,30 @@ func _build_pickups() -> void:
 		var index: int = picking.add_pile(spot, 1)
 		pickup_items[index] = String(entry["item"])
 		pickup_nodes[index] = node
+	if tools_enabled:
+		_build_tool_pickups(starts, placed)
+
+
+## The tools lying on the map (Prompt 9c): the 등산스틱 spot and the seeded rolls, each a
+## node and a pile of the basket's picking like a bottle, apart from the bottles' holder.
+func _build_tool_pickups(starts: Array, bottles: Array[Dictionary]) -> void:
+	var cfg: Dictionary = config["tool_pickups"]
+	var holder := Node3D.new()
+	holder.name = "ToolPickups"
+	add_child(holder)
+	var avoid: Array = []
+	for entry in bottles:
+		avoid.append(entry["spot"])
+	var placed := ToolPickups.place(cfg, DecoyPlacement.derive_seed(crossing_seed, SALT_TOOLS), walk_bounds(), lake_center, lake_radius, float(config["lake"]["clearance_m"]), starts, avoid)
+	for entry in placed:
+		var spot: Vector2 = entry["spot"]
+		var node := ToolPickup.new()
+		node.setup(Content.item(String(entry["item"])), cfg["look"], float(pickup_nodes.size()) * 1.7, bool(entry["pole"]), cfg["pole_spot"])
+		holder.add_child(node)
+		node.global_position = Vector3(spot.x, terrain.height_at(spot.x), spot.y)
+		var index: int = picking.add_pile(spot, 1)
+		pickup_items[index] = String(entry["item"])
+		pickup_nodes[index] = node
 
 
 ## A healing bottle goes into the backpack with a floating "+1 쌍화탕". {} if it is gone or
@@ -720,7 +790,10 @@ func collect_pickup(index: int) -> Dictionary:
 	var item_id: String = pickup_items[index]
 	var node: Node3D = pickup_nodes[index]
 	node.visible = false
-	GameState.inventory.add(item_id)
+	if String(Content.item(item_id).get("kind", "")) == "tool":
+		GameState.tools.add(item_id)
+	else:
+		GameState.inventory.add(item_id)
 	FloatLabel.make(self, "+1 %s" % String(Content.item(item_id)["name_ko"]), node.global_position + Vector3(0.0, float_label_height - 1.0, 0.0), float_label_config)
 	return {"item": item_id}
 
@@ -774,7 +847,18 @@ func grab_animal(walker) -> Dictionary:
 	node.set_letter("")
 	basket_hud.refresh(0.0)
 	_fly_letter(letter, node.global_position + Vector3(0.0, node.tile.position.y, 0.0))
-	var cost := Grab.cost(walker.kind, grab_rng)
+	var cost: Dictionary
+	var glove: Dictionary = equipped_gloves()
+	if glove.is_empty():
+		cost = Grab.cost(walker.kind, grab_rng)
+	else:  # Prompt 9c: gloves on a harmless animal never bite and cost a use; a predator shreds them
+		var through := ToolUse.glove_grab(walker.kind)
+		if through["shredded"]:
+			_lose_tool(glove, "shredded!", true)
+			cost = Grab.cost(walker.kind, grab_rng)
+		else:
+			_lose_tool(glove, "broke!", false)
+			cost = {"units": 0, "death": false, "bite": false}
 	crossing.flee(walker, float(config["grab"]["flee_speed_scale"]))
 	if not cost["bite"]:  # it only ran: the grab cost nothing
 		return {"letter": letter, "units": 0, "death": false, "bite": false}
@@ -815,17 +899,182 @@ func _update_reach(delta: float) -> void:
 	if revive.downed_near(GameState.controlled, _flat_positions()) != "":  # the revive ring takes over
 		_ring.visible = false
 		return
-	var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
-	var walker = slot_walker.get(int(target["index"])) if target["type"] == "plant" else null
-	var bottle = pickup_nodes.get(int(target["index"])) if target["type"] == "pile" else null
+	var walker = null
+	var bottle = null
+	var outer: float = picking.ring_radius()
+	var tool_def := equipped_tool_def()
+	if not tool_def.is_empty():  # a tool in hand: the ring marks the animal it would take, sized by its reach
+		var pile: int = picking.nearest_pile(_flat_of(player))
+		if pile >= 0:
+			bottle = pickup_nodes.get(pile)
+		else:
+			walker = _tool_target(tool_def, _flat_of(player))["walker"]
+			outer = maxf(ToolUse.reach(tool_def, picking.pick_radius) + picking.ring_radius_offset, picking.ring_width)
+	else:
+		var target: Dictionary = picking.nearest_target(Vector2(player.global_position.x, player.global_position.z))
+		walker = slot_walker.get(int(target["index"])) if target["type"] == "plant" else null
+		bottle = pickup_nodes.get(int(target["index"])) if target["type"] == "pile" else null
 	_ring.visible = (walker != null and animal_nodes.has(walker)) or bottle != null
 	if not _ring.visible:
 		return
 	var at: Vector3 = bottle.global_position if bottle != null else animal_nodes[walker].global_position
 	_ring.global_position = at
-	var outer: float = picking.ring_radius()
 	_ring.mesh = ReachRing.mesh(outer, maxf(outer - picking.ring_width, 0.0), at, terrain.height_at)
 	_ring_material.albedo_color.a = picking.ring_alpha_at(_ring_time)
+
+
+# ---- Tools (Prompt 9c) ----
+
+func _flat_of(node: Node3D) -> Vector2:
+	return Vector2(node.global_position.x, node.global_position.z)
+
+
+## At scene start (once per hike): animals.tools.start goes into the belt and the first is
+## equipped; a restart gives them back through the belt's scene-start snapshot.
+func _give_start_tools() -> void:
+	var scene_id := String(config["begin_id"])
+	if not tools_enabled or GameState.kits_given.has(scene_id):
+		return
+	GameState.kits_given[scene_id] = true
+	var first := 0
+	for entry in config["tools"]["start"]:
+		for n in int(entry["count"]):
+			var uid := GameState.tools.add(String(entry["item"]))
+			first = first if first > 0 else uid
+	if first > 0:
+		GameState.tools.equip(first)
+	GameState.snapshot_tools_start()
+
+
+## The definition of the equipped tool that grabs through the map (not Hands, not the gloves,
+## which work through bare-hand grabs); {} otherwise.
+func equipped_tool_def() -> Dictionary:
+	var held: Dictionary = GameState.tools.equipped()
+	if held.is_empty():
+		return {}
+	var def: Dictionary = Content.item(String(held["id"]))
+	return {} if ToolUse.is_gloves(def) else def
+
+
+## The equipped instance if it is the gloves, else {}.
+func equipped_gloves() -> Dictionary:
+	var held: Dictionary = GameState.tools.equipped()
+	if held.is_empty() or not ToolUse.is_gloves(Content.item(String(held["id"]))):
+		return {}
+	return held
+
+
+## R: the next of Hands and the tools in the backpack (not while a menu is up or a traveler is
+## down). Returns the uid now equipped (0 = Hands), or -1 if nothing was done.
+func cycle_tool() -> int:
+	if not picks_allowed():
+		return -1
+	return GameState.tools.cycle()
+
+
+## Takes uses off the instance `held` (all of them if `all`); when none are left it is gone, with a
+## floating "<name> <word>" over the traveler.
+func _lose_tool(held: Dictionary, word: String, all: bool) -> void:
+	_spend_tool(held, int(held["uses"]) if all else 1, word)
+
+
+## Spends `uses` of the instance `held`; one that runs out is removed, with the floating label.
+func _spend_tool(held: Dictionary, uses: int, word: String) -> void:
+	var result: Dictionary = GameState.tools.spend(int(held["uid"]), uses)
+	if not result.is_empty() and result["broke"]:
+		var at: Vector3 = player.global_position + Vector3(0.0, float_label_height, 0.0)
+		FloatLabel.make(self, "%s %s" % [Content.item(String(result["id"]))["name_ko"], word], at, float_label_config)
+
+
+## The animals a tool may take now, as {"walker": the nearest within reach that the tool works
+## on (or null), "wrong": the nearest within reach that it does not work on (or null)}. Only
+## animals that still carry their letter count; `only` limits it to one animal.
+func _tool_target(def: Dictionary, me: Vector2, only = null) -> Dictionary:
+	var reach := ToolUse.reach(def, picking.pick_radius)
+	var best = null
+	var best_distance := INF
+	var wrong = null
+	var wrong_distance := INF
+	for walker in crossing.alive:
+		if walker.letter == "" or not animal_nodes.has(walker) or (only != null and walker != only):
+			continue
+		var distance: float = walker.position().distance_to(me)
+		if distance > reach:
+			continue
+		if ToolUse.works_on(def, walker.kind):
+			if distance < best_distance:
+				best = walker
+				best_distance = distance
+		elif distance < wrong_distance:
+			wrong = walker
+			wrong_distance = distance
+	return {"walker": best, "wrong": wrong}
+
+
+## Space (or a click on an animal in reach) with a tool in hand: takes the letter of the nearest
+## animal within its reach that it works on (`only`: that animal alone). Costs the tool's uses
+## (the quirks of items.json) and never hearts; the animal flees. With a wind-up the grab lands
+## that many seconds later (tool_pending, ticked by the map) and misses if the animal is out of
+## reach by then, the uses spent all the same. On a wrong target the HUD shows a note and nothing
+## is spent. {} if nothing was spent; else {"result": "hit" | "miss" | "windup", "uses", "letter"}.
+func grab_with_tool(only = null) -> Dictionary:
+	var held: Dictionary = GameState.tools.equipped()
+	var def := equipped_tool_def()
+	if def.is_empty() or not picks_allowed() or not tool_pending.is_empty():
+		return {}
+	var found := _tool_target(def, _flat_of(player), only)
+	if found["walker"] == null:
+		if found["wrong"] != null:
+			tool_hud.show_note(ToolUse.wrong_target_note(def))
+		return {}
+	var walker = found["walker"]
+	var uses: int = ToolUse.cost(def, walker.kind, int(held["uses"]))
+	_spend_tool(held, uses, "broke!")
+	tool_pending = {"walker": walker, "left": ToolUse.windup(def), "def": def, "uses": uses}
+	if ToolUse.windup(def) <= 0.0:
+		return _land_tool()
+	return {"result": "windup", "uses": uses, "letter": ""}
+
+
+## The wind-up ticks while the map runs; the grab lands when it is over.
+func _tick_tool(delta: float) -> void:
+	if tool_pending.is_empty():
+		return
+	tool_pending["left"] = float(tool_pending["left"]) - delta
+	if float(tool_pending["left"]) <= 0.0:
+		_land_tool()
+
+
+## The pending tool grab lands: the letter if the animal is still on the map with its letter and
+## within the tool's reach of the traveler, else a miss.
+func _land_tool() -> Dictionary:
+	var pending := tool_pending
+	tool_pending = {}
+	var walker = pending["walker"]
+	var uses: int = int(pending["uses"])
+	var result := {"result": "miss", "uses": uses, "letter": ""}
+	if animal_nodes.has(walker) and walker.letter != "" and ToolUse.in_reach(pending["def"], walker.position().distance_to(_flat_of(player)), picking.pick_radius):
+		result = {"result": "hit", "uses": uses, "letter": _take_letter(walker)}
+		crossing.flee(walker, float(config["grab"]["flee_speed_scale"]))
+	last_tool_result = result
+	tool_grab_done.emit(result)
+	return result
+
+
+## The animal's letter goes into the basket (through its slot if it has one: only the hand-grabbable
+## kinds do), off its tile, and flies to the basket. Returns the letter.
+func _take_letter(walker) -> String:
+	var letter: String = walker.letter
+	if walker_slot.has(walker):
+		picking.pick(walker_slot[walker], true)
+	else:
+		picking.basket.append(letter)
+	var node: Node3D = animal_nodes[walker]
+	walker.letter = ""
+	node.set_letter("")
+	basket_hud.refresh(0.0)
+	_fly_letter(letter, node.global_position + Vector3(0.0, node.tile.position.y, 0.0))
+	return letter
 
 
 # ---- Downed travelers and reviving them (Prompt 9b-iv) ----

@@ -17,6 +17,7 @@ extends Node
 ##   it with the starting kit (rules.json starting_kit: the 수첩).
 
 const InventoryScript := preload("res://scripts/inventory.gd")
+const ToolBeltScript := preload("res://scripts/tool_belt.gd")
 
 ## `units` is the traveler's new total in half-units, not hearts.
 signal hearts_changed(traveler: String, units: int)
@@ -41,6 +42,11 @@ var ddeok: int = 0
 var current_scene: String = ""
 ## Fernanda's backpack. One instance for the whole run (HUDs stay connected to it).
 var inventory := InventoryScript.new()
+## The breakable tools (Prompt 9c), each its own instance; kept and restored with the backpack.
+var tools := ToolBeltScript.new()
+## Scenes whose starting tools were already handed out this hike (scene id -> true), so a
+## Restart scene does not hand them out twice. A new hike clears it.
+var kits_given: Dictionary = {}
 
 ## One-time guide prompts already shown (prompt id -> true). Survives a scene restart; a new
 ## hike clears it.
@@ -50,6 +56,7 @@ var _scene_start_units: Dictionary = {}
 var _scene_start_ddeok: int = 0
 var _scene_start_controlled: String = "fernanda"
 var _scene_start_inventory: Dictionary = {}
+var _scene_start_tools: Dictionary = {}
 ## The bank handed to the next scene: {"units", "ddeok", "inventory", "target"}, or {}.
 ## Stored when a scene ends (store_pending_bank) and applied by the next scene's
 ## begin_scene(), which makes it that scene's start snapshot. Until then the current
@@ -103,6 +110,8 @@ func new_hike(starting_ddeok: int = -1) -> void:
 	else:
 		ddeok = int(Content.rules.get("starting_ddeok_without_save", 0))
 	inventory.clear()
+	tools.clear()
+	kits_given.clear()
 	guide_seen.clear()
 	for entry in Content.starting_kit():  # the 수첩: in every scene-start snapshot, so never lost
 		inventory.add(entry["item"], entry["count"])
@@ -122,13 +131,14 @@ func begin_scene(scene_id: String) -> void:
 	_scene_start_ddeok = ddeok
 	_scene_start_controlled = controlled
 	_scene_start_inventory = inventory.snapshot()
+	_scene_start_tools = tools.snapshot()
 	# Saving goes here later (progress save per scene).
 
 
 ## The current scene is ending: keeps what the travelers carry out, for `target_id`
 ## (the next scene's id). Nothing live changes.
 func store_pending_bank(target_id: String) -> void:
-	pending_bank = {"units": heart_units.duplicate(), "ddeok": ddeok, "inventory": inventory.snapshot(), "target": target_id}
+	pending_bank = {"units": heart_units.duplicate(), "ddeok": ddeok, "inventory": inventory.snapshot(), "tools": tools.snapshot(), "target": target_id}
 
 
 func has_pending_bank() -> bool:
@@ -145,10 +155,18 @@ func _apply_pending_bank() -> void:
 	pending_bank = {}
 	heart_units = bank["units"].duplicate()
 	inventory.restore(bank["inventory"])
+	if bank.has("tools"):
+		tools.restore(bank["tools"])
 	ddeok = int(bank["ddeok"])
 	for t in TRAVELERS:
 		hearts_changed.emit(t, heart_units[t])
 	ddeok_changed.emit(ddeok)
+
+
+## Re-takes the tool part of the scene-start snapshot (a scene that hands out starting tools
+## after begin_scene() calls this, so a restart gives them back).
+func snapshot_tools_start() -> void:
+	_scene_start_tools = tools.snapshot()
 
 
 ## Death → restart the current scene with what they had when it began.
@@ -157,6 +175,7 @@ func restart_scene() -> void:
 	ddeok = _scene_start_ddeok
 	controlled = _scene_start_controlled  # a revive may have handed control to the partner
 	inventory.restore(_scene_start_inventory)
+	tools.restore(_scene_start_tools)
 	for t in TRAVELERS:
 		hearts_changed.emit(t, heart_units[t])
 	ddeok_changed.emit(ddeok)

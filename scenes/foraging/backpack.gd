@@ -3,7 +3,7 @@ extends RefCounted
 ## is selected, who is being asked to drink it, and what a key or Esc does. The map
 ## decides whether it may open (`allowed`) and does the pausing; the HUD draws the
 ## contents of GameState.inventory and this state. Only rows whose item has kind
-## "elixir" or "notebook" can be selected; everything else stays view-only. An
+## "elixir" or "notebook" can be selected (and a tool row, "tool:<uid>", which equips); everything else stays view-only. An
 ## elixir asks who drinks it; the notebook row opens the 수첩 view in the panel
 ## (`notebook_open`). The 수첩 can also be opened straight from the map by a quick
 ## key (`open_notebook_quick`); then the panel is open with the notebook showing
@@ -106,7 +106,17 @@ func escape() -> String:
 
 ## True for an item that can be selected: an elixir or the notebook.
 static func is_selectable(item_id: String) -> bool:
-	return is_elixir(item_id) or is_notebook(item_id)
+	return is_elixir(item_id) or is_notebook(item_id) or is_tool_row(item_id)
+
+
+## A tool instance's row id is "tool:<uid>" (the animal scene's belt rows, Prompt 9c).
+static func is_tool_row(item_id: String) -> bool:
+	return item_id.begins_with("tool:")
+
+
+## The uid of a tool row id, 0 if it is not one.
+static func tool_uid(item_id: String) -> int:
+	return int(item_id.substr(5)) if is_tool_row(item_id) else 0
 
 
 static func is_elixir(item_id: String) -> bool:
@@ -201,7 +211,7 @@ static func action_for(event: InputEvent) -> String:
 ## selectable row ("selected"), then left/up and right/down step between the
 ## selectable rows with wrap ("moved"), and place opens the question ("ask").
 ## In the question: left/up and right/down switch buttons ("moved") and place
-## says "drink". On the notebook row place says "notebook" (open it). "" if nothing
+## says "drink". On the notebook row place says "notebook" (open it), on a tool row "equip". "" if nothing
 ## happened (no selectable rows, or the notebook is showing).
 func key(action: String, items: Array) -> String:
 	if action == "":
@@ -220,6 +230,8 @@ func key(action: String, items: Array) -> String:
 		select(ids[0], items)
 		return "selected"
 	if action == "place":
+		if is_tool_row(selected):
+			return "equip"
 		return "notebook" if is_notebook(selected) else "ask"
 	var at := ids.find(selected)
 	select(ids[posmod(at + (1 if action in ["right", "down"] else -1), ids.size())], items)

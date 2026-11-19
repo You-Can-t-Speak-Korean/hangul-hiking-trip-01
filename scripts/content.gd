@@ -9,7 +9,9 @@ const MOUNTAIN_DIR := "res://data/mountains/"
 const NOTES_DIR := "res://data/notes/"
 const NOTE_WRITERS_PATH := "res://data/series/note_writers.json"
 const NOTEBOOK_PATH := "res://data/series/notebook.json"
-const ITEM_KINDS: Array[String] = ["elixir", "charm", "hint", "note", "currency", "plant", "notebook"]
+## The animal classes a tool can target (animals.kinds[].class).
+const TOOL_CLASSES: Array[String] = ["ground", "small", "flyer", "water"]
+const ITEM_KINDS: Array[String] = ["elixir", "charm", "hint", "note", "currency", "plant", "notebook", "tool"]
 
 var curriculum: Dictionary = {}
 var rules: Dictionary = {}
@@ -116,8 +118,32 @@ static func item_problem(entry: Variant, known: Dictionary) -> String:
 		return "Item '%s' has unknown kind '%s' (want one of %s)" % [id, kind, ITEM_KINDS]
 	if kind == "elixir" and int(entry.get("heal_units", 0)) < 1:
 		return "Elixir '%s' needs heal_units of at least 1" % id
+	if kind == "tool":
+		var tool_issue := _tool_problem(entry)
+		if tool_issue != "":
+			return tool_issue
 	if entry.has("icon") and (not entry["icon"] is String or entry["icon"] == ""):
 		return "Item '%s' has an icon that is not a name" % id
+	return ""
+
+
+## Why a kind "tool" entry is wrong, or "": whole uses of at least 1, a reach of 0 or more
+## (0 = bare-hand reach), at least one target class (ground, small, flyer or water) and a
+## wind-up of 0 or more.
+static func _tool_problem(entry: Dictionary) -> String:
+	var id := String(entry["id"])
+	if not entry.get("uses") is float and not entry.get("uses") is int or int(entry["uses"]) < 1:
+		return "Tool '%s' needs uses of at least 1" % id
+	if not entry.get("reach_m") is float and not entry.get("reach_m") is int or float(entry["reach_m"]) < 0.0:
+		return "Tool '%s' needs a reach_m of 0 or more" % id
+	if float(entry.get("windup_s", 0.0)) < 0.0:
+		return "Tool '%s' has a negative windup_s" % id
+	var targets: Variant = entry.get("targets")
+	if not targets is Array or (targets as Array).is_empty():
+		return "Tool '%s' needs targets" % id
+	for target in targets:
+		if not TOOL_CLASSES.has(String(target)):
+			return "Tool '%s' has unknown target class '%s'" % [id, str(target)]
 	return ""
 
 
