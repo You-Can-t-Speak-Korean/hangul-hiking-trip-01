@@ -17,6 +17,7 @@ var radius_m := 1.2
 var channel_s := 1.5
 var bleed_out_s := 0.0
 var note_s := 2.0
+var leave_note_format := "Revive %s before you leave."
 
 ## The downed traveler being revived ("" = none) and who is doing it.
 var target := ""
@@ -36,6 +37,34 @@ func _init(config: Dictionary = {}) -> void:
 	channel_s = float(config.get("channel_s", channel_s))
 	bleed_out_s = float(config.get("bleed_out_s", bleed_out_s))
 	note_s = float(config.get("note_s", note_s))
+	leave_note_format = String(config.get("leave_note", leave_note_format))
+
+
+## The exit gate (both scenes): scene exits may not fire while any traveler is downed.
+static func can_leave() -> bool:
+	for id in GameState.TRAVELERS:
+		if GameState.is_downed(id):
+			return false
+	return true
+
+
+## The first downed traveler's id ("" if nobody is downed).
+static func first_downed() -> String:
+	for id in GameState.TRAVELERS:
+		if GameState.is_downed(id):
+			return id
+	return ""
+
+
+## An exit was tried: if someone is downed, shows "Revive Nestor before you leave." for note_s
+## seconds and returns true (the exit must not fire); false if the way is clear.
+func block_leave() -> bool:
+	var id := first_downed()
+	if id == "":
+		return false
+	note = leave_note_format % id.capitalize()
+	note_left = note_s
+	return true
 
 
 ## The healing items in the order they are used (items.json order), by id.

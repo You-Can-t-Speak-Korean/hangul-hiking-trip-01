@@ -76,6 +76,13 @@ func shown_seconds() -> int:
 	return ceili(left - 0.0005) if running else 0  # (a hair of float error must not show 31)
 
 
+## Of two clocks, the one the HUD shows: the running one with less time left (`a` if neither runs).
+static func soonest(a, b):
+	if a.running and b.running:
+		return b if b.left < a.left else a
+	return b if b.running and not a.running else a
+
+
 ## Vignette opacity: `strength` at the end, growing as fraction^growth.
 static func vignette_alpha(fraction_done: float, strength: float, growth: float) -> float:
 	return strength * pow(clampf(fraction_done, 0.0, 1.0), growth)

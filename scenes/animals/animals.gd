@@ -35,6 +35,10 @@ const HealPickup := preload("res://scenes/animals/heal_pickup.gd")
 const FloatLabel := preload("res://scenes/foraging/float_label.gd")
 const Revive := preload("res://scenes/foraging/revive.gd")
 const ReviveView := preload("res://scenes/foraging/revive_view.gd")
+const Bear := preload("res://scenes/animals/bear.gd")
+const CountdownMusic := preload("res://scenes/foraging/countdown_music.gd")
+const DownedCountdown := preload("res://scenes/foraging/downed_countdown.gd")
+const StuckHud := preload("res://scenes/foraging/stuck_hud.gd")
 const ThoughtBubble := preload("res://scenes/animals/thought_bubble.gd")
 const NeedPicture := preload("res://scenes/animals/need_picture.gd")
 const Guide := preload("res://scenes/animals/guide.gd")
@@ -43,6 +47,8 @@ const ToolUse := preload("res://scenes/animals/tool_use.gd")
 const ToolPickups := preload("res://scenes/animals/tool_pickups.gd")
 const ToolPickup := preload("res://scenes/animals/tool_pickup.gd")
 const ToolHud := preload("res://scenes/animals/tool_hud.gd")
+const HintLetters := preload("res://scenes/animals/hint_letters.gd")
+const HintLetterHud := preload("res://scenes/animals/hint_letter_hud.gd")
 const FONT := preload("res://art/fonts/NotoSansKR-VariableFont_wght.ttf")
 
 ## A bare-hand grab hurts (and is made by) the traveler being controlled: Fernanda until she is
@@ -64,6 +70,9 @@ static var seed_override := -1
 ## Set by tests only: false leaves the tools out of the scene (no starting skewer, no tool
 ## pickups, no tool rewards), as before Prompt 9c.
 static var tools_enabled := true
+## Set by tests only: false stops the hint letters from ever opening (the clock never runs), as
+## before Prompt 9c-iii; the long-running older sections would otherwise be paused by one.
+static var hints_enabled := true
 
 var config: Dictionary = {}
 var stage_width := 0.0
@@ -118,6 +127,11 @@ var bubbles: Dictionary = {}
 var guide
 var guide_hud: CanvasLayer
 var float_label_config: Dictionary = {}
+## Prompt 9c-iii. The hint letters: the idle clock and the picks (a HintLetters), how a letter is
+## drawn (a HintLetterHud), and the foraging ending config the paper floats in with.
+var hint
+var hint_hud: CanvasLayer
+var hint_ending: Dictionary = {}
 ## Prompt 9c. The tool HUD (bottom left), the roll of the tool a met need drops, the tool grab
 ## in its wind-up ({} when none: {walker, left, def}) and how the last one ended.
 var tool_hud: CanvasLayer
@@ -129,7 +143,15 @@ var last_tool_result: Dictionary = {}
 var revive
 var revive_view: Node3D
 var revive_config: Dictionary = {}
+## Prompt 9c-ii. The downed countdown (a DownedCountdown, shown by the foraging stuck HUD and
+## its music), the giant bear it sends at 0, and `hunt_lock`: set from the countdown's last
+## second until the death beat, when inputs are locked (`restarting`) but the animals go on.
+var downed_countdown
+var stuck_hud: CanvasLayer
+var bear: Node3D
+var hunt_lock := false
 var float_label_height := 2.3
+var _music: Node  # CountdownMusic
 var _bubble_layer: CanvasLayer
 var _pickup_time := 0.0
 ## From the moment both travelers die until the scene restarts: no grabs, walks or menus.
@@ -207,6 +229,16 @@ func _ready() -> void:
 	add_child(revive_view)
 	revive_view.setup(revive_config)
 	GameState.traveler_downed.connect(_on_traveler_downed)
+	_music = CountdownMusic.new()
+	add_child(_music)
+	_music.setup(ui["stuck_music"])
+	downed_countdown = DownedCountdown.new(revive_config, ui["stuck"])
+	stuck_hud = StuckHud.new()
+	add_child(stuck_hud)
+	stuck_hud.setup(ui["stuck"])
+	bear = Bear.new()
+	add_child(bear)
+	bear.setup(config["bear"], view_rect, terrain.height_at, float(cam["pitch_deg"]))
 	_sync_downed()  # the hearts may already hold a downed traveler (a pending bank)
 	update_camera(0.0, true)
 
@@ -214,7 +246,7 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	if GameState.traveler_downed.is_connected(_on_traveler_downed):
 		GameState.traveler_downed.disconnect(_on_traveler_downed)
-	if (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open) or (spelling_hud != null and spelling_hud.is_open()):  # never leave the tree paused behind
+	if (pause_menu != null and pause_menu.is_open) or (backpack != null and backpack.is_open) or (spelling_hud != null and spelling_hud.is_open()) or (hint_hud != null and hint_hud.is_open()):  # never leave the tree paused behind
 		get_tree().paused = false
 
 
@@ -254,7 +286,8 @@ func step(input: Vector2, delta: float) -> void:
 		picking.cancel_walk()  # the keys take over
 	elif picking.is_walking():
 		walk = _walk_step(delta)
-	var running: bool = not restarting and not pause_menu.is_open and not backpack.is_open
+	var menus_closed: bool = not pause_menu.is_open and not backpack.is_open and not hint_hud.is_open()
+	var running: bool = not restarting and menus_closed
 	if running:
 		if not discovery_hud.word_select.is_open():
 			if not GameState.is_downed(GameState.controlled):
@@ -265,8 +298,10 @@ func step(input: Vector2, delta: float) -> void:
 		_tick_tool(delta)
 		for t in travelers.values():
 			_push_out_of_lake(t)
+	if menus_closed and (not restarting or hunt_lock):  # the animals go on while the bear runs
 		_tick_animals(delta)
 		_watch_animals(delta)
+	_tick_downed(delta)
 	_sync_downed()
 	update_camera(delta)
 	props.set_travelers(player.global_position, partner.global_position, float(config["camera"]["pitch_deg"]))
@@ -275,6 +310,7 @@ func step(input: Vector2, delta: float) -> void:
 	needs.update(delta)
 	_update_bubbles(delta)
 	_update_guide(delta)
+	_update_hint(delta)
 	_update_pickups(delta)
 	discovery_hud.set_header(needs.counter_text())
 	discovery_hud.refresh()
@@ -416,13 +452,19 @@ func _build_needs(ui: Dictionary) -> void:
 	guide_hud = GuideHud.new()
 	add_child(guide_hud)
 	guide_hud.setup(guide, config["guide"])
+	hint = HintLetters.new(config["hint_letters"])
+	hint_ending = ui["ending"]
+	hint_hud = HintLetterHud.new()
+	add_child(hint_hud)
+	hint_hud.setup(config["hint_letters"], hint_ending, self)
+	hint_hud.closed.connect(_on_hint_closed)
 	_build_pickups()
 
 
 ## False while restarting, while a menu or the backpack is open, or when the traveler being
 ## controlled is downed (a downed one cannot pick, grab, spell or open the backpack).
 func picks_allowed() -> bool:
-	if restarting or pause_menu.is_open or backpack.is_open:
+	if restarting or pause_menu.is_open or backpack.is_open or hint_hud.is_open():
 		return false
 	return not GameState.is_downed(GameState.controlled)
 
@@ -536,7 +578,7 @@ func open_spelling(id: String) -> bool:
 	discovery_hud.close_word_select()  # a click or a confirm both end keyboard selection
 	if needs.is_item(id):
 		return give_item(id)
-	if spelling_hud.is_open() or not spelling.open(id, picks_allowed()):
+	if spelling_hud.is_open() or hint_hud.is_open() or not spelling.open(id, picks_allowed()):
 		return false
 	picking.cancel_walk()
 	basket_hud.refresh(basket_hud.POP_TIME)  # tiles still popping in finish, as the map stops
@@ -628,6 +670,8 @@ func begin_death_beat() -> void:
 	if _dim != null:
 		return
 	restarting = true
+	hunt_lock = false
+	_abandon_downed()
 	picking.cancel_walk()
 	tool_pending = {}
 	_beat_left = float(gore["death_beat"])
@@ -838,10 +882,12 @@ func _walk_step(delta: float) -> Vector2:
 func grab_animal(walker) -> Dictionary:
 	if not picks_allowed() or not Grab.by_hand(walker.kind) or not walker_slot.has(walker) or not animal_nodes.has(walker):
 		return {}
+	var missing_before: Dictionary = needs.missing_letters(spelling, picking.basket)  # as it was before the letter joins the basket
 	var result: Dictionary = picking.pick(walker_slot[walker], true)
 	if result["result"] == "none":
 		return {}
 	var letter := String(result["letter"])
+	hint.note_grab(letter, missing_before)
 	var node: Node3D = animal_nodes[walker]
 	walker.letter = ""
 	node.set_letter("")
@@ -921,6 +967,65 @@ func _update_reach(delta: float) -> void:
 	_ring.global_position = at
 	_ring.mesh = ReachRing.mesh(outer, maxf(outer - picking.ring_width, 0.0), at, terrain.height_at)
 	_ring_material.albedo_color.a = picking.ring_alpha_at(_ring_time)
+
+
+# ---- Hint letters (Prompt 9c-iii) ----
+
+## True while the scene is really playing: not paused, no menu, backpack, spelling view or
+## letter open, not in the death beat or a monster run. The hint clock only runs then.
+func _hint_playing() -> bool:
+	return not get_tree().paused and not restarting and _dim == null and not pause_menu.is_open \
+			and not backpack.is_open and not spelling_hud.is_open() and not discovery_hud.word_select.is_open() \
+			and not hint_hud.is_open()
+
+
+## True if a due letter may open now: the scene is playing and no guide prompt is up or waiting.
+func _hint_clear() -> bool:
+	return _hint_playing() and guide.current == "" and guide.queued().is_empty()
+
+
+## Ticks the hint clock (a finished syllable restarts it) and opens the letter when it is due
+## and the way is clear. A due clock with no letter left to give is simply restarted.
+func _update_hint(delta: float) -> void:
+	var solved := 0
+	for entry in needs.entries:
+		var word_id := String(entry["id"])
+		if entry["kind"] == Needs.WORD and spelling.has_word(word_id):
+			solved += spelling.solved(word_id).size()
+	hint.note_solved(solved)
+	if hint_hud.is_open() or not hints_enabled:
+		return
+	hint.tick(delta, _hint_playing())
+	if not hint.due():
+		return
+	var id: String = hint.next_id(needs.entries, spelling)
+	if id == "":
+		hint.reset()
+	elif _hint_clear():
+		open_hint(id)
+
+
+## Floats the letter of the word need `id` in and pauses the scene. False if one is on screen
+## or the need has no letter. The need has had its letter from now on, and the clock restarts.
+func open_hint(id: String) -> bool:
+	if hint_hud.is_open() or hint.letter_of(id).is_empty():
+		return false
+	hint.mark_given(id)
+	hint.reset()
+	picking.cancel_walk()
+	var paper: Dictionary = hint_ending["note"]
+	var centre := ground_hit(get_viewport().get_visible_rect().size / 2.0)
+	var to := Vector3(centre.x, terrain.height_at(centre.x), centre.y)
+	var from := to
+	from.x = maxf(camera.global_position.x + camera_half_width() + float(paper["start_margin"]), to.x + float(paper["start_margin"]))
+	from.y += float(paper["start_height"])
+	hint_hud.open(id, hint.letter_of(id), hint.format_of(id), from, to)
+	get_tree().paused = true
+	return true
+
+
+func _on_hint_closed() -> void:
+	get_tree().paused = false
 
 
 # ---- Tools (Prompt 9c) ----
@@ -1065,6 +1170,7 @@ func _land_tool() -> Dictionary:
 ## kinds do), off its tile, and flies to the basket. Returns the letter.
 func _take_letter(walker) -> String:
 	var letter: String = walker.letter
+	hint.note_grab(letter, needs.missing_letters(spelling, picking.basket))
 	if walker_slot.has(walker):
 		picking.pick(walker_slot[walker], true)
 	else:
@@ -1128,12 +1234,90 @@ func _tick_revive(delta: float) -> void:
 				begin_death_beat()
 
 
+# ---- The downed countdown and the bear (Prompt 9c-ii) ----
+
+## True if the scene may be left: nobody is downed. The animal scene's exit (9e) asks this (or
+## try_leave()) before it fires.
+func can_leave() -> bool:
+	return Revive.can_leave()
+
+
+## An exit was reached: false (and the "Revive Nestor before you leave." note shows) while
+## anyone is downed; true if the way is clear.
+func try_leave() -> bool:
+	return not revive.block_leave()
+
+
+## One tick of the downed countdown, its music and HUD, and the bear.
+func _tick_downed(delta: float) -> void:
+	downed_countdown.clock.paused = pause_menu.is_open or backpack.is_open or spelling_hud.is_open() or hint_hud.is_open()
+	match downed_countdown.update(not restarting and _dim == null and not bear.is_active()):
+		"started":
+			_music.start()
+		"cancelled":
+			_music.stop()
+	if downed_countdown.clock.tick(delta) and not GameState.all_downed():
+		send_bear()
+	elif downed_countdown.clock.is_locked() and not restarting:  # the last seconds: no more inputs
+		restarting = true
+		hunt_lock = true
+		picking.cancel_walk()
+		tool_pending = {}
+	_tick_bear(delta)
+	stuck_hud.refresh(downed_countdown.clock, spelling_hud.is_open())
+
+
+## Sends the giant bear for the traveler still standing (the controlled one if both stand).
+## Inputs lock; the animals go on. False if it is on its way already, the scene is dying or
+## nobody stands. 9e calls this too when the scene timer runs out.
+func send_bear() -> bool:
+	var who := DownedCountdown.standing()
+	if who == "" and not GameState.all_downed():
+		who = GameState.controlled
+	if who == "" or bear.is_active() or _dim != null:
+		return false
+	restarting = true
+	hunt_lock = true
+	picking.cancel_walk()
+	tool_pending = {}
+	_abandon_downed()
+	return bear.hunt(travelers[who])
+
+
+func _tick_bear(delta: float) -> void:
+	for event in bear.tick(delta):
+		match event:
+			"kill":
+				_bear_kill()
+			"done":
+				begin_death_beat()
+
+
+## The bear reaches its target: a big blood burst and a red flash, every heart gone. If someone
+## still stands (a revive in the last seconds saved nobody), it goes for them next.
+func _bear_kill() -> void:
+	var id := String(travelers.find_key(bear.target))
+	HitFx.hit(self, travelers[id], gore, bear.burst_strength, float(gore["tint_duration"]) * 2.0)
+	GameState.damage_units(id, GameState.max_units(), "bear")
+	for other in GameState.TRAVELERS:
+		if not GameState.is_downed(other):
+			bear.hunt(travelers[other], true)
+			return
+
+
+## No countdown, no vignette, no music.
+func _abandon_downed() -> void:
+	downed_countdown.clock.abandon()
+	_music.stop()
+	stuck_hud.refresh(downed_countdown.clock, false)
+
+
 # ---- Menus (the foraging scene's, with the same keys) ----
 
 ## Esc: opens the pause menu and pauses the map. False while the backpack is open or the
 ## menu is open already.
 func open_pause_menu() -> bool:
-	if backpack.is_open or restarting or spelling_hud.is_open() or discovery_hud.word_select.is_open() or not pause_menu.open(true):
+	if backpack.is_open or restarting or spelling_hud.is_open() or hint_hud.is_open() or discovery_hud.word_select.is_open() or not pause_menu.open(true):
 		return false
 	pause_hud.refresh()
 	get_tree().paused = true
@@ -1159,7 +1343,7 @@ func open_notebook(action: String) -> bool:
 
 
 func _panel_allowed() -> bool:
-	return not GameState.is_downed(GameState.controlled) and not pause_menu.is_open and pause_menu.restart_requests == 0 and not restarting and not spelling_hud.is_open() and not discovery_hud.word_select.is_open()
+	return not GameState.is_downed(GameState.controlled) and not pause_menu.is_open and pause_menu.restart_requests == 0 and not restarting and not spelling_hud.is_open() and not hint_hud.is_open() and not discovery_hud.word_select.is_open()
 
 
 func _pause_for_panel() -> void:
@@ -1188,6 +1372,7 @@ func _on_pause_chosen(result: String) -> void:
 ## the scene is reloaded. (A scene that is not the current one, as in the tests, only
 ## restores GameState and announces `restarted`.)
 func _restart() -> void:
+	_abandon_downed()
 	GameState.restart_scene()
 	backpack.reset()
 	backpack_hud.refresh()

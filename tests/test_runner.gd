@@ -162,11 +162,15 @@ const EXPECTED_SECTIONS: Array[String] = [
 	"test_tools9c_data",
 	"test_tools9c_logic",
 	"test_tools9c_scene",
+	"test_downed9cii_logic",
+	"test_downed9cii_scene",
+	"test_hint9ciii_logic",
+	"test_hint9ciii_scene",
 ]
 
 ## The run fails if fewer checks than this ran. After adding tests, raise it to
 ## the printed total minus a small margin (currently 6).
-const MIN_CHECKS := 4062
+const MIN_CHECKS := 4262
 
 
 func check(condition: bool, label: String) -> void:
@@ -187,6 +191,7 @@ func _ready() -> void:
 	# layout. The 7d sections switch it off and build maps with pinned seeds.
 	Foraging.legacy_layout = true
 	AnimalsScript.tools_enabled = false  # the animal sections before Prompt 9c expect no tools in the scene; the 9c section turns them on
+	AnimalsScript.hints_enabled = false  # nor a hint letter pausing a long run; the 9c-iii section turns them on
 	print("== Hangul engine ==")
 	test_compose()
 	print("== Curriculum ==")
@@ -377,6 +382,12 @@ func _ready() -> void:
 	test_tools9c_data()
 	test_tools9c_logic()
 	await test_tools9c_scene()
+	print("== Downed countdown, no leaving, the monsters (Prompt 9c-ii) ==")
+	test_downed9cii_logic()
+	await test_downed9cii_scene()
+	print("== Hint letters (Prompt 9c-iii) ==")
+	test_hint9ciii_logic()
+	await test_hint9ciii_scene()
 	for section in EXPECTED_SECTIONS:
 		if not finished.has(section):
 			check(false, "section did not run to its end: " + section)
@@ -13501,3 +13512,794 @@ func test_tools9c_scene() -> void:
 	get_window().size = window_before
 	await get_tree().process_frame
 	_section_done("test_tools9c_scene")
+
+
+# ---- No leaving while downed, the downed countdown and its monster (Prompt 9c-ii) ----
+
+const BearScript := preload("res://scenes/animals/bear.gd")
+const DownedCountdownScript := preload("res://scenes/foraging/downed_countdown.gd")
+
+
+func test_downed9cii_logic() -> void:
+	var revive_cfg: Dictionary = Content.rules["revive"]
+	var stuck_cfg: Dictionary = Content.mountain("hallasan")["foraging"]["stuck"]
+	var bear_cfg: Dictionary = Content.mountain("hallasan")["animals"]["bear"]
+	check(float(revive_cfg["downed_countdown_s"]) == 90.0 and String(revive_cfg["leave_note"]) == "Revive %s before you leave." and float(revive_cfg["bleed_out_s"]) == 0.0, "data: downed_countdown_s 90, the leave note, bleed_out_s still off")
+	var size: Array = bear_cfg["size"]
+	check(absf(float(size[1]) / 1.7 - 2.5) < 0.01 and float(bear_cfg["speed_mps"]) > 0.0 and float(bear_cfg["entry_offscreen_m"]) > 0.0 and float(bear_cfg["kill_beat_s"]) > 0.0 and (bear_cfg["color"] as Array).size() == 3, "data: animals.bear (size 2.5x a traveler, speed, entry offset, kill beat, colour)")
+
+	# The exit gate.
+	GameState.new_hike()
+	check(ReviveScript.can_leave() and ReviveScript.first_downed() == "", "can_leave() is true with nobody downed")
+	var revive = ReviveScript.new(revive_cfg)
+	check(not revive.block_leave() and revive.note == "", "...the exit is not blocked and no note shows")
+	GameState.damage_units("nestor", 99, "x")
+	check(not ReviveScript.can_leave(), "can_leave() is false with Nestor downed")
+	check(revive.block_leave() and revive.note == "Revive Nestor before you leave." and revive.note_left == 2.0, "...the exit is blocked with a 2 s note naming him")
+	revive.tick(2.1, "fernanda", {})
+	check(revive.note == "", "...and the note goes after 2 s")
+	GameState.revive("nestor", 2)
+	check(ReviveScript.can_leave(), "can_leave() is true again after the revive")
+	GameState.damage_units("fernanda", 99, "x")
+	check(not ReviveScript.can_leave() and revive.block_leave() and revive.note == "Revive Fernanda before you leave.", "can_leave() is false with Fernanda downed: the note names her")
+	GameState.damage_units("nestor", 99, "x")
+	check(not ReviveScript.can_leave(), "...and with both downed")
+
+	# The downed countdown.
+	GameState.new_hike()
+	var dc = DownedCountdownScript.new(revive_cfg, stuck_cfg)
+	check(dc.update() == "" and not dc.clock.running and DownedCountdownScript.standing() == "", "nobody downed: no countdown")
+	GameState.damage_units("fernanda", 99, "x")
+	check(dc.update() == "started" and dc.clock.running and dc.clock.left == 90.0 and DownedCountdownScript.standing() == "nestor", "Fernanda goes down: a 90 s countdown starts")
+	check(dc.update() == "" and dc.clock.starts == 1, "...it starts once")
+	dc.clock.tick(30.0)
+	check(is_equal_approx(dc.clock.left, 60.0), "...and runs down")
+	GameState.revive("fernanda", 2)
+	check(dc.update() == "cancelled" and not dc.clock.running, "a revive cancels it")
+	GameState.damage_units("nestor", 99, "x")
+	check(dc.update() == "started" and dc.clock.left == 90.0 and DownedCountdownScript.standing() == "fernanda" and dc.clock.starts == 2, "going down again starts a fresh 90 s")
+	dc.clock.tick(89.2)
+	var lockout := float(stuck_cfg["lockout_seconds"])
+	check(dc.clock.is_locked() and dc.clock.left <= lockout, "in the last lockout seconds the clock is locked (%.2f s left)" % dc.clock.left)
+	dc.clock.tick(0.3)
+	GameState.revive("nestor", 2)
+	check(dc.clock.is_locked() and dc.update() == "" and dc.clock.running, "a revive in the last %.1f s does not cancel it" % lockout)
+	check(dc.clock.tick(5.0) and not dc.clock.running and not dc.clock.tick(5.0), "...it reaches 0 and fires once")
+	GameState.new_hike()
+	dc = DownedCountdownScript.new(revive_cfg, stuck_cfg)
+	GameState.damage_units("nestor", 99, "x")
+	dc.update()
+	GameState.damage_units("fernanda", 99, "x")
+	check(dc.update() == "cancelled" and not dc.clock.running and DownedCountdownScript.standing() == "", "the second traveler down during the countdown ends it (the scene's death beat takes over)")
+	GameState.new_hike()
+	dc = DownedCountdownScript.new(revive_cfg, stuck_cfg)
+	GameState.damage_units("nestor", 99, "x")
+	dc.update(false)
+	check(not dc.clock.running, "no run starts while the scene is dying")
+
+	# Two clocks on the HUD.
+	var a = CountdownScript.new({"countdown_seconds": 40.0, "lockout_seconds": 1.0})
+	var b = CountdownScript.new({"countdown_seconds": 90.0, "lockout_seconds": 1.0})
+	check(CountdownScript.soonest(a, b) == a, "no clock runs: the first is shown (and hidden)")
+	b.verdict(true)
+	check(CountdownScript.soonest(a, b) == b, "only the second runs: it is shown")
+	a.verdict(true)
+	check(CountdownScript.soonest(a, b) == a, "both run, the first has less left (40 < 90): the first is shown")
+	b.left = 10.0
+	check(CountdownScript.soonest(a, b) == b, "...the second has less left (10 < 40): the second is shown")
+	b.left = 40.0
+	check(CountdownScript.soonest(a, b) == a, "...a tie shows the first")
+
+	# The bear, with no scene.
+	var view := Rect2(40.0, 0.0, 30.0, 20.0)
+	var bear: Node3D = BearScript.new()
+	add_child(bear)
+	bear.setup(bear_cfg, func() -> Rect2: return view, func(_x: float) -> float: return 0.0, 28.0)
+	var margin: float = float(bear_cfg["entry_offscreen_m"])
+	var west: Vector3 = bear.entry_point(Vector3(44.0, 0.0, 10.0))
+	var east: Vector3 = bear.entry_point(Vector3(66.0, 0.0, 10.0))
+	var far: Vector3 = bear.entry_point(Vector3(55.0, 0.0, 1.0))
+	var near: Vector3 = bear.entry_point(Vector3(55.0, 0.0, 19.0))
+	check(bear.entry_side(Vector3(44.0, 0.0, 10.0)) == "west" and is_equal_approx(west.x, 40.0 - margin) and west.z == 10.0 and not view.has_point(Vector2(west.x, west.z)), "the bear enters from the west when the traveler is nearest the west edge, outside the footprint")
+	check(bear.entry_side(Vector3(66.0, 0.0, 10.0)) == "east" and is_equal_approx(east.x, 70.0 + margin) and not view.has_point(Vector2(east.x, east.z)), "...from the east when nearest the east edge")
+	check(bear.entry_side(Vector3(55.0, 0.0, 1.0)) == "far" and is_equal_approx(far.z, -margin) and not view.has_point(Vector2(far.x, far.z)), "...from the far edge when nearest it")
+	check(bear.entry_side(Vector3(55.0, 0.0, 19.0)) == "near" and near.z > 20.0 + margin and not view.has_point(Vector2(near.x, near.z)), "...from the near edge when nearest it, farther out by its height over tan(pitch) (%.1f m)" % (near.z - 20.0))
+	var victim := Node3D.new()
+	add_child(victim)
+	victim.global_position = Vector3(55.0, 0.0, 10.0)
+	check(not bear.visible and not bear.is_active(), "the bear is hidden until it hunts")
+	check(bear.hunt(victim) and bear.is_active() and bear.visible and not view.has_point(Vector2(bear.global_position.x, bear.global_position.z)), "hunt(target) puts the bear outside the footprint")
+	check(not bear.hunt(victim), "...a second hunt while it runs is refused")
+	var kills := 0
+	var dones := 0
+	var ticks := 0
+	var start_gap := Vector2(bear.global_position.x - 55.0, bear.global_position.z - 10.0).length()
+	while dones == 0 and ticks < 2000:
+		for event in bear.tick(1.0 / 60.0):
+			kills += 1 if event == "kill" else 0
+			dones += 1 if event == "done" else 0
+		ticks += 1
+	var gap := Vector2(bear.global_position.x - 55.0, bear.global_position.z - 10.0).length()
+	check(kills == 1 and dones == 1 and absf(gap - float(bear_cfg["reach_m"])) < 0.01, "the bear reaches the target (%.2f m away), 'kill' fires once, 'done' once" % gap)
+	check(absf(float(ticks) / 60.0 - ((start_gap - float(bear_cfg["reach_m"])) / float(bear_cfg["speed_mps"]) + float(bear_cfg["kill_beat_s"]))) < 0.1, "...the run takes distance / speed, the kill beat after it (%.2f s)" % (float(ticks) / 60.0))
+	check(bear.tick(1.0).is_empty(), "...and it sends nothing more")
+	var other := Node3D.new()
+	add_child(other)
+	other.global_position = Vector3(60.0, 0.0, 10.0)
+	check(bear.hunt(other, true) and bear.tick(1.0).has("kill") and not bear.tick(1.0).has("kill"), "hunt(other, true) sends it on from where it stands: a second kill, once")
+	bear.free()
+	victim.free()
+	other.free()
+	GameState.new_hike()
+	_section_done("test_downed9cii_logic")
+
+
+func test_downed9cii_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	var bottle: String = ReviveScript.healing_items()[0]
+	# ---- The animal scene ----
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(71)
+	check(map.can_leave() and map.try_leave() and map.revive.note == "", "animals: can_leave() is true with both standing")
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(map.downed_countdown.clock.running and map.stuck_hud._number.visible and map.stuck_hud._number.text == "90" and map._music.playing, "animals: Fernanda goes down: the 90 s countdown shows on the stuck HUD and its music starts")
+	check(not map.can_leave() and not map.try_leave() and map.revive.note == "Revive Fernanda before you leave.", "animals: the exit gate says no and shows the note")
+	map.step(Vector2.ZERO, DT)
+	check(map.revive_view.note_label.visible and map.revive_view.note_label.text == "Revive Fernanda before you leave.", "animals: ...the note is on screen")
+	_run(map, 10.0, 0.25)
+	check(map.downed_countdown.clock.running and map.downed_countdown.clock.left < 81.0 and map.downed_countdown.clock.left > 79.0, "animals: the countdown runs down (%.1f s)" % map.downed_countdown.clock.left)
+	GameState.inventory.add(bottle, 1)
+	_put(map, map.travelers["nestor"], map.travelers["fernanda"].global_position.x + 0.8, map.travelers["fernanda"].global_position.z)
+	map.step(Vector2.ZERO, DT)
+	check(map.pick_nearest() and map.revive.is_channeling(), "animals: Nestor starts the revive")
+	_run(map, 1.6)
+	check(not GameState.is_downed("fernanda") and not map.downed_countdown.clock.running and not map._music.playing and not map.stuck_hud._number.visible, "animals: the revive cancels the countdown and stops the music")
+	check(map.can_leave() and map.try_leave(), "animals: ...and the way is clear again")
+	map.free()
+	get_tree().paused = false
+
+	# Second down during the countdown: the scene ends once.
+	GameState.new_hike()
+	map = await _animals_map(72)
+	var restarts := []
+	map.restarted.connect(func() -> void: restarts.append(1))
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	GameState.damage_units("nestor", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(not map.downed_countdown.clock.running and not map._music.playing and not map.bear.is_active(), "animals: the second traveler down cancels the countdown and sends no bear")
+	map.begin_death_beat()
+	map.begin_death_beat()
+	_run_beat(map, 20.0, 0.25)
+	check(restarts.size() == 1 and not map.bear.is_active(), "animals: the death beat ends the scene once (restarts: %d)" % restarts.size())
+	map.free()
+	get_tree().paused = false
+
+	# The countdown reaches 0: the bear.
+	GameState.new_hike()
+	map = await _animals_map(73)
+	restarts = []
+	map.restarted.connect(func() -> void: restarts.append(1))
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	var nestor_at: Vector3 = map.travelers["nestor"].global_position
+	map.downed_countdown.clock.left = 0.5  # inside the lockout
+	map.step(Vector2.ZERO, DT)
+	check(map.restarting and map.hunt_lock and not map.picks_allowed() and map.downed_countdown.clock.running, "animals: the last second locks the inputs and keeps the countdown")
+	var elapsed_before: float = map.crossing.elapsed
+	map.step(Vector2(1.0, 0.0), DT)
+	check(map.travelers["nestor"].global_position.is_equal_approx(nestor_at) and map.crossing.elapsed > elapsed_before, "animals: nobody walks, the animals go on")
+	map.downed_countdown.clock.left = 0.01
+	var blood_before := _count_named(map, "Blood")
+	map.step(Vector2.ZERO, DT)
+	var view: Rect2 = map.view_rect()
+	var spawn := Vector2(map.bear.global_position.x, map.bear.global_position.z)
+	check(map.bear.is_active() and map.bear.visible and not map._music.playing and not map.downed_countdown.clock.running, "animals: at 0 the bear comes and the countdown and music stop")
+	check(not view.has_point(spawn), "animals: ...it starts outside the camera footprint (%s vs %s)" % [str(spawn), str(view)])
+	check(map.bear.target == map.travelers["nestor"], "animals: ...and it hunts the traveler who stands (Nestor)")
+	elapsed_before = map.crossing.elapsed
+	var steps := 0
+	while map.bear.state == BearScript.State.RUNNING and steps < 3000:
+		map.step(Vector2.ZERO, DT)
+		steps += 1
+	check(map.crossing.elapsed > elapsed_before + 0.5 * float(steps) * DT, "animals: the animals keep moving during the run (%d ticks)" % steps)
+	check(GameState.is_downed("nestor") and GameState.all_downed() and _count_named(map, "Blood") == blood_before + 1, "animals: the bear kills Nestor with one blood burst")
+	check(not map.is_death_beat_playing() and restarts.is_empty(), "animals: ...the death beat has not started yet (the kill beat)")
+	_run_beat(map, 3.0, 0.25)
+	check(restarts.size() == 1 and _count_named(map, "Blood") == blood_before + 1, "animals: then the death beat and the restart run once; no second kill")
+	map.free()
+	get_tree().paused = false
+
+	# A revive in the last second does not save them.
+	GameState.new_hike()
+	map = await _animals_map(74)
+	restarts = []
+	var downs := []
+	var on_down := func(id, _injury): downs.append(id)
+	GameState.traveler_downed.connect(on_down)
+	map.restarted.connect(func() -> void: restarts.append(1))
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	map.downed_countdown.clock.left = 0.9
+	map.step(Vector2.ZERO, DT)
+	GameState.revive("fernanda", 2)
+	map.step(Vector2.ZERO, DT)
+	check(map.downed_countdown.clock.running, "animals: a revive in the lockout does not cancel the countdown")
+	map.downed_countdown.clock.left = 0.01
+	map.step(Vector2.ZERO, DT)
+	_run_beat(map, 20.0, 0.1)
+	GameState.traveler_downed.disconnect(on_down)
+	check(map.bear.state == BearScript.State.DONE and downs.size() == 3 and restarts.size() == 1, "animals: the bear still comes, kills both in turn, and the scene restarts once (downs %s)" % str(downs))
+	map.free()
+	get_tree().paused = false
+
+	# ---- The foraging scene ----
+	map = await _fresh_reach_map()
+	GameState.damage_units("nestor", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(map.downed_countdown.clock.running and map.stuck_hud._number.text == "90" and map.music_playing and map.music_starts == 1, "foraging: Nestor goes down: the 90 s countdown shows on the stuck HUD and the music starts")
+	GameState.revive("nestor", 2)
+	map.step(Vector2.ZERO, DT)
+	check(not map.downed_countdown.clock.running and not map.music_playing and map.music_stops == 1 and not map.stuck_hud._number.visible, "foraging: the revive cancels it and stops the music")
+	map.free()
+	get_tree().paused = false
+
+	# The exit trigger.
+	map = await _held_kit_map({"plant_ma": 1}, 20)
+	_finish_words(map)
+	var trigger: Rect2 = map.ending_logic.trigger_rect()
+	GameState.damage_units("nestor", 99, "x")
+	_put(map, map.player, trigger.position.x + 0.2, map.ending_logic.tree_position().y)
+	map.step(Vector2.ZERO, DT)
+	map.step(Vector2.ZERO, DT)
+	check(map.exit_state == "" and map.revive.note == "Revive Nestor before you leave." and map.revive_view.note_label.visible, "foraging: in the exit trigger with Nestor down, the exit does not fire and the note shows")
+	check(not GameState.has_pending_bank(), "foraging: ...nothing is banked")
+	_put(map, map.player, trigger.position.x - 4.0, map.ending_logic.tree_position().y)
+	map.step(Vector2.ZERO, 2.2)
+	check(map.revive.note == "" and map.exit_state == "", "foraging: the note goes 2 s after leaving the trigger")
+	_put(map, map.player, trigger.position.x + 0.2, map.ending_logic.tree_position().y)
+	GameState.revive("nestor", 2)
+	map.step(Vector2.ZERO, DT)
+	check(map.exit_state == "fading", "foraging: with both standing again the exit fires")
+	map.free()
+	get_tree().paused = false
+
+	# The deer at 0.
+	map = await _fresh_reach_map()
+	var deaths := []
+	var on_death := func(dead, _survivor, injury): deaths.append([dead, injury])
+	GameState.travelers_died.connect(on_death)
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	map.downed_countdown.clock.left = 0.01
+	map.step(Vector2.ZERO, DT)
+	check(map.kill != null and map.deer != null and map.kill_order == ["nestor", "fernanda"] and not map.music_playing and not map.downed_countdown.clock.running, "foraging: at 0 the white deer comes for Nestor, the standing one; the countdown and music stop")
+	_run(map, 5.0, 0.05)
+	check(GameState.heart_units["nestor"] == 0 and deaths == [["nestor", "monster"]] and map.is_death_beat_playing(), "foraging: the deer kills him, the death beat starts, one announcement")
+	check(_count_named(map, "Deer") == 1, "foraging: ...one deer")
+	GameState.travelers_died.disconnect(on_death)
+	map.free()
+	get_tree().paused = false
+
+	# Second down ends the scene once; a locked clock then fires nothing.
+	map = await _fresh_reach_map()
+	var beats := []
+	map.death_beat_started.connect(func() -> void: beats.append(1))
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	GameState.damage_units("nestor", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(not map.downed_countdown.clock.running and not map.music_playing and map.kill == null, "foraging: the second traveler down cancels the countdown, no monster")
+	map.begin_death_beat()
+	map.begin_death_beat()
+	check(beats.size() == 1, "foraging: the scene ends once")
+	map.free()
+	get_tree().paused = false
+	map = await _fresh_reach_map()
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	map.downed_countdown.clock.left = 0.5
+	map.step(Vector2.ZERO, DT)
+	GameState.damage_units("nestor", 99, "x")
+	map.downed_countdown.clock.left = 0.01
+	map.step(Vector2.ZERO, DT)
+	check(map.kill == null and not map.downed_countdown.clock.running, "foraging: a locked countdown that runs out with both down sends no monster")
+	map.free()
+	get_tree().paused = false
+
+	# A revive in the last second does not save them.
+	map = await _fresh_reach_map()
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	map.downed_countdown.clock.left = 0.9
+	map.step(Vector2.ZERO, DT)
+	check(map.restarting and not map.picks_allowed(), "foraging: the last second locks the inputs")
+	GameState.revive("fernanda", 2)
+	map.step(Vector2.ZERO, DT)
+	check(map.downed_countdown.clock.running, "foraging: a revive in the lockout does not cancel the countdown")
+	map.downed_countdown.clock.left = 0.01
+	map.step(Vector2.ZERO, DT)
+	check(map.kill != null and map.kill_order.size() == 2, "foraging: the deer still comes")
+	map.free()
+	get_tree().paused = false
+
+	# Stuck and downed countdowns together.
+	map = await _fresh_reach_map()
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	check(map.countdown.verdict(true) == "started", "(sanity) the stuck countdown starts")
+	map.countdown.left = 20.0
+	map.downed_countdown.clock.left = 50.0
+	map.step(Vector2.ZERO, DT)
+	check(map.stuck_hud._number.text == "20" and map.countdown.running and map.downed_countdown.clock.running, "foraging: both run; the HUD shows the stuck one (20 s < 50 s)")
+	map.countdown.left = 70.0
+	map.step(Vector2.ZERO, DT)
+	check(map.stuck_hud._number.text == "50", "foraging: ...then the downed one when it has less left (50 s < 70 s)")
+	map._start_music()
+	GameState.revive("fernanda", 2)
+	map.step(Vector2.ZERO, DT)
+	check(not map.downed_countdown.clock.running and map.countdown.running and map.music_playing and map.stuck_hud._number.text == "70", "foraging: the revive cancels only the downed one; the stuck one and the music go on")
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	map.downed_countdown.clock.left = 0.01
+	map.countdown.left = 30.0
+	map.step(Vector2.ZERO, DT)
+	check(map.kill != null and map.kill_order[0] == "nestor" and not map.countdown.running and not map.downed_countdown.clock.running, "foraging: the downed clock hits 0 first: one monster, the other clock is dropped")
+	var first_kill = map.kill
+	_run(map, 0.5, 0.05)
+	check(map.kill == first_kill and _count_named(map, "Deer") == 1, "foraging: ...it fires once")
+	map.free()
+	get_tree().paused = false
+	map = await _fresh_reach_map()
+	GameState.damage_units("fernanda", 99, "x")
+	map.step(Vector2.ZERO, DT)
+	map.countdown.verdict(true)
+	map.countdown.left = 0.01
+	map.downed_countdown.clock.left = 50.0
+	map.step(Vector2.ZERO, DT)
+	check(map.kill != null and not map.downed_countdown.clock.running and _count_named(map, "Deer") == 1, "foraging: the stuck clock hits 0 first: the monster comes once, the downed clock is dropped")
+	map.free()
+	get_tree().paused = false
+	_bare_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_downed9cii_scene")
+
+
+## Steps the animal map and drives its death beat (its _process is off in the tests).
+func _run_beat(map: Node3D, seconds: float, delta: float) -> void:
+	for i in roundi(seconds / delta):
+		map.step(Vector2.ZERO, delta)
+		map.tick_beat(delta)
+
+
+## How many children of `map` carry this node name (Blood, Deer).
+func _count_named(map: Node, node_name: String) -> int:
+	var count := 0
+	for child in map.get_children():
+		if String(child.name).begins_with(node_name):
+			count += 1
+	return count
+
+
+# ---- Hint letters (Prompt 9c-iii) ----
+
+const HINT_DOC := "res://docs/production/hallasan-hint-letters-v0.1.md"
+const HINT_WORDS: Array[String] = ["우리", "나무", "고기", "거미", "노루", "고구마", "고라니", "오리", "오이"]
+const HintLettersScript := preload("res://scenes/animals/hint_letters.gd")
+
+
+## Stands in for a Spelling: which words exist and which are finished.
+class HintSpellingStub extends RefCounted:
+	var words: Dictionary = {}
+	var finished: Dictionary = {}
+
+	func has_word(id: String) -> bool:
+		return words.has(id)
+
+	func is_done(id: String) -> bool:
+		return finished.has(id)
+
+
+## The first fenced block under every "### 3.N <word>" heading of the hint letters doc:
+## word -> its lines.
+func _hint_doc_blocks() -> Dictionary:
+	var blocks := {}
+	var file := FileAccess.open(HINT_DOC, FileAccess.READ)
+	if file == null:
+		return blocks
+	var word := ""
+	var inside := false
+	var lines: Array = []
+	for raw in file.get_as_text().split("\n"):
+		var line := String(raw).trim_suffix("\r")
+		if inside:
+			if line.begins_with("```"):
+				blocks[word] = lines.duplicate()
+				inside = false
+				word = ""
+			else:
+				lines.append(line)
+		elif line.begins_with("### 3."):
+			word = line.split(" ")[2]
+		elif word != "" and line.begins_with("```"):
+			inside = true
+			lines = []
+	return blocks
+
+
+## True if a data line is the doc line: a string is equal; a [label, price] row starts with the
+## label, ends with the price, and has only spaces between.
+func _hint_line_matches(line, doc_line: String) -> bool:
+	if line is String:
+		return line == doc_line
+	if line is Array and line.size() == 2:
+		var label := String(line[0])
+		var price := String(line[1])
+		if not doc_line.begins_with(label) or not doc_line.ends_with(price) or doc_line.length() <= label.length() + price.length():
+			return false
+		var middle := doc_line.substr(label.length(), doc_line.length() - label.length() - price.length())
+		return middle != "" and middle.strip_edges() == ""
+	return false
+
+
+## The text of a letter as one string (a row as "label price").
+func _hint_text(letter: Dictionary) -> String:
+	var parts: Array[String] = []
+	for line in letter["lines"]:
+		parts.append("%s %s" % [line[0], line[1]] if line is Array else String(line))
+	return "\n".join(parts)
+
+
+## How many times the target stands in the text, and how often the most repeated other word
+## does (words: runs of Hangul syllables of two or more, not containing the target, grouped by
+## their first two syllables so that particles do not split a word).
+func _hint_repeats(text: String, target: String) -> Dictionary:
+	var groups := {}
+	var rival := 0
+	for token in text.replace("\n", " ").split(" ", false):
+		var word := ""
+		for ch in String(token):
+			var code := ch.unicode_at(0)
+			if code >= 0xAC00 and code <= 0xD7A3:
+				word += ch
+		if word.length() < 2 or word.contains(target):
+			continue
+		var key := word.substr(0, 2)
+		groups[key] = int(groups.get(key, 0)) + 1
+		rival = maxi(rival, int(groups[key]))
+	return {"target": text.count(target), "rival": rival}
+
+
+## What the panel should show, in order: header and body lines, a row as label then price.
+func _hint_expected_labels(letter: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	for line in letter["lines"]:
+		if line is Array:
+			out.append(String(line[0]))
+			out.append(String(line[1]))
+		else:
+			out.append(String(line) if String(line) != "" else " ")
+	return out
+
+
+func _hint_labels(node: Node, out: Array[String]) -> void:
+	if node is Label:
+		out.append((node as Label).text)
+	for child in node.get_children():
+		_hint_labels(child, out)
+
+
+func _hint_quiet_guide() -> void:
+	for id in ["start", "grab", "spell", "give"]:
+		GameState.guide_seen[id] = true
+
+
+## Discovers the needs of these kinds in order (all one-word kinds in the data); returns their ids.
+func _hint_discover(map: Node3D, kinds: Array) -> Array[String]:
+	var ids: Array[String] = []
+	for kind_id in kinds:
+		var e: Dictionary = map.needs.discover(String(kind_id))
+		if not e.is_empty():
+			map._on_need_discovered(e)
+			ids.append(String(e["id"]))
+	return ids
+
+
+func _hint_needy_walker(map: Node3D):
+	for i in 40:
+		var walker = _spawn_kind(map, "osori")
+		if walker != null and map.needs.missing_letters(map.spelling, map.picking.basket).has(walker.letter):
+			return walker
+	return null
+
+
+func test_hint9ciii_logic() -> void:
+	var cfg: Dictionary = _animals_config()["hint_letters"]
+	var letters: Dictionary = cfg["letters"]
+	var blocks := _hint_doc_blocks()
+	check(blocks.size() == 9, "the doc has nine letters in code blocks (%d)" % blocks.size())
+	check(is_equal_approx(float(cfg["idle_s"]), 60.0), "the idle time is 60 s (the doc's 120 s is overridden)")
+	check(letters.size() == 9, "nine letters are in the data")
+	var english := RegEx.create_from_string("[A-Za-z]")
+	for word in HINT_WORDS:
+		check(letters.has(word) and blocks.has(word), "%s: it has a letter in the data and in the doc" % word)
+		if not letters.has(word) or not blocks.has(word):
+			continue
+		var letter: Dictionary = letters[word]
+		var lines: Array = letter["lines"]
+		var doc: Array = blocks[word]
+		var same := lines.size() == doc.size()
+		for i in mini(lines.size(), doc.size()):
+			same = same and _hint_line_matches(lines[i], String(doc[i]))
+		check(same, "%s: the data matches the doc's text line by line (same lines, spacing and punctuation)" % word)
+		var repeats := _hint_repeats(_hint_text(letter), word)
+		check(repeats["target"] >= 4 and repeats["target"] > repeats["rival"], "%s: it appears %d times, the most repeated other word %d" % [word, repeats["target"], repeats["rival"]])
+		check(cfg["formats"].has(letter["format"]) and letter.has("_en") and String(letter["_en"]) != "", "%s: it names a format and keeps its English in _en" % word)
+		check(english.search(_hint_text(letter)) == null, "%s: the shown lines have no English" % word)
+	var rows := 0
+	var others_plain := true
+	for word in HINT_WORDS:
+		if letters.has(word):
+			for line in letters[word]["lines"]:
+				if HintLettersScript.is_row(line):
+					rows += 1
+					others_plain = others_plain and word == "오리" and line[0] is String and line[1] is String
+	check(rows == 5 and others_plain, "the 오리 receipt has five [label, price] rows and no other letter has rows (%d)" % rows)
+	check(letters["오리"]["format"] == "receipt" and letters["오이"]["format"] == "fridge_note" and letters["고기"]["format"] == "flyer", "the formats are kept with the letters")
+
+	# The clock.
+	var h = HintLettersScript.new(cfg)
+	for i in 3599:
+		h.tick(1.0 / 60.0, true)
+	check(not h.due(), "59.98 s of play: not due")
+	h.tick(1.0 / 60.0, true)
+	check(h.due(), "60 s of play (3600 ticks of 1/60 s): due")
+	h.reset()
+	h.tick(500.0, false)
+	check(h.clock == 0.0 and not h.due(), "the clock does not advance while the scene is not playing")
+	h.tick(30.0, true)
+	check(not h.note_grab("ㅏ", {"ㄱ": 1}) and is_equal_approx(h.clock, 30.0), "a grab of a letter no word needs does not reset it")
+	check(h.note_grab("ㄱ", {"ㄱ": 1}) and h.clock == 0.0, "a grab of a letter an unfinished word still lacks resets it")
+	h.tick(30.0, true)
+	check(not h.note_solved(0) and is_equal_approx(h.clock, 30.0), "no new syllable: no reset")
+	check(h.note_solved(1) and h.clock == 0.0, "a finished syllable resets it")
+	h.tick(30.0, true)
+	check(not h.note_solved(1) and is_equal_approx(h.clock, 30.0), "the same count again does not")
+
+	# Whose letter.
+	var stub := HintSpellingStub.new()
+	for id in ["고구마", "나무", "고기", "plant_meoru"]:
+		stub.words[id] = true
+	var entries: Array = [
+		{"id": "고구마", "kind": "word"}, {"id": "plant_meoru", "kind": "item"},
+		{"id": "나무", "kind": "word"}, {"id": "고기", "kind": "word"}]
+	h = HintLettersScript.new(cfg)
+	check(h.next_id(entries, stub) == "고구마", "the oldest discovered word need comes first")
+	h.mark_given("고구마")
+	check(h.next_id(entries, stub) == "나무", "...then the next: the item need in between is skipped")
+	stub.finished["나무"] = true
+	check(h.next_id(entries, stub) == "고기", "a finished word is skipped")
+	h.mark_given("고기")
+	check(h.next_id(entries, stub) == "", "nothing when every unfinished word need has had its letter")
+	check(h.next_id([{"id": "plant_meoru", "kind": "item"}], stub) == "", "an item need never gets one")
+	check(h.next_id([], stub) == "" and HintLettersScript.new(cfg).next_id([{"id": "우리", "kind": "word"}], HintSpellingStub.new()) == "", "a need that was not discovered (not in the list, not in the spelling) never does")
+	var again = HintLettersScript.new(cfg)
+	var first_id: String = again.next_id(entries, stub)
+	again.mark_given(first_id)
+	check(again.next_id(entries, stub) != first_id, "no need gets its letter twice")
+	_section_done("test_hint9ciii_logic")
+
+
+func test_hint9ciii_scene() -> void:
+	var window_before := get_window().size
+	get_window().size = Vector2i(1280, 720)
+	await get_tree().process_frame
+	AnimalsScript.hints_enabled = true
+	var tools_before: bool = AnimalsScript.tools_enabled
+	AnimalsScript.tools_enabled = false  # grabs here are bare-handed (the starting skewer would take them)
+	var cfg: Dictionary = _animals_config()["hint_letters"]
+	var idle := float(cfg["idle_s"])
+	var viewport := get_viewport()
+
+	# 1. 60 s of play: the oldest need's letter, once each.
+	GameState.new_hike()
+	var map: Node3D = await _animals_map(81)
+	_hint_quiet_guide()
+	map.needs.seconds = 1.0e9  # nobody finds a need just by standing near an animal
+	var ids := _hint_discover(map, ["goraeni", "saseum", "noru"])
+	check(ids == ["고구마", "나무", "우리"], "(setup) three word needs, oldest first: %s" % str(ids))
+	_run(map, idle - 1.0)
+	check(not map.hint_hud.is_open() and not get_tree().paused and map.hint.clock > idle - 1.5, "59 s of play: nothing yet (clock %.1f)" % map.hint.clock)
+	var backpack_before = GameState.inventory.items().duplicate(true)
+	_run(map, 2.0)
+	check(map.hint_hud.is_open() and map.hint_hud.letter_id == "고구마" and map.hint.given.has("고구마"), "60 s: the oldest need's letter (고구마) opens")
+	check(get_tree().paused and not map.picks_allowed() and not map.open_pause_menu() and not map.open_backpack(), "...the scene is paused and nothing else opens over it")
+	check(map.get_node_or_null("ExitNote") != null and not map.hint_hud._center.visible, "...first the paper floats in (the exit note's flight), no panel yet")
+	map.hint_hud.advance(float(cfg["float_s"]) * 0.5)
+	check(not map.hint_hud.is_landed() and map.get_node_or_null("ExitNote") != null, "...still in the air half way")
+	map.hint_hud.advance(float(cfg["float_s"]))
+	check(map.hint_hud.is_landed() and map.hint_hud._center.visible and map.get_node_or_null("ExitNote") == null, "...then the paper panel sits in the middle")
+	var texts: Array[String] = []
+	_hint_labels(map.hint_hud.panel, texts)
+	check(texts == _hint_expected_labels(cfg["letters"]["고구마"]), "...showing the Korean lines only")
+	viewport.push_input(_key_event(KEY_SPACE))
+	check(not map.hint_hud.is_open() and not get_tree().paused, "Space closes it, the scene plays on")
+	check(GameState.inventory.items() == backpack_before, "...it was never in the backpack")
+	check(map.hint.clock == 0.0, "...and the clock restarted when it opened")
+	_run(map, idle - 1.0)
+	check(not map.hint_hud.is_open(), "the next 59 s: nothing")
+	_run(map, 2.0)
+	check(map.hint_hud.is_open() and map.hint_hud.letter_id == "나무", "60 s again: the next need's letter (나무)")
+	viewport.push_input(_click_event(Vector2(20.0, 20.0)))
+	check(not map.hint_hud.is_open() and not get_tree().paused, "a click closes it")
+	_run(map, idle + 1.0)
+	check(map.hint_hud.is_open() and map.hint_hud.letter_id == "우리", "...and the third (우리)")
+	viewport.push_input(_key_event(KEY_ENTER))
+	check(not map.hint_hud.is_open(), "Enter closes it")
+	_run(map, idle * 2.0 + 5.0)
+	check(not map.hint_hud.is_open() and map.hint.given.size() == 3 and not get_tree().paused, "every word need has had its letter: nothing opens again")
+	check(map.hint.clock < idle, "...and the idle clock was restarted, not left due")
+	map.free()
+	get_tree().paused = false
+
+	# 2. Every close input, and keys that do not close.
+	GameState.new_hike()
+	map = await _animals_map(82)
+	_hint_quiet_guide()
+	var close_inputs := {"Space": _key_event(KEY_SPACE), "Enter": _key_event(KEY_ENTER), "KP Enter": _key_event(KEY_KP_ENTER), "Esc": _key_event(KEY_ESCAPE), "E": _key_event(KEY_E), "click": _click_event(Vector2(300.0, 300.0))}
+	for label in close_inputs:
+		map.hint_hud.close()
+		check(map.open_hint("나무") and map.hint_hud.is_open() and get_tree().paused, "(setup) %s: a letter is open" % label)
+		viewport.push_input(close_inputs[label])
+		check(not map.hint_hud.is_open() and not get_tree().paused and not map.pause_menu.is_open, "%s closes it (and Esc opens no menu)" % label)
+	map.open_hint("나무")
+	var right_click := _click_event(Vector2(300.0, 300.0))
+	right_click.button_index = MOUSE_BUTTON_RIGHT
+	viewport.push_input(right_click)
+	viewport.push_input(_key_event(KEY_A))
+	viewport.push_input(_key_event(KEY_SPACE, true, true))
+	viewport.push_input(_key_event(KEY_SPACE, false))
+	check(map.hint_hud.is_open(), "a right click, another key, a key repeat and a key release do not close it")
+	map.hint_hud.close()
+	map.free()
+	get_tree().paused = false
+
+	# 3. It waits for the spelling view.
+	GameState.new_hike()
+	map = await _animals_map(83)
+	_hint_quiet_guide()
+	map.needs.seconds = 1.0e9
+	ids = _hint_discover(map, ["goraeni"])
+	map.hint.clock = idle
+	check(map.open_spelling(ids[0]) and map.spelling_hud.is_open(), "(setup) the spelling view is open with the clock due")
+	for i in 120:
+		map.step(Vector2.ZERO, DT)
+	check(not map.hint_hud.is_open() and is_equal_approx(map.hint.clock, idle), "it waits while the spelling view is open, and the clock stands")
+	map.spelling_hud.close()
+	check(not get_tree().paused, "(setup) the spelling view closed")
+	map.step(Vector2.ZERO, DT)
+	check(map.hint_hud.is_open() and map.hint_hud.letter_id == ids[0], "...and opens as soon as it is gone")
+	map.hint_hud.close()
+	map.free()
+	get_tree().paused = false
+
+	# 4. It waits for a guide prompt.
+	GameState.new_hike()
+	map = await _animals_map(84)
+	map.needs.seconds = 1.0e9
+	ids = _hint_discover(map, ["goraeni"])
+	map.hint.clock = idle
+	map.step(Vector2.ZERO, DT)
+	check(map.guide.current != "" and not map.hint_hud.is_open(), "it waits while a guide prompt is up (%s)" % map.guide.current)
+	_run(map, 14.0)
+	check(map.guide.current == "" and map.hint_hud.is_open(), "...and opens when the prompts are gone")
+	map.hint_hud.close()
+	map.free()
+	get_tree().paused = false
+
+	# 5. The clock stands in the menus, the spelling view and the death beat.
+	GameState.new_hike()
+	map = await _animals_map(85)
+	_hint_quiet_guide()
+	map.needs.seconds = 1.0e9
+	ids = _hint_discover(map, ["goraeni"])
+	map.hint.clock = 10.0
+	check(map.open_backpack(), "(setup) the backpack is open")
+	_run(map, 5.0)
+	check(map.hint.clock == 10.0, "the backpack: the clock stands")
+	map.close_backpack()
+	check(map.open_pause_menu(), "(setup) the pause menu is open")
+	_run(map, 5.0)
+	check(map.hint.clock == 10.0, "the pause menu: the clock stands")
+	map.pause_menu.close()
+	get_tree().paused = false
+	check(map.open_spelling(ids[0]), "(setup) the spelling view is open")
+	_run(map, 5.0)
+	check(map.hint.clock == 10.0, "the spelling view: the clock stands")
+	map.spelling_hud.close()
+	_run(map, 5.0)
+	check(map.hint.clock > 14.5 and map.hint.clock < 15.5, "...and runs again with all closed (%.1f)" % map.hint.clock)
+	map.begin_death_beat()
+	_run(map, 5.0)
+	check(map.hint.clock > 14.5 and map.hint.clock < 15.5, "the death beat (and a monster run, both `restarting`): the clock stands (%.1f)" % map.hint.clock)
+	map.free()
+	get_tree().paused = false
+
+	# 6. Progress: a grab of a needed letter (hand or tool), a finished syllable.
+	GameState.new_hike()
+	map = await _animals_map(86)
+	_hint_quiet_guide()
+	map.needs.seconds = 1.0e9
+	map.hint.clock = 20.0
+	var walker = _spawn_kind(map, "osori")
+	_beside(map, walker, Vector2(0.4, 0.0))
+	map.grab_rng.seed = _roll_seed(0.3, false)
+	check(map.pick_nearest() and is_equal_approx(map.hint.clock, 20.0), "a grab of a letter no need lacks (no needs yet) does not reset the clock")
+	ids = _hint_discover(map, ["goraeni"])
+	walker = _hint_needy_walker(map)
+	check(walker != null, "(setup) an animal carries a letter 고구마 lacks")
+	_beside(map, walker, Vector2(0.4, 0.0))
+	map.grab_rng.seed = _roll_seed(0.3, false)
+	map.hint.clock = 20.0
+	check(map.pick_nearest() and map.hint.clock == 0.0, "a hand grab of a needed letter resets it")
+	var tool_walker = _hint_needy_walker(map)
+	if tool_walker != null:
+		map.hint.clock = 20.0
+		map._take_letter(tool_walker)
+		check(map.hint.clock == 0.0, "a tool grab of a needed letter resets it")
+	else:
+		check(false, "(setup) a second animal with a needed letter")
+	map.hint.clock = 20.0
+	map.picking.basket.append("ㄱ")
+	map.picking.basket.append("ㅗ")
+	check(map.spelling.open(ids[0], true), "(setup) 고구마 is open for spelling")
+	map.spelling.place("ㄱ", 0, 0)
+	check(map.spelling.place("ㅗ", 0, 1)["result"] == "correct", "(setup) 고 is judged right")
+	map.spelling.close()
+	map.step(Vector2.ZERO, 0.0)
+	check(map.hint.clock == 0.0, "completing a syllable resets it")
+	map.free()
+	get_tree().paused = false
+
+	# 7. The paper of every letter, and the receipt's columns.
+	GameState.new_hike()
+	map = await _animals_map(87)
+	_hint_quiet_guide()
+	var shows_all := true
+	for word in HINT_WORDS:
+		map.hint_hud.open(word, cfg["letters"][word], cfg["formats"][cfg["letters"][word]["format"]], Vector3.ZERO, Vector3(1.0, 0.0, 0.0))
+		map.hint_hud.advance(10.0)
+		var shown: Array[String] = []
+		_hint_labels(map.hint_hud.panel, shown)
+		shows_all = shows_all and shown == _hint_expected_labels(cfg["letters"][word]) and map.hint_hud.is_landed()
+		map.hint_hud.close()
+	check(shows_all, "all nine papers build and show exactly their Korean lines")
+	map.hint_hud.open("오리", cfg["letters"]["오리"], cfg["formats"]["receipt"], Vector3.ZERO, Vector3(1.0, 0.0, 0.0))
+	map.hint_hud.advance(10.0)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var receipt_rows: Array = map.hint_hud.panel.find_children("*", "HBoxContainer", true, false)
+	check(receipt_rows.size() == 5, "the receipt draws five two-column rows (%d)" % receipt_rows.size())
+	var aligned: bool = receipt_rows.size() == 5
+	var right_edge := 0.0
+	for row in receipt_rows:
+		var price: Label = row.get_child(1)
+		var name_label: Label = row.get_child(0)
+		var edge := price.get_global_rect().end.x
+		right_edge = edge if right_edge == 0.0 else right_edge
+		aligned = aligned and price.horizontal_alignment == HORIZONTAL_ALIGNMENT_RIGHT and absf(edge - right_edge) < 0.5 \
+				and absf(edge - row.get_global_rect().end.x) < 0.5 and name_label.get_global_rect().end.x <= price.get_global_rect().position.x + 0.5
+	check(aligned and right_edge > 0.0, "the prices are right-aligned: every price ends on the same x, past its label")
+	map.hint_hud.close()
+	map.free()
+	get_tree().paused = false
+	AnimalsScript.hints_enabled = false
+	AnimalsScript.tools_enabled = tools_before
+	_bare_hike()
+	get_window().size = window_before
+	await get_tree().process_frame
+	_section_done("test_hint9ciii_scene")

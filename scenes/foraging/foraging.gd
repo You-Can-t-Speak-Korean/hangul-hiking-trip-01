@@ -21,7 +21,8 @@ const Stuck := preload("res://scenes/foraging/stuck.gd")
 const Countdown := preload("res://scenes/foraging/countdown.gd")
 const KillTimeline := preload("res://scenes/foraging/kill_timeline.gd")
 const StuckHud := preload("res://scenes/foraging/stuck_hud.gd")
-const StuckMusic := preload("res://scenes/foraging/stuck_music.gd")
+const CountdownMusic := preload("res://scenes/foraging/countdown_music.gd")
+const DownedCountdown := preload("res://scenes/foraging/downed_countdown.gd")
 const Deer := preload("res://scenes/foraging/deer.gd")
 const PauseMenu := preload("res://scenes/foraging/pause_menu.gd")
 const PauseMenuHud := preload("res://scenes/foraging/pause_menu_hud.gd")
@@ -139,7 +140,8 @@ var restarting := false
 ## Resume). `music_silenced` is true while it holds the countdown music still.
 var pause_menu
 var pause_hud: CanvasLayer
-var music_silenced := false
+var music_silenced: bool:
+	get: return _music.silenced if _music != null else false
 ## The decoys (how many, which kind, where, harm or reward, which letter) and where the
 ## chaos DDEOK piles lie (data: foraging.decoy_placement, foraging.chaos_piles). Both are
 ## rolled once, in _ready, from `placement_seed`: the decoys with `placement_rng`, the
@@ -187,6 +189,9 @@ var music_config: Dictionary = {}
 ## latest evaluation: {"stuck", "reason", "plan"}. `stuck_log` keeps every
 ## evaluation: {"event", "stuck", "reason"}.
 var countdown
+## Prompt 9c-ii. The downed countdown (a DownedCountdown, whose `clock` is a Countdown like the
+## stuck one): shares the HUD (it shows the clock with less time left) and the music.
+var downed_countdown
 var stuck_hud: CanvasLayer
 var stuck_verdict: Dictionary = {"stuck": false, "reason": "not evaluated", "plan": []}
 var stuck_log: Array[Dictionary] = []
@@ -195,14 +200,20 @@ var stuck_log: Array[Dictionary] = []
 var monster: Dictionary = {}
 var kill
 var deer: Node3D
+var _monster_spare := ""  # the downed traveler the deer leaves alone (the downed countdown's monster)
 var kill_order: Array[String] = []
 ## The placeholder countdown music: whether it is meant to be playing, how many
 ## times it started and stopped, and how many calls reached the audio player
 ## (always 0 headless, where nothing is played).
-var music_playing := false
-var music_starts := 0
-var music_stops := 0
-var audio_calls := 0
+## (The player itself is the shared CountdownMusic node; these read through to it.)
+var music_playing: bool:
+	get: return _music.playing if _music != null else false
+var music_starts: int:
+	get: return _music.starts if _music != null else 0
+var music_stops: int:
+	get: return _music.stops if _music != null else 0
+var audio_calls: int:
+	get: return _music.audio_calls if _music != null else 0
 ## Placeholder gore and the death beat (data: foraging.gore_placeholder).
 var gore: Dictionary = {}
 var travelers: Dictionary = {}
@@ -237,9 +248,15 @@ var _aim_height := 0.0
 var _beat_left := -1.0  # seconds of death beat left; -1 when none is playing
 var _dim: ColorRect
 var _steam_stream: AudioStreamWAV
-var _music_stream: AudioStreamWAV
-var _music_player: AudioStreamPlayer
-var _music_tween: Tween
+var _music: Node  # CountdownMusic
+var _music_stream: AudioStreamWAV:
+	get: return _music.stream
+var _music_player: AudioStreamPlayer:
+	get: return _music.player
+	set(value): _music.player = value
+var _music_tween: Tween:
+	get: return _music.tween
+	set(value): _music.tween = value
 var _deer_start := Vector3.ZERO  # just off the left edge of the screen, where the deer leaps from
 var _tooltip: PanelContainer
 var _tooltip_label: Label
@@ -328,6 +345,10 @@ func _ready() -> void:
 	stuck_hud.setup(config["stuck"])
 	monster = config["monster"]
 	music_config = config["stuck_music"]
+	_music = CountdownMusic.new()
+	add_child(_music)
+	_music.setup(music_config)
+	downed_countdown = DownedCountdown.new(Content.rules["revive"], config["stuck"])
 	pause_menu = PauseMenu.new()
 	pause_hud = PauseMenuHud.new()
 	add_child(pause_hud)
@@ -472,7 +493,7 @@ func open_spelling(id: String) -> bool:
 	_tip_plant = null  # a hover name would stay frozen on screen
 	_tooltip.visible = false
 	spelling_hud.show_word(id)
-	stuck_hud.refresh(countdown, true)  # the view covers the number
+	_refresh_stuck_hud(true)  # the view covers the number
 	get_tree().paused = true
 	return true
 
@@ -1544,8 +1565,8 @@ func evaluate_stuck(event: String) -> Dictionary:
 		stuck_verdict = {"stuck": false, "reason": "every word is done, the exit is open", "plan": []}
 		_log_stuck(event, stuck_verdict, "")
 		if countdown.verdict(false, picks_allowed()) == "cancelled":
-			_stop_music()
-		stuck_hud.refresh(countdown, spelling_hud.is_open())
+			_stop_music_unless_counting()
+		_refresh_stuck_hud()
 		return stuck_verdict
 	if spelling_hud.is_open() or spares.has_pending():
 		_log_stuck(event, stuck_verdict, "deferred, the view is open or spares are unsettled")
@@ -1559,8 +1580,8 @@ func evaluate_stuck(event: String) -> Dictionary:
 		"started":
 			_start_music()
 		"cancelled":
-			_stop_music()
-	stuck_hud.refresh(countdown, spelling_hud.is_open())
+			_stop_music_unless_counting()
+	_refresh_stuck_hud()
 	return stuck_verdict
 
 
@@ -1576,15 +1597,30 @@ func _log_stuck(event: String, verdict: Dictionary, note: String) -> void:
 ## one place besides begin_death_beat), so picks, walks, hover names and the
 ## spelling view are rejected through the checks that flag already has.
 func _tick_stuck(delta: float) -> void:
-	countdown.paused = spelling_hud.is_open() or pause_menu.is_open or backpack.is_open or is_gore_playing()
-	if countdown.tick(delta):
-		_begin_monster()  # the kill's clock starts at the next tick, not with what is left of this one
+	var holding: bool = spelling_hud.is_open() or pause_menu.is_open or backpack.is_open or is_gore_playing()
+	countdown.paused = holding
+	downed_countdown.clock.paused = holding
+	_update_downed_clock()
+	var stuck_fired: bool = countdown.tick(delta)
+	var downed_fired: bool = downed_countdown.clock.tick(delta) and not GameState.all_downed()  # (both down: the scene is over already)
+	if stuck_fired or downed_fired:
+		_begin_monster(not stuck_fired)  # the kill's clock starts at the next tick, not with what is left of this one
 	else:
-		if countdown.is_locked() and not restarting:
+		if (countdown.is_locked() or downed_countdown.clock.is_locked()) and not restarting:
 			restarting = true
 			picking.cancel_walk()
 		_tick_monster(delta)
-	stuck_hud.refresh(countdown, spelling_hud.is_open())
+	_refresh_stuck_hud()
+
+
+## Feeds the hearts to the downed countdown: it starts when one traveler is down, a revive
+## cancels it (not in its last seconds), and the music follows.
+func _update_downed_clock() -> void:
+	match downed_countdown.update(not restarting and _dim == null and kill == null):
+		"started":
+			_start_music()
+		"cancelled":
+			_stop_music_unless_counting()
 
 
 ## Esc with the spelling view closed: opens the pause menu and pauses the map, the
@@ -1671,30 +1707,31 @@ func _on_pause_chosen(result: String) -> void:
 ## Holds the countdown music still (its position and fade stay where they were)
 ## or lets it go on.
 func _silence_music(silent: bool) -> void:
-	music_silenced = silent and music_playing
-	if _music_player == null:
-		return
-	_music_player.stream_paused = silent
-	if _music_tween != null and _music_tween.is_valid():
-		if silent:
-			_music_tween.pause()
-		else:
-			_music_tween.play()
-	audio_calls += 1
+	_music.silence(silent)
 
 
 ## The countdown reached 0: stop the music, bring in the deer and start the kill.
-func _begin_monster() -> void:
+## `for_downed` is the downed countdown's zero: the deer comes for the standing traveler first
+## and leaves the one already lying alone (if both stand, a revive came too late: as the stuck one).
+func _begin_monster(for_downed: bool = false) -> void:
 	if kill != null:
 		return
 	restarting = true
 	picking.cancel_walk()
+	var standing := DownedCountdown.standing() if for_downed else ""
+	countdown.abandon()  # one monster, whichever clock ran out first
+	downed_countdown.clock.abandon()
 	_stop_music()
 	kill = KillTimeline.new(monster)
 	kill.start()
-	for id in GameState.TRAVELERS:
-		kill_order.append(id)
-	kill_order.sort_custom(func(a: String, b: String) -> bool: return travelers[a].global_position.x < travelers[b].global_position.x)
+	if standing != "":
+		kill_order.append(standing)
+		_monster_spare = GameState.partner_of(standing)
+		kill_order.append(_monster_spare)
+	else:
+		for id in GameState.TRAVELERS:
+			kill_order.append(id)
+		kill_order.sort_custom(func(a: String, b: String) -> bool: return travelers[a].global_position.x < travelers[b].global_position.x)
 	var first := _deer_landing(kill_order[0])
 	_deer_start = Vector3(camera.global_position.x - camera_half_width() - float(monster["enter_margin"]), 0.0, first.z)
 	_deer_start.y = terrain.height_at(_deer_start.x)
@@ -1749,6 +1786,8 @@ func _tick_monster(delta: float) -> void:
 ## by the both-die rule; the second traveler is brought down with it, in order).
 func _monster_hit(index: int) -> void:
 	var id := kill_order[index]
+	if id == _monster_spare:  # already lying down: the deer came for the one standing
+		return
 	var traveler: Node3D = travelers[id]
 	var away: Vector3 = traveler.global_position - deer.global_position
 	away.y = 0.0
@@ -1764,47 +1803,30 @@ func _monster_hit(index: int) -> void:
 ## The scene is dying or restarting: no countdown, no vignette, no music.
 func _abandon_stuck() -> void:
 	countdown.abandon()
+	downed_countdown.clock.abandon()
 	_stop_music()
-	stuck_hud.refresh(countdown, spelling_hud.is_open())
+	_refresh_stuck_hud()
 
 
-## Starts the placeholder music: at stuck_music.volume_db, faded in over
-## fade_seconds. The stream (a looping AudioStreamWAV) is built on first use. The
-## calls to the audio player are skipped headless; the counters still count.
+## Starts the placeholder countdown music (the shared CountdownMusic; one tune whichever
+## countdown runs).
 func _start_music() -> void:
-	if music_playing:
-		return
-	music_playing = true
-	music_starts += 1
-	if DisplayServer.get_name() == "headless":
-		return
-	if _music_stream == null:
-		_music_stream = StuckMusic.make(music_config)
-	_music_player = AudioStreamPlayer.new()
-	_music_player.stream = _music_stream
-	_music_player.volume_db = -80.0
-	_music_player.process_mode = Node.PROCESS_MODE_ALWAYS  # it plays under the spelling view
-	add_child(_music_player)
-	_music_player.play()
-	_music_tween = create_tween().set_pause_mode(Tween.TWEEN_PAUSE_PROCESS)
-	_music_tween.tween_property(_music_player, "volume_db", float(music_config["volume_db"]), float(music_config["fade_seconds"]))
-	audio_calls += 1
+	_music.start()
 
 
 func _stop_music() -> void:
-	if not music_playing:
-		return
-	music_playing = false
-	music_silenced = false
-	music_stops += 1
-	if _music_player == null:
-		return
-	if _music_tween != null and _music_tween.is_valid():
-		_music_tween.kill()
-	_music_player.stop()
-	_music_player.queue_free()
-	_music_player = null
-	audio_calls += 1
+	_music.stop()
+
+
+## The music plays while either countdown runs.
+func _stop_music_unless_counting() -> void:
+	if not countdown.running and not downed_countdown.clock.running:
+		_stop_music()
+
+
+## The HUD shows the stuck or the downed clock, whichever has less time left.
+func _refresh_stuck_hud(view_open: bool = false) -> void:
+	stuck_hud.refresh(Countdown.soonest(countdown, downed_countdown.clock), view_open or spelling_hud.is_open())
 
 
 # ---- The ending (data: foraging.ending): the exit note, the 고사목 and the black ----
@@ -1840,7 +1862,7 @@ func _open_exit() -> void:
 	for traveler in travelers.values():
 		traveler.gap = ending_logic.gap_rect()
 	countdown.abandon()
-	_stop_music()
+	_stop_music_unless_counting()  # (a downed countdown, if one runs, goes on)
 	ending_logic.begin_wait()
 	exit_opened.emit()
 
@@ -1864,8 +1886,9 @@ func _tick_ending(delta: float) -> void:
 		return
 	var spot := Vector2(player.global_position.x, player.global_position.z)
 	if ending_logic.trigger_rect().has_point(spot):
-		_begin_exit()
-		return
+		if not revive.block_leave():  # nobody downed: leave. Else the note shows and nothing else happens
+			_begin_exit()
+			return
 	match ending_logic.phase:
 		Ending.WAITING:
 			if ending_logic.tick_wait(delta):
